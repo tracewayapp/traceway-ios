@@ -1,11 +1,6 @@
 import XCTest
 @testable import Traceway
 
-/// On-device smoke tests. These run on the iOS Simulator and on real hardware
-/// via Firebase Test Lab — exercising the paths `swift test` on the macOS host
-/// cannot: real `UIScreen`/`UIDevice` attribute collection, the live
-/// `Traceway.start` flow (which installs the crash handlers), and gzip via the
-/// device's zlib.
 final class RealDeviceSmokeTests: XCTestCase {
 
     func testRealHardwareAttributes() {
@@ -15,16 +10,13 @@ final class RealDeviceSmokeTests: XCTestCase {
         XCTAssertEqual(info["device.brand"], "Apple")
         XCTAssertTrue(info["os.version"]?.hasPrefix("iOS") == true)
         XCTAssertFalse((info["device.model"] ?? "").isEmpty)
-        // UIScreen is available on iOS, so resolution/density are populated.
+
         XCTAssertNotNil(info["screen.resolution"])
         XCTAssertNotNil(info["screen.density"])
     }
 
     func testStartCaptureFlushOnDevice() {
-        // Use a real DSN if provided — from the environment (local runs) or
-        // baked into the test bundle's Info.plist at build time (Firebase Test
-        // Lab). Otherwise fall back to an unreachable endpoint so the send fails
-        // gracefully: we are validating that the SDK never crashes on-device.
+
         let dsn = resolvedDSN() ?? "ci-token@http://127.0.0.1:9/api/report"
 
         let client = Traceway.start(
@@ -34,7 +26,6 @@ final class RealDeviceSmokeTests: XCTestCase {
         XCTAssertNotNil(client, "Traceway.start should succeed on-device")
         XCTAssertNotNil(TracewayClient.shared)
 
-        // Real device attributes must have been merged in.
         XCTAssertEqual(client?.currentDeviceAttributes()["os.name"], "ios")
 
         struct DeviceSmokeError: Error {}
@@ -42,13 +33,9 @@ final class RealDeviceSmokeTests: XCTestCase {
         Traceway.capture(DeviceSmokeError())
         Traceway.flush(timeout: 8)
 
-        // Whether the send succeeded (DSN reachable) or re-queued (unreachable),
-        // the SDK must remain healthy.
         XCTAssertNotNil(TracewayClient.shared)
     }
 
-    /// Diagnostic: POST to the exact DSN endpoint from inside the simulator and
-    /// report the real status/error. Skipped unless a DSN is configured.
     func testBackendReachableDiagnostic() throws {
         guard let dsn = resolvedDSN() else {
             throw XCTSkip("no TRACEWAY_DSN configured")
@@ -78,7 +65,6 @@ final class RealDeviceSmokeTests: XCTestCase {
         XCTAssertEqual(status, 200, "url=\(urlString) status=\(status) error=\(errorText)")
     }
 
-    /// DSN from the environment, then the bundle Info.plist, else nil.
     private func resolvedDSN() -> String? {
         if let env = ProcessInfo.processInfo.environment["TRACEWAY_DSN"], !env.isEmpty {
             return env

@@ -1,9 +1,6 @@
 import SwiftUI
 import Traceway
 
-/// Demonstrates every capture path. The "hard crash" buttons kill the process —
-/// relaunch the app and the report uploads from disk. Run these **without** the
-/// Xcode debugger attached (it intercepts the signals first).
 struct ContentView: View {
     @State private var lastAction = "—"
 

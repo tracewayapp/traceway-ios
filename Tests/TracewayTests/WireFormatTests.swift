@@ -1,8 +1,6 @@
 import XCTest
 @testable import Traceway
 
-/// The wire format must match the Android/Flutter/JS SDKs exactly so the same
-/// backend ingests it. These assertions mirror Android's `WireFormatJvmTest`.
 final class WireFormatTests: XCTestCase {
 
     func testReportRequestShape() {

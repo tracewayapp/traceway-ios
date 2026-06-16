@@ -1,9 +1,5 @@
 import Foundation
 
-/// Default transport: gzip the JSON body and POST it to the Traceway endpoint
-/// with the contract headers. Synchronous (the client calls it from its serial
-/// queue and the flush paths need synchronous semantics) and never throws —
-/// any error maps to `false`. Mirrors the Android `DefaultReportSender`.
 struct DefaultReportSender: ReportSender {
 
     private let session: URLSession
@@ -40,7 +36,7 @@ struct DefaultReportSender: ReportSender {
             semaphore.signal()
         }
         task.resume()
-        // Bound the wait so a wedged network never blocks the caller forever.
+
         _ = semaphore.wait(timeout: .now() + 35)
         Log.debug("POST \(apiUrl) -> status=\(statusCode) error=\(transportError ?? "none")")
         return success

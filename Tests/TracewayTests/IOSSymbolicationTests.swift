@@ -59,7 +59,7 @@ final class IOSSymbolicationTests: XCTestCase {
         XCTAssertTrue(st.contains("os: ios arch: arm64"), st)
         XCTAssertTrue(st.contains("#00 2dd71042118432be8f92dd4e3d3fe24a 0x460 sample"), st)
         XCTAssertTrue(st.contains("#01 2dd71042118432be8f92dd4e3d3fe24a 0x478 sample"), st)
-        // An address outside every image stays visible as <unknown>.
+
         XCTAssertTrue(st.contains("0xdeadbeef <unknown>"), st)
         XCTAssertEqual(record.attributes?["device.model"], "iPhone14,3")
     }
@@ -88,8 +88,7 @@ final class IOSSymbolicationTests: XCTestCase {
     private enum SampleError: Error { case boom(Int) }
 
     func testNSExceptionHeaderRendersWireTrace() {
-        // The NSException handler builds its header from name + reason; verify the
-        // resulting wire trace shape (preamble + os line + uuid/offset frames).
+
         let header = StackTraceFormatter.format(
             type: "NSRangeException", message: "index 5 beyond bounds", frames: []
         )

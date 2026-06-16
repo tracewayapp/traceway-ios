@@ -1,16 +1,11 @@
 import Foundation
 
-/// A pending exception loaded from disk.
 struct PendingEntry {
     let id: String
     let createdAtMs: Int64
     let exception: ExceptionStackTrace
 }
 
-/// On-disk pending-exception store: one JSON file per exception under a
-/// no-backup directory, content `{"createdAt": iso, "exception": {...}}`.
-/// Mirrors the Android `ExceptionStore` (no `recording` field — iOS has no
-/// session replay).
 final class ExceptionStore {
     private let dir: URL
     private let maxLocalFiles: Int
@@ -26,8 +21,6 @@ final class ExceptionStore {
         self.maxAgeHours = maxAgeHours
     }
 
-    /// Idempotent. Creates the directory (excluded from iCloud/iTunes backup)
-    /// and prunes expired/excess files.
     func initialize() {
         lock.lock(); defer { lock.unlock() }
         if isAvailable { return }
@@ -47,7 +40,6 @@ final class ExceptionStore {
         }
     }
 
-    /// Writes an exception. Returns the file id, or nil on failure.
     @discardableResult
     func write(_ exception: ExceptionStackTrace) -> String? {
         lock.lock(); defer { lock.unlock() }
@@ -67,7 +59,6 @@ final class ExceptionStore {
         }
     }
 
-    /// Removes files after a successful sync.
     func remove(_ fileIds: [String]) {
         lock.lock(); defer { lock.unlock() }
         guard isAvailable else { return }
@@ -76,7 +67,6 @@ final class ExceptionStore {
         }
     }
 
-    /// Loads all pending entries, oldest-first. Corrupt files are deleted.
     func loadAll() -> [PendingEntry] {
         lock.lock(); defer { lock.unlock() }
         guard isAvailable else { return [] }
@@ -103,8 +93,6 @@ final class ExceptionStore {
         return entries
     }
 
-    // MARK: - Pruning
-
     private func pruneExpiredLocked() {
         guard isAvailable else { return }
         let cutoff = ISO8601.nowMillis() - Int64(maxAgeHours) * 3_600_000
@@ -129,8 +117,6 @@ final class ExceptionStore {
             try? fileManager.removeItem(at: file)
         }
     }
-
-    // MARK: - Helpers
 
     private func fileURL(_ id: String) -> URL {
         dir.appendingPathComponent("\(id).json")

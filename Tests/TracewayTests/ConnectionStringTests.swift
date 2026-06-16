@@ -10,7 +10,7 @@ final class ConnectionStringTests: XCTestCase {
     }
 
     func testParsesUrlContainingAtSign() throws {
-        // First @ is the delimiter; subsequent @s belong to the URL.
+
         let parsed = try parseConnectionString("token@https://user@example.com/api")
         XCTAssertEqual(parsed.token, "token")
         XCTAssertEqual(parsed.apiUrl, "https://user@example.com/api")

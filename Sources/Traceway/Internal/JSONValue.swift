@@ -1,14 +1,5 @@
 import Foundation
 
-/// A minimal, ordered JSON value used to serialize the Traceway wire format.
-///
-/// We deliberately do **not** use `Codable`/`JSONEncoder` because the backend
-/// contract (shared with the Android/Flutter/JS SDKs) requires:
-///   * a specific, stable key order, and
-///   * certain keys emitted as literal `null` (not omitted).
-///
-/// `object` stores ordered `(key, value)` pairs so insertion order is preserved
-/// byte-for-byte. This mirrors the Android `JsonExt.kt` helper.
 enum JSONValue {
     case object([(String, JSONValue)])
     case array([JSONValue])
@@ -18,7 +9,6 @@ enum JSONValue {
     case double(Double)
     case null
 
-    /// Serializes to compact JSON (no insignificant whitespace).
     func serialize() -> String {
         var out = String()
         write(into: &out)
@@ -34,8 +24,7 @@ enum JSONValue {
         case .int(let i):
             out += String(i)
         case .double(let d):
-            // Integral doubles serialize without a trailing ".0" decimal so the
-            // output stays stable and compact.
+
             if d.rounded() == d && abs(d) < 1e15 {
                 out += String(Int64(d))
             } else {
@@ -62,7 +51,6 @@ enum JSONValue {
         }
     }
 
-    /// Writes a JSON-escaped string literal (including surrounding quotes).
     private static func writeString(_ s: String, into out: inout String) {
         out += "\""
         for scalar in s.unicodeScalars {
@@ -87,15 +75,11 @@ enum JSONValue {
 }
 
 extension JSONValue {
-    /// Builds an ordered JSON object from `(key, value)` pairs whose values are
-    /// already `JSONValue`s.
+
     static func ordered(_ pairs: [(String, JSONValue)]) -> JSONValue {
         .object(pairs)
     }
 
-    /// Builds a JSON object from a string map. Iteration order follows the
-    /// provided `keyOrder` (any keys not listed are appended afterwards, sorted
-    /// for determinism). Used for the `attributes` map.
     static func stringMap(_ map: [String: String], keyOrder: [String] = []) -> JSONValue {
         var pairs: [(String, JSONValue)] = []
         var seen = Set<String>()

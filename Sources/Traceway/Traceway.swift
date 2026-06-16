@@ -1,21 +1,7 @@
 import Foundation
 
-/// The Traceway public facade.
-///
-/// Call ``start(connectionString:options:)`` as early as possible — typically in
-/// your SwiftUI `App` initializer or `application(_:didFinishLaunchingWithOptions:)`.
-/// After that, uncaught `NSException`s and fatal signals are captured
-/// automatically; use ``capture(_:)``/``capture(message:)`` for explicit reports.
 public enum Traceway {
 
-    /// Starts Traceway and installs crash handlers. Idempotent — the first call
-    /// wins. Returns the shared client, or `nil` if the connection string is
-    /// invalid (the SDK never crashes the host app over a bad DSN).
-    ///
-    /// - Parameters:
-    ///   - connectionString: `"{token}@{apiUrl}"`, e.g.
-    ///     `"abc123@https://your-traceway/api/report"`.
-    ///   - options: Optional configuration.
     @discardableResult
     public static func start(
         connectionString: String,
@@ -40,19 +26,15 @@ public enum Traceway {
             return nil
         }
 
-        // Device attributes available synchronously.
         client.setDeviceAttributes(DeviceInfoCollector.collectSync())
 
-        // Install crash handlers, then recover crashes from the previous run.
         if let baseDir = baseDir {
             CrashReporter.install(client: client, baseDir: baseDir, persistToDisk: options.persistToDisk)
             CrashReporter.convertPendingCrashes(client: client, baseDir: baseDir)
         }
 
-        // Re-queue anything persisted by a previous process (incl. NSExceptions).
         client.loadPendingFromDisk()
 
-        // Best-effort async device info (IP), then refresh crash metadata.
         DispatchQueue.global(qos: .utility).async {
             let asyncInfo = DeviceInfoCollector.collectAsync()
             guard !asyncInfo.isEmpty else { return }
@@ -65,28 +47,22 @@ public enum Traceway {
         return client
     }
 
-    /// Capture a caught Swift `Error`.
     public static func capture(_ error: Error) {
         TracewayClient.shared?.capture(error)
     }
 
-    /// Capture a caught `NSError`.
     public static func capture(error: NSError) {
         TracewayClient.shared?.capture(error as Error)
     }
 
-    /// Capture a free-form message.
     public static func capture(message: String) {
         TracewayClient.shared?.capture(message: message)
     }
 
-    /// Accepted for API parity with the other Traceway SDKs. This SDK reports
-    /// exceptions only (no session timeline), so breadcrumbs are not buffered.
     public static func recordAction(category: String, name: String, data: [String: Any]? = nil) {
         Log.debug("recordAction \(category)/\(name)")
     }
 
-    /// Force a synchronous flush, waiting up to `timeout` seconds (nil = no timeout).
     public static func flush(timeout: TimeInterval? = nil) {
         TracewayClient.shared?.flush(timeout: timeout)
     }

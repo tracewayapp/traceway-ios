@@ -26,8 +26,7 @@ final class StackTraceFormatterTests: XCTestCase {
 
     func testFormatsSwiftError() {
         let result = StackTraceFormatter.format(SampleError.notFound(id: 42), callStack: ["#0 main"])
-        // The type name is module-qualified (module varies by test host), so
-        // assert on the stable suffix rather than the leading module name.
+
         XCTAssertTrue(result.contains("StackTraceFormatterTests.SampleError"), result)
         XCTAssertTrue(result.contains("notFound(id: 42)"), result)
         XCTAssertTrue(result.contains("#0 main"))

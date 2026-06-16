@@ -56,7 +56,7 @@ final class CrashRecordConversionTests: XCTestCase {
         let records = CrashRecordStore.convertPending(dir: dir)
         XCTAssertEqual(records.count, 1)
         XCTAssertTrue(records[0].stackTrace.contains("SIGSEGV"))
-        // The raw file is consumed.
+
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("crash-123.tw").path))
     }
 }

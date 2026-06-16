@@ -1,11 +1,5 @@
 import Foundation
 
-/// The Traceway client — buffers captured exceptions, batches them, and uploads
-/// them to the Traceway backend in the shared `/api/report` wire format.
-///
-/// Construct via `Traceway.start`. The behavior mirrors the Android
-/// `TracewayClient`, minus the session-recording/timeline machinery (iOS reports
-/// exceptions only).
 public final class TracewayClient {
 
     private let apiUrl: String
@@ -43,9 +37,6 @@ public final class TracewayClient {
 
     var debug: Bool { options.debug }
 
-    // MARK: - Device attributes
-
-    /// Sets the device attribute map merged into every captured exception.
     func setDeviceAttributes(_ attributes: [String: String]) {
         lock.lock()
         deviceAttributes = attributes
@@ -53,7 +44,6 @@ public final class TracewayClient {
         Log.debug("device attributes: \(attributes)")
     }
 
-    /// Snapshot of the current device attributes (used to seed crash metadata).
     func currentDeviceAttributes() -> [String: String] {
         lock.lock(); defer { lock.unlock() }
         return deviceAttributes
@@ -61,9 +51,6 @@ public final class TracewayClient {
 
     var appVersion: String { options.version }
 
-    // MARK: - Disk
-
-    /// Re-queues anything persisted by a previous process (incl. crashes).
     func loadPendingFromDisk() {
         guard let store = store, store.isAvailable else { return }
         let entries = store.loadAll()
@@ -78,10 +65,6 @@ public final class TracewayClient {
         scheduleSync()
     }
 
-    // MARK: - Capture
-
-    /// Capture a caught Swift `Error`. Emits the iOS wire trace (image UUID +
-    /// offsets) so the backend symbolicates it like a hard crash.
     public func capture(_ error: Error) {
         let formatted = CrashRecordStore.renderWireTrace(
             header: StackTraceFormatter.errorHeader(error),
@@ -96,7 +79,6 @@ public final class TracewayClient {
         ))
     }
 
-    /// Capture a free-form message.
     public func capture(message: String) {
         addException(ExceptionStackTrace(
             stackTrace: message,
@@ -105,8 +87,6 @@ public final class TracewayClient {
         ))
     }
 
-    /// Adds a fully-formed exception to the pending buffer. Used by the capture
-    /// helpers and the crash handlers.
     func addException(_ exception: ExceptionStackTrace) {
         guard shouldSample() else {
             Log.debug("exception dropped by sampling")
@@ -130,7 +110,6 @@ public final class TracewayClient {
         scheduleSync()
     }
 
-    /// Force a sync now, waiting up to `timeout` seconds (nil = no timeout).
     public func flush(timeout: TimeInterval? = nil) {
         cancelDebounce()
         cancelRetry()
@@ -145,8 +124,6 @@ public final class TracewayClient {
             semaphore.wait()
         }
     }
-
-    // MARK: - Sync loop
 
     private func shouldSample() -> Bool {
         if options.sampleRate >= 1.0 { return true }
@@ -242,18 +219,14 @@ public final class TracewayClient {
         }
     }
 
-    // MARK: - Singleton + factory
-
     private static let sharedLock = NSLock()
     private static var _shared: TracewayClient?
 
-    /// The active client, or nil before `Traceway.start`.
     public static var shared: TracewayClient? {
         sharedLock.lock(); defer { sharedLock.unlock() }
         return _shared
     }
 
-    /// Parses the connection string and installs the singleton (first wins).
     @discardableResult
     static func parseAndCreate(
         connectionString: String,
@@ -275,10 +248,6 @@ public final class TracewayClient {
         return client
     }
 
-    // MARK: - Test seams
-
-    /// Builds a client with an injected `sender`/`persistDir` without going
-    /// through `Traceway.start` (no handler install, no device collection).
     static func initializeForTesting(
         connectionString: String,
         options: TracewayOptions,

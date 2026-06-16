@@ -1,10 +1,5 @@
 import Foundation
 
-/// A single captured exception/crash, in the Traceway wire shape.
-///
-/// Reference type (class) because the client mutates `attributes`/`fileId`
-/// after construction and tracks identity in its pending list — mirroring the
-/// Android `ExceptionStackTrace`.
 final class ExceptionStackTrace {
     var stackTrace: String
     var recordedAtMs: Int64
@@ -15,8 +10,6 @@ final class ExceptionStackTrace {
     var sessionRecordingId: String?
     var distributedTraceId: String?
 
-    /// Transient id of the on-disk file backing this record. Never serialized
-    /// to the API; used to delete the file once the record is uploaded.
     var fileId: String?
 
     init(
@@ -41,8 +34,6 @@ final class ExceptionStackTrace {
         self.fileId = fileId
     }
 
-    /// The wire JSON. Key order and literal-`null` semantics match the Android
-    /// contract exactly (`null`-valued ids are emitted, not omitted).
     func toJSON() -> JSONValue {
         .object([
             ("traceId", traceId.map { .string($0) } ?? .null),
@@ -56,7 +47,6 @@ final class ExceptionStackTrace {
         ])
     }
 
-    /// Reconstructs a record from a parsed JSON object (disk persistence).
     static func from(jsonObject obj: [String: Any]) -> ExceptionStackTrace {
         var attrs: [String: String]?
         if let raw = obj["attributes"] as? [String: Any], !raw.isEmpty {

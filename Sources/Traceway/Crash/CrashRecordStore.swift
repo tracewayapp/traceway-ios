@@ -3,9 +3,6 @@ import Foundation
 import Darwin
 #endif
 
-/// Bridges the minimal, write()-safe raw crash records produced by the signal
-/// handler and the normal `ExceptionStackTrace` upload pipeline. Everything here
-/// runs in a normal context (next launch), so Foundation is fair game.
 enum CrashRecordStore {
 
     static let directoryName = "traceway_crashes"
@@ -17,13 +14,10 @@ enum CrashRecordStore {
         base.appendingPathComponent(directoryName)
     }
 
-    /// The file the signal handler writes to this run. One per process (pid).
     static func crashFilePath(dir: URL) -> String {
         dir.appendingPathComponent("crash-\(getpid()).tw").path
     }
 
-    /// Pre-serializes device context for the signal handler as `key=value`
-    /// lines. Keys follow the canonical device-attribute order.
     static func buildMetadata(attributes: [String: String], appVersion: String) -> [UInt8] {
         var text = "appVersion=\(sanitize(appVersion))\n"
         var emitted = Set<String>()
@@ -39,17 +33,12 @@ enum CrashRecordStore {
         return Array(text.utf8)
     }
 
-    /// Pre-serializes the binary-image map for the signal handler:
-    /// `arch=<arch>\n---IMAGES---\n<image lines>`. The handler appends
-    /// `---FRAMES---` and the raw return addresses after this blob.
     static func buildImagesSection(arch: String, images: [BinaryImages.LoadedImage]) -> [UInt8] {
         var bytes = Array("arch=\(sanitize(arch))\n\(imagesMarker)\n".utf8)
         bytes.append(contentsOf: BinaryImages.encodeBlob(images))
         return bytes
     }
 
-    /// Parses + deletes every raw crash record in `dir`, returning normalized
-    /// exceptions ready for upload.
     static func convertPending(dir: URL) -> [ExceptionStackTrace] {
         let fileManager = FileManager.default
         guard let files = try? fileManager.contentsOfDirectory(
@@ -66,8 +55,6 @@ enum CrashRecordStore {
         return result
     }
 
-    // MARK: - Parsing
-
     static func parse(file: URL) -> ExceptionStackTrace? {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         return parse(text: text)
@@ -75,7 +62,6 @@ enum CrashRecordStore {
 
     private enum Section { case header, images, frames }
 
-    /// Exposed for unit testing.
     static func parse(text: String) -> ExceptionStackTrace? {
         var lines = text.components(separatedBy: "\n")
         guard lines.first == magic else { return nil }
@@ -121,7 +107,7 @@ enum CrashRecordStore {
         let header = "Fatal Signal \(signalName(Int32(signo))) (\(signo))"
         let stackTrace: String
         if imageLines.isEmpty {
-            // Legacy records carry pre-symbolicated text frames.
+
             stackTrace = StackTraceFormatter.format(type: header, message: nil, frames: frames)
         } else {
             let images = imageLines.compactMap { BinaryImages.parseImageLine($0) }
@@ -136,8 +122,6 @@ enum CrashRecordStore {
         )
     }
 
-    /// Renders return addresses + the captured image map into the iOS wire trace
-    /// the backend symbolicates.
     static func renderWireTrace(header: String, arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {
         let archToken = arch.isEmpty ? BinaryImages.currentArch() : arch
 

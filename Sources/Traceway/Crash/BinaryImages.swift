@@ -6,12 +6,8 @@ import Darwin
 import MachO
 #endif
 
-/// Maps runtime addresses back to (image UUID, image-relative offset) pairs so
-/// the backend can symbolicate native frames against an uploaded dSYM.
 enum BinaryImages {
 
-    /// One loaded Mach-O image. `loadAddr` is the runtime __TEXT base; `size` is
-    /// the __TEXT vmsize, bounding the code used for address containment.
     struct LoadedImage {
         let loadAddr: UInt
         let size: UInt
@@ -19,8 +15,6 @@ enum BinaryImages {
         let name: String
     }
 
-    // The image map is fixed for the process lifetime (ASLR slide is constant),
-    // so it is enumerated once and reused.
     private static var snapshot: [LoadedImage]?
 
     static func capture() -> [LoadedImage] {
@@ -43,7 +37,6 @@ enum BinaryImages {
         return images
     }
 
-    /// The process architecture token (the dSYM arch the backend will key on).
     static func currentArch() -> String {
         #if canImport(Darwin)
         if let header = _dyld_get_image_header(0) {
@@ -66,8 +59,6 @@ enum BinaryImages {
         #endif
     }
 
-    /// Renders an images blob the signal handler can write verbatim: one line per
-    /// image, `<loadAddrHex> <sizeHex> <uuid32> <name>`.
     static func encodeBlob(_ images: [LoadedImage]) -> [UInt8] {
         var text = ""
         for img in images {
@@ -83,9 +74,6 @@ enum BinaryImages {
         return Array(text.utf8)
     }
 
-    // MARK: - Parsing & lookup (converter side)
-
-    /// Parses a single `---IMAGES---` line back into a `LoadedImage`.
     static func parseImageLine(_ line: Substring) -> LoadedImage? {
         let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
         guard parts.count >= 3,
@@ -96,8 +84,6 @@ enum BinaryImages {
         return LoadedImage(loadAddr: loadAddr, size: size, uuid: String(parts[2]), name: name)
     }
 
-    /// Finds the image containing `address` and returns it with the
-    /// image-relative offset (`address - loadAddr`).
     static func map(address: UInt, images: [LoadedImage]) -> (image: LoadedImage, offset: UInt)? {
         for img in images {
             if address >= img.loadAddr && address < img.loadAddr &+ img.size {
@@ -107,11 +93,9 @@ enum BinaryImages {
         return nil
     }
 
-    // MARK: - Mach-O header walking
-
     #if canImport(Darwin)
-    private static let lcSegment64: UInt32 = 0x19 // LC_SEGMENT_64
-    private static let lcUUID: UInt32 = 0x1b      // LC_UUID
+    private static let lcSegment64: UInt32 = 0x19
+    private static let lcUUID: UInt32 = 0x1b
 
     private static func readHeader(
         _ header: UnsafePointer<mach_header>, uuid: inout String, textVMSize: inout UInt
@@ -138,7 +122,6 @@ enum BinaryImages {
         }
     }
 
-    /// The 16-char `segname` field is a fixed C array padded with NULs.
     private static func segmentName(_ tuple: (Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8, Int8)) -> String {
         var bytes = tuple
         return withUnsafeBytes(of: &bytes) { raw in

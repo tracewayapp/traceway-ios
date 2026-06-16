@@ -4,7 +4,7 @@ import XCTest
 final class ISO8601Tests: XCTestCase {
 
     func testGoldenTimestamp() {
-        // Same assertion as Android's WireFormatJvmTest.
+
         XCTAssertEqual(ISO8601.format(millis: 1_700_000_000_000), "2023-11-14T22:13:20.000Z")
     }
 

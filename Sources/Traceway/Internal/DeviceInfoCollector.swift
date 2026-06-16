@@ -6,15 +6,8 @@ import UIKit
 import Darwin
 #endif
 
-/// Collects the device/runtime attributes merged into every captured exception.
-/// Keys mirror the Android SDK, adapted to iOS. All values are strings.
-///
-/// `collectSync` is cheap and runs at init; `collectAsync` does the one
-/// potentially-slow lookup (the IP address) on a background queue.
 enum DeviceInfoCollector {
 
-    /// Canonical attribute order, used so serialized `attributes` are
-    /// deterministic across runs (helps golden tests and diffing).
     static let attributeKeyOrder = [
         "os.name", "os.version", "device.model", "device.manufacturer",
         "device.brand", "device.systemVersion", "device.isPhysical",
@@ -47,8 +40,6 @@ enum DeviceInfoCollector {
         if let ip = firstNonLoopbackIPv4() { info["device.ip"] = ip }
         return info
     }
-
-    // MARK: - Pieces
 
     private static func systemVersion() -> String {
         #if canImport(UIKit)
@@ -84,7 +75,7 @@ enum DeviceInfoCollector {
     private static func normalizedLocale() -> String {
         let identifier = Locale.current.identifier
         if identifier.isEmpty { return "en_US" }
-        // Apple already uses underscores; normalize any stray hyphens.
+
         return identifier.replacingOccurrences(of: "-", with: "_")
     }
 
@@ -120,7 +111,6 @@ enum DeviceInfoCollector {
         #endif
     }
 
-    /// First non-loopback IPv4 address across all up interfaces (best-effort).
     private static func firstNonLoopbackIPv4() -> String? {
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else { return nil }

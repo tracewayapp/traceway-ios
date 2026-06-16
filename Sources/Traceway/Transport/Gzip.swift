@@ -1,18 +1,11 @@
 import Foundation
 import zlib
 
-/// gzip (de)compression backed by the system `zlib`. No third-party dependency.
-///
-/// `compress` produces a gzip stream (RFC 1952) equivalent to Java's
-/// `GZIPOutputStream`, which is what the backend and the other Traceway SDKs
-/// emit. The gzip framing is selected via `windowBits = 15 + 16`.
 enum Gzip {
 
-    /// Compresses `data` into a gzip stream. Returns `nil` on any zlib error so
-    /// the transport can treat it as a failed send (never throws).
     static func compress(_ data: Data) -> Data? {
         var stream = z_stream()
-        let windowBits: Int32 = 15 + 16 // 15 = max window, +16 = gzip wrapper
+        let windowBits: Int32 = 15 + 16
         let memLevel: Int32 = 8
 
         let initStatus = deflateInit2_(
@@ -49,14 +42,12 @@ enum Gzip {
                     return s
                 }
                 if status == Z_STREAM_END { break }
-                if status < 0 { return nil } // Z_STREAM_ERROR, Z_DATA_ERROR, …
+                if status < 0 { return nil }
             }
             return output
         }
     }
 
-    /// Inflates a gzip (or zlib) stream. Used by tests to verify round-trips.
-    /// `windowBits = 15 + 32` auto-detects the gzip/zlib header.
     static func decompress(_ data: Data) -> Data? {
         guard !data.isEmpty else { return Data() }
         var stream = z_stream()

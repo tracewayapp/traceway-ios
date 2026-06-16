@@ -71,7 +71,7 @@ final class TracewayClientTests: XCTestCase {
     func testFailedSendRequeues() {
         let sender = FakeSender()
         sender.setSucceed(false)
-        // High debounce/retry so only the explicit flush triggers a send.
+
         let client = makeClient(TracewayOptions(debounceMs: 100_000, retryDelayMs: 100_000), sender: sender)
 
         client.capture(message: "x")
@@ -83,7 +83,7 @@ final class TracewayClientTests: XCTestCase {
 
     func testDropsOldestWhenBufferFull() {
         let sender = FakeSender()
-        // No auto-sync during the test.
+
         let client = makeClient(TracewayOptions(debounceMs: 100_000, maxPendingExceptions: 2), sender: sender)
 
         client.capture(message: "a")
@@ -92,7 +92,7 @@ final class TracewayClientTests: XCTestCase {
 
         XCTAssertEqual(client.pendingExceptionCount(), 2)
         let snapshot = client.pendingExceptionsSnapshot()
-        XCTAssertEqual(snapshot.first?.stackTrace, "b") // oldest "a" dropped
+        XCTAssertEqual(snapshot.first?.stackTrace, "b")
         XCTAssertEqual(snapshot.last?.stackTrace, "c")
     }
 

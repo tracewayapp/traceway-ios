@@ -49,7 +49,7 @@ final class ExceptionStoreTests: XCTestCase {
         for i in 0..<5 {
             _ = store.write(ExceptionStackTrace(stackTrace: "e\(i)", recordedAtMs: Int64(i)))
         }
-        // Re-initializing prunes down to maxLocalFiles.
+
         let reopened = makeStore(maxLocalFiles: 3)
         XCTAssertEqual(reopened.loadAll().count, 3)
     }
@@ -67,9 +67,7 @@ final class ExceptionStoreTests: XCTestCase {
 
     func testLoadAllSortsOldestFirst() {
         let store = makeStore()
-        // Write with explicit, increasing createdAt by manipulating recordedAt is
-        // not enough (createdAt is stamped at write time), so assert the set of
-        // stack traces is fully recovered regardless of order.
+
         for i in 0..<3 {
             _ = store.write(ExceptionStackTrace(stackTrace: "e\(i)", recordedAtMs: Int64(i)))
         }

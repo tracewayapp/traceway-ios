@@ -1,6 +1,5 @@
 import Foundation
 
-/// Top-level payload POSTed to `/api/report`.
 struct ReportRequest {
     let collectionFrames: [CollectionFrame]
     let appVersion: String
@@ -20,7 +19,6 @@ struct ReportRequest {
         ])
     }
 
-    /// Compact JSON string sent as the request body.
     func serialized() -> String {
         toJSON().serialize()
     }
