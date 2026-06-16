@@ -1,0 +1,91 @@
+# xcodegen spec for the device/simulator XCTest run (and Firebase Test Lab).
+#
+# `swift test` covers the logic suite on the macOS host. This project hosts the
+# same suite — plus on-device smoke tests — inside a real iOS app so it can run
+# on the iOS Simulator and on real hardware via Firebase Test Lab.
+#
+# Generate with:  xcodegen generate
+# The generated TracewayCI.xcodeproj is git-ignored.
+name: TracewayCI
+
+options:
+  bundleIdPrefix: com.tracewayapp
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  Traceway:
+    path: .
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+
+targets:
+  TracewayExample:
+    type: application
+    platform: iOS
+    sources:
+      - path: Examples/TracewayExample
+    dependencies:
+      - package: Traceway
+        product: Traceway
+    info:
+      path: CI/Generated/Example-Info.plist
+      properties:
+        CFBundleDisplayName: Traceway Example
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Allow cleartext HTTP to localhost so the Simulator can reach a local
+        # backend (e.g. devtesting-embedded on http://localhost:8082).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.example
+        GENERATE_INFOPLIST_FILE: NO
+    # Uploads dSYMs to Traceway after a Release build so native crashes
+    # symbolicate. No-ops on Debug builds and when TRACEWAY_UPLOAD_TOKEN is unset,
+    # so it never disturbs the simulator/device test builds.
+    postBuildScripts:
+      - name: Upload dSYMs to Traceway
+        runOnlyWhenInstalling: false
+        basedOnDependencyAnalysis: false
+        script: |
+          "$SRCROOT/Scripts/upload_symbols.sh"
+
+  TracewayExampleTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/TracewayTests
+      - path: CI/DeviceTests
+    dependencies:
+      - target: TracewayExample
+      - package: Traceway
+        product: Traceway
+    info:
+      path: CI/Generated/Tests-Info.plist
+      properties:
+        # Firebase Test Lab can't inject env vars into the XCTest process, so the
+        # DSN is baked in at build time via Info.plist variable substitution:
+        # `xcodebuild ... TRACEWAY_DSN=token@https://…`. Empty on local/sim runs.
+        TRACEWAY_DSN: "$(TRACEWAY_DSN)"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.exampleTests
+        TRACEWAY_DSN: ""
+
+schemes:
+  TracewayCI:
+    build:
+      targets:
+        TracewayExample: all
+        TracewayExampleTests: [test]
+    test:
+      targets:
+        - TracewayExampleTests

@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+Package.resolved
+
+# xcodegen output (regenerated from project.yml)
+*.xcodeproj
+CI/Generated/
+ftl_bundle/
+*.zip

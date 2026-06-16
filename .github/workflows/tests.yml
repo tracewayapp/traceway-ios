@@ -1,0 +1,209 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_firebase:
+        description: 'Also run the Firebase Test Lab real-device tests'
+        type: boolean
+        default: false
+      device:
+        description: 'Firebase Test Lab device (model=...,version=...)'
+        type: string
+        default: 'iphone15pro,version=17.5'
+
+permissions:
+  contents: read
+  id-token: write # required for GCP Workload Identity Federation
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast logic suite on the macOS host + iOS compile verification. No secrets.
+  # ---------------------------------------------------------------------------
+  swift-tests:
+    name: Swift tests + iOS build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: swift build
+        run: swift build
+
+      - name: swift test (host = macOS)
+        run: swift test
+
+      - name: Compile for iOS device + simulator
+        run: |
+          xcodebuild build -scheme Traceway -destination 'generic/platform=iOS'
+          xcodebuild build -scheme Traceway -destination 'generic/platform=iOS Simulator'
+
+  # ---------------------------------------------------------------------------
+  # Full XCTest suite (logic + on-device smoke tests) on the iOS Simulator.
+  # Exercises the UIKit device-info paths that the macOS host can't. No secrets.
+  # ---------------------------------------------------------------------------
+  simulator-tests:
+    name: XCTest on iOS Simulator
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Pick an available simulator
+        id: sim
+        run: |
+          NAME=$(xcrun simctl list devices available \
+            | grep -oE 'iPhone [0-9]+( Pro( Max)?)?' | sort -V | tail -1)
+          echo "name=${NAME:-iPhone 16}" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: ${NAME:-iPhone 16}"
+
+      - name: Run XCTest
+        run: |
+          xcodebuild test \
+            -project TracewayCI.xcodeproj \
+            -scheme TracewayCI \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -resultBundlePath sim-results.xcresult
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-xcresult
+          path: sim-results.xcresult
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Build the signed device test bundle for Firebase Test Lab.
+  # Gated behind `workflow_dispatch` so PRs (and forks without secrets) skip it.
+  # Requires the same Apple signing secrets as the Flutter pipeline.
+  # ---------------------------------------------------------------------------
+  build-device-bundle:
+    name: Build device test bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.run_firebase
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Install Apple certificate and provisioning profile
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          PP_PATH=$RUNNER_TEMP/profile.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$APPLE_CERTIFICATE_P12" | base64 --decode -o $CERT_PATH
+          echo -n "$APPLE_PROVISIONING_PROFILE" | base64 --decode -o $PP_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Build for testing (iphoneos, signed)
+        env:
+          TRACEWAY_DSN: ${{ secrets.TRACEWAY_DSN }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVISIONING_PROFILE_NAME: ${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}
+        run: |
+          xcodebuild build-for-testing \
+            -project TracewayCI.xcodeproj \
+            -scheme TracewayCI \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ftl_build \
+            TRACEWAY_DSN="$TRACEWAY_DSN" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            PROVISIONING_PROFILE_SPECIFIER="$APPLE_PROVISIONING_PROFILE_NAME"
+
+      - name: Zip test bundle for Firebase Test Lab
+        working-directory: ftl_build/Build/Products
+        run: zip -r "$GITHUB_WORKSPACE/ios_tests.zip" Debug-iphoneos *.xctestrun
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-bundle
+          path: ios_tests.zip
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+
+  # ---------------------------------------------------------------------------
+  # Run the device test bundle on real hardware via Firebase Test Lab.
+  # ---------------------------------------------------------------------------
+  firebase-device-tests:
+    name: Firebase Test Lab (real device)
+    needs: build-device-bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.run_firebase
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-test-bundle
+          path: ./ios
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run on Firebase Test Lab
+        run: |
+          gcloud firebase test ios run \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --test ios/ios_tests.zip \
+            --device model=${{ inputs.device }},locale=en,orientation=portrait \
+            --timeout 10m \
+            --results-dir="ios-${{ github.run_id }}" \
+            --results-bucket="${{ secrets.GCS_BUCKET }}" \
+            2>&1 | tee ftl_output.txt
+
+      - name: Download + summarize results
+        if: always()
+        run: |
+          GCS_PATH="gs://${{ secrets.GCS_BUCKET }}/ios-${{ github.run_id }}"
+          mkdir -p ./results
+          gsutil -m cp -r "$GCS_PATH/" ./results/ 2>&1 || echo "(download failed)"
+          echo "=== Traceway SDK logs from the device ==="
+          grep -rh "Traceway\|payload_size\|sync\|captured\|recovered .* crash" ./results/ 2>/dev/null | head -50 || echo "none"
+          echo "=== Test summary ==="
+          grep -rh "Executed .* test\|PASSED\|FAILED\|Testing failed" ./results/ 2>/dev/null | head -20 || echo "none"
