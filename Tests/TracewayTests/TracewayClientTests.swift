@@ -68,6 +68,20 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertTrue(body.contains("\"collectionFrames\""))
     }
 
+    func testCaptureRendersProvidedCallStackVerbatim() {
+        let sender = FakeSender()
+        let client = makeClient(TracewayOptions(debounceMs: 50), sender: sender)
+
+        struct Boom: Error {}
+        client.capture(Boom(), callStack: [0x1111, 0x2222, 0x3333])
+        client.flush(timeout: 5)
+
+        let body = try! XCTUnwrap(sender.bodies.last)
+        XCTAssertTrue(body.contains("#00"), body)
+        XCTAssertTrue(body.contains("#02"), body)
+        XCTAssertFalse(body.contains("#03"), body)
+    }
+
     func testFailedSendRequeues() {
         let sender = FakeSender()
         sender.setSucceed(false)

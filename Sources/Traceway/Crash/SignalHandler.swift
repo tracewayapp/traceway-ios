@@ -18,6 +18,7 @@ private var twInHandler: sig_atomic_t = 0
 private let twBacktraceCap: Int32 = 128
 private let twIntScratchLen = 32
 private let twHandledSignals: [Int32] = [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP]
+private let twHandlerFrameSkip = 2
 
 @inline(__always)
 private func twWrite(_ fd: Int32, _ text: StaticString) {
@@ -66,6 +67,37 @@ private func twWriteHex(_ fd: Int32, _ value: UInt) {
     _ = write(fd, scratch.advanced(by: index), twIntScratchLen - index)
 }
 
+@inline(__always)
+private func twCrashContext(_ context: UnsafeMutableRawPointer?) -> (pc: UInt, fp: UInt) {
+    guard let context = context else { return (0, 0) }
+    let uc = context.assumingMemoryBound(to: ucontext_t.self)
+    guard let mc = uc.pointee.uc_mcontext else { return (0, 0) }
+    #if arch(arm64)
+    return (UInt(mc.pointee.__ss.__pc), UInt(mc.pointee.__ss.__fp))
+    #elseif arch(x86_64)
+    return (UInt(mc.pointee.__ss.__rip), UInt(mc.pointee.__ss.__rbp))
+    #else
+    return (0, 0)
+    #endif
+}
+
+private func twWriteFrameChain(_ fd: Int32, _ fp0: UInt) {
+    var fp = fp0
+    var prev: UInt = 0
+    var n = 0
+    while fp != 0, fp % 16 == 0, fp > prev, n < Int(twBacktraceCap) {
+        guard let frame = UnsafeRawPointer(bitPattern: fp) else { break }
+        let savedFP = frame.load(as: UInt.self)
+        let savedLR = frame.load(fromByteOffset: 8, as: UInt.self)
+        if savedLR == 0 { break }
+        twWriteHex(fd, savedLR)
+        twWrite(fd, "\n")
+        prev = fp
+        fp = savedFP
+        n += 1
+    }
+}
+
 private func twSignalHandler(
     _ signo: Int32,
     _ info: UnsafeMutablePointer<siginfo_t>?,
@@ -96,10 +128,16 @@ private func twSignalHandler(
                 _ = write(fd, images, twImagesLen)
             }
             twWrite(fd, "---FRAMES---\n")
-            if let backtraceBuf = twBacktracePtr {
-
+            let crash = twCrashContext(context)
+            if crash.pc != 0 {
+                twWriteHex(fd, crash.pc)
+                twWrite(fd, "\n")
+            }
+            if crash.fp != 0 {
+                twWriteFrameChain(fd, crash.fp)
+            } else if let backtraceBuf = twBacktracePtr {
                 let count = Int(backtrace(backtraceBuf, twBacktraceCap))
-                var i = 0
+                var i = min(twHandlerFrameSkip, count)
                 while i < count {
                     twWriteHex(fd, UInt(bitPattern: backtraceBuf[i]))
                     twWrite(fd, "\n")

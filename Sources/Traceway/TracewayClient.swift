@@ -65,12 +65,18 @@ public final class TracewayClient {
         scheduleSync()
     }
 
+    @inline(never)
     public func capture(_ error: Error) {
+        let callStack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
+        capture(error, callStack: callStack)
+    }
+
+    func capture(_ error: Error, callStack: [UInt]) {
         let formatted = CrashRecordStore.renderWireTrace(
             header: StackTraceFormatter.errorHeader(error),
             arch: BinaryImages.currentArch(),
             images: BinaryImages.capture(),
-            addresses: Thread.callStackReturnAddresses.map { UInt(truncating: $0) }
+            addresses: callStack
         )
         addException(ExceptionStackTrace(
             stackTrace: formatted,

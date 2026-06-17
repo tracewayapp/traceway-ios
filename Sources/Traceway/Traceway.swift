@@ -47,12 +47,16 @@ public enum Traceway {
         return client
     }
 
+    @inline(never)
     public static func capture(_ error: Error) {
-        TracewayClient.shared?.capture(error)
+        let callStack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
+        TracewayClient.shared?.capture(error, callStack: callStack)
     }
 
+    @inline(never)
     public static func capture(error: NSError) {
-        TracewayClient.shared?.capture(error as Error)
+        let callStack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
+        TracewayClient.shared?.capture(error as Error, callStack: callStack)
     }
 
     public static func capture(message: String) {
