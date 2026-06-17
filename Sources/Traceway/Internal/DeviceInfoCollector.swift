@@ -11,8 +11,8 @@ enum DeviceInfoCollector {
     static let attributeKeyOrder = [
         "os.name", "os.version", "device.model", "device.manufacturer",
         "device.brand", "device.systemVersion", "device.isPhysical",
-        "device.locale", "runtime.version", "screen.resolution",
-        "screen.density", "device.ip",
+        "device.locale", "runtime.version", "telemetry.sdk.language",
+        "screen.resolution", "screen.density", "device.ip",
     ]
 
     static func collectSync() -> [String: String] {
@@ -27,6 +27,7 @@ enum DeviceInfoCollector {
         info["device.isPhysical"] = isPhysicalDevice() ? "true" : "false"
         info["device.locale"] = normalizedLocale()
         info["runtime.version"] = swiftRuntimeVersion()
+        info["telemetry.sdk.language"] = "swift"
 
         let screen = screenInfo()
         if let resolution = screen.resolution { info["screen.resolution"] = resolution }

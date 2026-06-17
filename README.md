@@ -4,7 +4,7 @@ Catch crashes and exceptions in your iOS app and report them to your
 [Traceway](https://tracewayapp.com) backend. Pure Swift, zero third‑party
 dependencies, distributed via Swift Package Manager.
 
-> This SDK reports **errors and crashes only** — there is no session/video replay.
+> This SDK reports **errors and crashes only** - there is no session/video replay.
 > It speaks the same `/api/report` wire format as the Traceway Android, Flutter
 > and JS SDKs, so the same backend ingests it with no server changes.
 
@@ -26,7 +26,7 @@ then add `"Traceway"` to your target's dependencies.
 
 ## Usage
 
-Call `Traceway.start` as early as possible — ideally in your `App` initializer
+Call `Traceway.start` as early as possible - ideally in your `App` initializer
 (SwiftUI) or `application(_:didFinishLaunchingWithOptions:)` (UIKit). The
 connection string format is `"{token}@{apiUrl}"`.
 
@@ -75,7 +75,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 After `start`, the SDK automatically captures:
 
 - **Uncaught `NSException`s** (Objective‑C / UIKit).
-- **Fatal signals** — Swift runtime traps such as force‑unwrapping `nil`, array
+- **Fatal signals** - Swift runtime traps such as force‑unwrapping `nil`, array
   out‑of‑bounds, `fatalError()`, integer overflow (these surface as `SIGTRAP`,
   `SIGILL`, `SIGABRT`, `SIGSEGV`, …). Hard crashes are persisted to disk and
   uploaded on the **next launch**.
@@ -130,7 +130,7 @@ swift test            # logic suite on the macOS host
 ```
 
 CI (`.github/workflows/tests.yml`) runs the logic suite, the full XCTest suite
-on the iOS Simulator, and — on manual dispatch — the suite on a **real iPhone**
+on the iOS Simulator, and - on manual dispatch - the suite on a **real iPhone**
 via Firebase Test Lab. See [CI/README.md](CI/README.md) for details and the
 required secrets.
 

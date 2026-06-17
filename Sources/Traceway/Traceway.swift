@@ -63,10 +63,6 @@ public enum Traceway {
         TracewayClient.shared?.capture(message: message)
     }
 
-    public static func recordAction(category: String, name: String, data: [String: Any]? = nil) {
-        Log.debug("recordAction \(category)/\(name)")
-    }
-
     public static func flush(timeout: TimeInterval? = nil) {
         TracewayClient.shared?.flush(timeout: timeout)
     }
