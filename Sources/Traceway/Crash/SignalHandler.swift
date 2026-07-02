@@ -14,6 +14,7 @@ private var twPrevActions: UnsafeMutablePointer<sigaction>?
 private var twAltStack: UnsafeMutableRawPointer?
 private var twInstalled = false
 private var twInHandler: sig_atomic_t = 0
+private var twSuppressCrashRecord: sig_atomic_t = 0
 
 private let twBacktraceCap: Int32 = 128
 private let twIntScratchLen = 32
@@ -104,7 +105,7 @@ private func twSignalHandler(
     _ context: UnsafeMutableRawPointer?
 ) {
 
-    if twInHandler != 0 {
+    if twInHandler != 0 || twSuppressCrashRecord != 0 {
         twRestoreAndReRaise(signo)
         return
     }
@@ -204,6 +205,14 @@ enum SignalHandler {
 
         twInHandler = 0
         twInstalled = true
+    }
+
+    // Called once another handler (the NSException handler) has already
+    // recorded the crash: the runtime's follow-up abort() must not produce a
+    // second crash record for the same event. The process is dying, so the
+    // flag is never reset.
+    static func suppressCrashRecord() {
+        twSuppressCrashRecord = 1
     }
 
     static func setMetadata(_ metadata: [UInt8]) {

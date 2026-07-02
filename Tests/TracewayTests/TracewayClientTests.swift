@@ -117,6 +117,32 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(client.pendingExceptionCount(), 0)
     }
 
+    func testLoadPendingFromDiskSkipsExceptionsAlreadyInMemory() {
+        let sender = FakeSender()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tw-pending-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let client = try! TracewayClient.initializeForTesting(
+            connectionString: connectionString,
+            options: TracewayOptions(debounceMs: 100_000),
+            persistDir: dir,
+            sender: sender
+        )
+
+        // Mirrors crash recovery on launch: addException persists the record,
+        // so a subsequent loadPendingFromDisk must not queue it a second time.
+        client.addException(ExceptionStackTrace(stackTrace: "recovered crash", recordedAtMs: 1))
+        XCTAssertEqual(client.pendingExceptionCount(), 1)
+
+        client.loadPendingFromDisk()
+        XCTAssertEqual(client.pendingExceptionCount(), 1)
+
+        client.flush(timeout: 5)
+        let body = try! XCTUnwrap(sender.bodies.last)
+        XCTAssertEqual(body.components(separatedBy: "recovered crash").count - 1, 1)
+    }
+
     func testDeviceAttributesMergedIntoExceptions() {
         let sender = FakeSender()
         let client = makeClient(TracewayOptions(debounceMs: 50), sender: sender)

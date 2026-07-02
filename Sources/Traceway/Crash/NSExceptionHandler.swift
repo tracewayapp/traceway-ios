@@ -21,6 +21,9 @@ private func twNSExceptionHandler(_ exception: NSException) {
         )
 
         client.addException(record)
+        // The record is queued (and persisted) — the SIGABRT the runtime
+        // raises after the handler chain must not become a second report.
+        SignalHandler.suppressCrashRecord()
         client.flush(timeout: twNSFlushTimeout)
     }
 

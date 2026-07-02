@@ -56,12 +56,18 @@ public final class TracewayClient {
         let entries = store.loadAll()
         guard !entries.isEmpty else { return }
         lock.lock()
-        for entry in entries {
+        // Exceptions added earlier this launch are already persisted with the
+        // same file id — loading them again would double-report them.
+        let trackedIds = Set(pendingExceptions.compactMap { $0.fileId })
+        var loaded = 0
+        for entry in entries where !trackedIds.contains(entry.id) {
             pendingExceptions.append(entry.exception)
+            loaded += 1
         }
         trimPendingLocked()
         lock.unlock()
-        Log.debug("loaded \(entries.count) pending entries from disk")
+        guard loaded > 0 else { return }
+        Log.debug("loaded \(loaded) pending entries from disk")
         scheduleSync()
     }
 

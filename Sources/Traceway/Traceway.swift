@@ -28,12 +28,15 @@ public enum Traceway {
 
         client.setDeviceAttributes(DeviceInfoCollector.collectSync())
 
+        // Load leftovers from previous runs BEFORE converting crash records:
+        // convertPendingCrashes persists each recovered crash into the same
+        // pending store, so loading afterwards would queue those twice.
+        client.loadPendingFromDisk()
+
         if let baseDir = baseDir {
             CrashReporter.install(client: client, baseDir: baseDir, persistToDisk: options.persistToDisk)
             CrashReporter.convertPendingCrashes(client: client, baseDir: baseDir)
         }
-
-        client.loadPendingFromDisk()
 
         DispatchQueue.global(qos: .utility).async {
             let asyncInfo = DeviceInfoCollector.collectAsync()
