@@ -556,9 +556,17 @@ final class UIKitWireframeTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         let s = try screen()
         let texts = allTexts(s)
-        XCTAssertTrue(texts.contains("Hello SwiftUI"), "SwiftUI text, read from accessibility: \(texts)")
-        XCTAssertTrue(texts.contains("Tap here"), "\(texts)")
         XCTAssertTrue(allNodes(s).contains { styleMap($0)["background-color"] == "#ff0000" }, "the red rectangle")
+        if host.view.accessibilityElementCount() > 0 || !(host.view.accessibilityElements?.isEmpty ?? true) {
+            // An assistive technology runs: SwiftUI describes its text.
+            XCTAssertTrue(texts.contains("Hello SwiftUI"), "SwiftUI text, read from accessibility: \(texts)")
+            XCTAssertTrue(texts.contains("Tap here"), "\(texts)")
+        } else {
+            // Its words are not readable: each text is a bar where it is drawn.
+            let bars = allNodes(s).filter { classes($0).contains("sk") }
+            XCTAssertEqual(bars.count, 2, "one bar per text: \(bars.map { $0.attributes["style"] ?? "" })")
+            XCTAssertFalse(texts.contains("Hello SwiftUI"))
+        }
     }
 }
 #endif

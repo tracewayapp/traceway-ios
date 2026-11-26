@@ -238,6 +238,41 @@ final class WireframeCapture {
         var clip: WireframeRect
         var maskText = false
         var blockImages = false
+        /// The layer whose bounds `transform` maps; nil above the windows.
+        var layer: CALayer?
+
+        /// The scope of what is inside a placed layer.
+        func entering(_ p: Placed, _ model: CALayer) -> Scope {
+            var inner = self
+            inner.transform = p.t
+            inner.layer = model
+            return inner
+        }
+    }
+
+    /// How the layers between a view's layer and its superview's map, when
+    /// UIKit put some in between: iOS 26 wraps the layer of many views (bars,
+    /// glass, alerts, labels with vibrancy) in a `_UIMultiLayer` that holds
+    /// the view's position. Nil when one of them hides the view.
+    private func wrapperTransform(_ model: CALayer, _ s: Scope) -> WireframeAffine? {
+        guard let reference = s.layer else { return .identity }
+        var chain: [CALayer] = []
+        var current = model.superlayer
+        while let layer = current, layer !== reference {
+            if chain.count >= 8 { return .identity }
+            chain.append(layer)
+            current = layer.superlayer
+        }
+        // Not under the scope's layer at all: placed as before.
+        guard current === reference else { return .identity }
+        var t = WireframeAffine.identity
+        for wrapper in chain.reversed() {
+            let layer = wrapper.presentation() ?? wrapper
+            if layer.isHidden || layer.opacity < 0.01 { return nil }
+            guard let local = WireframeCapture.localTransform(layer) else { return nil }
+            t = t.then(local)
+        }
+        return t
     }
 
     /// Where a layer is on screen.
@@ -305,6 +340,9 @@ final class WireframeCapture {
         if view.isHidden { return }
         let layer = view.layer.presentation() ?? view.layer
         if layer.isHidden || layer.opacity < 0.01 { return }
+        guard let wrapper = wrapperTransform(view.layer, scope) else { return }
+        var scope = scope
+        if wrapper != .identity { scope.transform = scope.transform.then(wrapper) }
         guard let p = place(layer, scope) else { return }
         let info = ClassInfo.of(view)
         if info.kind == .skip { return }
@@ -395,8 +433,7 @@ final class WireframeCapture {
         let shape = (layer as? CAShapeLayer).flatMap { shapeNode($0, view.layer, p) }
         let group = paint.paints || clips || opacity < 0.999 || view is UIWindow || custom || scrolls
             || !gradient.isEmpty || shape != nil
-        var inner = s
-        inner.transform = p.t
+        var inner = s.entering(p, view.layer)
         if !group {
             visitSublayers(of: view, inner, &out)
             trailing?(&out, inner)
@@ -479,6 +516,10 @@ final class WireframeCapture {
             ))
             return
         }
+        if info.kind == .swiftUIText {
+            swiftUIText(model, p, scope, &out)
+            return
+        }
         let clips = layer.masksToBounds || layer.mask != nil
         if clips && p.box.isEmpty { return }
         var paint = box(layer, p, clips: clips)
@@ -492,23 +533,28 @@ final class WireframeCapture {
         } else if let textLayer = layer as? CATextLayer {
             leaf = textLayerNode(textLayer, model, p, scope)
         } else if info.kind == .swiftUIImage || (info.kind == .imageLayer && layer.contents != nil) {
-            cls = "im"
-            paint.paints = true
+            if let glyph = smallImageGlyph(layer, p, scope) {
+                // A small picture with see-through parts is an icon: its
+                // shape, in a neutral gray (its colors are not read).
+                cls = "ic " + glyph
+                extra = "color:#8e8e93;"
+            } else {
+                cls = "im"
+                paint.paints = true
+            }
         }
         let opacity = Double(layer.opacity)
         let hasSublayers = !(model.sublayers?.isEmpty ?? true)
         if !paint.paints && extra.isEmpty && leaf == nil && cls == nil && !clips && opacity >= 0.999 {
             // Only a place for its sublayers.
-            var inner = scope
-            inner.transform = p.t
+            let inner = scope.entering(p, model)
             visitSublayers(of: model, inner, &out)
             return
         }
         if !hasSublayers && leaf == nil && cls == nil && !paint.paints && extra.isEmpty { return }
         var style = geometry(scope, p) + paint.css + extra
         if opacity < 0.999 { style += "opacity:\(WireframeCSS.num3(opacity));" }
-        var inner = scope
-        inner.transform = p.t
+        var inner = scope.entering(p, model)
         inner.origin = p.node
         if clips {
             style += "overflow:hidden;"
@@ -873,8 +919,7 @@ final class WireframeCapture {
             if align != "left" { textStyle += "text-align:\(align);" }
             children.append(element(id(field, 1), textStyle, [text(id(field, 2), visible)], cls: "t n k"))
         }
-        var inner = s
-        inner.transform = p.t
+        var inner = s.entering(p, field.layer)
         inner.origin = p.node
         if clips {
             style += "overflow:hidden;"
@@ -929,8 +974,7 @@ final class WireframeCapture {
         // segment or a badge over a picture: they paint over the image.
         var children: [VNode] = []
         if !(view.subviews.isEmpty && (view.layer.sublayers?.isEmpty ?? true)) {
-            var inner = s
-            inner.transform = p.t
+            var inner = s.entering(p, view.layer)
             inner.origin = p.node
             if view.clipsToBounds || layer.masksToBounds { inner.clip = s.clip.intersection(p.box) }
             visitSublayers(of: view, inner, &children)
@@ -1208,8 +1252,7 @@ final class WireframeCapture {
         }
         let opacity = Double(layer.opacity)
         if opacity < 0.999 { style += "opacity:\(WireframeCSS.num3(opacity));" }
-        var inner = s
-        inner.transform = p.t
+        var inner = s.entering(p, view.layer)
         inner.origin = p.node
         if clips {
             style += "overflow:hidden;"
@@ -1386,6 +1429,41 @@ final class WireframeCapture {
         return best
     }
 
+    /// A layer SwiftUI draws one `Text` into. Its words are only known when
+    /// the hosting view's accessibility describes them, which iOS does while
+    /// an assistive technology runs; otherwise the text is a neutral bar
+    /// where its lines are, as a masked text would be.
+    private func swiftUIText(_ model: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+        let style = geometry(s, p)
+        if let item = takeText(at: p.box), let visible = shown(item.label, p.box, s) {
+            let color = screenWindow.map { textColor(for: item, $0) } ?? .black
+            out.append(element(
+                id(model), style + swiftUITextCss(height: p.height, color: color),
+                [text(id(model, 1), visible)], cls: p.height < 40 ? "t n" : "t"
+            ))
+            return
+        }
+        if privacy(p.box, s) == .hide || p.width < 1 || p.height < 1 { return }
+        out.append(element(id(model), style, [], cls: p.height <= 48 ? "sk" : "sk sm"))
+    }
+
+    /// The glyph class of a small layer picture that has see-through pixels
+    /// (an icon: a photo is opaque and stays a placeholder), drawn as its
+    /// shape only.
+    private func smallImageGlyph(_ layer: CALayer, _ p: Placed, _ s: Scope) -> String? {
+        guard p.width <= 40, p.height <= 40, !s.blockImages, privacy(p.box, s) == .show,
+              let contents = layer.contents
+        else { return nil }
+        let ref = contents as AnyObject
+        guard CFGetTypeID(ref) == CGImage.typeID else { return nil }
+        let image = ref as! CGImage
+        guard image.alphaInfo != .none, image.alphaInfo != .noneSkipLast, image.alphaInfo != .noneSkipFirst,
+              let glyph = glyphs?.lookup(image, size: CGSize(width: p.width, height: p.height))
+        else { return nil }
+        shownGlyphs.insert(glyph.cls)
+        return glyph.cls
+    }
+
     /// A view SwiftUI draws text and shapes into. When the hosting view's
     /// accessibility names text at its place, that text is shown.
     private func swiftUIDrawing(_ view: UIView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
@@ -1442,6 +1520,8 @@ private struct ClassInfo: Equatable {
         case swiftUIHost
         case swiftUIDrawing
         case swiftUIImage
+        /// A layer SwiftUI draws a `Text` into.
+        case swiftUIText
         case imageLayer
         /// A view or layer whose pixels the system draws: a placeholder with
         /// this label.
@@ -1499,6 +1579,8 @@ private struct ClassInfo: Equatable {
             info.kind = .native("Native view")
         } else if has("HostingView") {
             info.kind = .swiftUIHost
+        } else if has("CGDrawingLayer") {
+            info.kind = .swiftUIText
         } else if has("CGDrawingView") || (has("SwiftUI") && has("_UIGraphicsView")) {
             info.kind = .swiftUIDrawing
         } else if has("SwiftUI") && has("ImageLayer") {

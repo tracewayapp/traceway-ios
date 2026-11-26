@@ -195,6 +195,24 @@ final class WireframeGlyphs {
         return glyph
     }
 
+    private var byPicture: [ObjectIdentifier: (picture: CGImage, glyph: Glyph)] = [:]
+
+    /// The glyph of a picture a layer shows (stretched over the layer, the
+    /// default `contentsGravity`), shape only; nil once too many were drawn.
+    func lookup(_ picture: CGImage, size: CGSize) -> Glyph? {
+        let key = ObjectIdentifier(picture)
+        if let known = byPicture[key], known.picture === picture { return known.glyph }
+        guard all.count < maxGlyphs else { return nil }
+        let cls = "g\(next)"
+        next += 1
+        let glyph = Glyph(cls: cls, css: draw(UIImage(cgImage: picture), size: size, contentMode: .scaleToFill,
+                                              color: false, cls: cls))
+        // The picture is held, so its identifier is not reused while known.
+        byPicture[key] = (picture, glyph)
+        all.append(glyph)
+        return glyph
+    }
+
     private static func placement(_ mode: UIView.ContentMode) -> ImagePlacement {
         switch mode {
         case .scaleToFill, .redraw: return .fill

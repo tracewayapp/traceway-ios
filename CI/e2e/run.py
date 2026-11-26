@@ -109,8 +109,9 @@ def snapshot(api, since, instance):
     for r in logs:
         name = event_name(r)
         names.setdefault('(console)' if name in ('', 'browser.console') else name, []).append(r)
-    spans = [s for s in api.page('/api/spans/search', since)
-             if instance in json.dumps(s.get('resourceAttributes') or s)]
+    # Span search rows carry no resource attributes: the run's spans are the
+    # SDK's since it started.
+    spans = [s for s in api.page('/api/spans/search', since) if s.get('scopeName') == 'traceway-ios']
     issues = api.page('/api/exception-stack-traces', since, {'orderBy': 'last_seen'})
     sessions = [s for s in api.page('/api/sessions', since)
                 if (s.get('attributes') or {}).get('service.instance.id') == instance]
@@ -414,9 +415,12 @@ def main():
         crashes = [attrs(r) for r in names.get('exception', []) if attrs(r).get('traceway.crash') in (True, 'true')]
         check(len(crashes) == 1, "the earlier run's crash was reported", f'{len(crashes)}')
         crash_stack = crashes[0].get('exception.stacktrace', '') if crashes else ''
-        check(crash_stack.startswith('Fatal Signal SIGSEGV (11)') and 'os: ios arch: arm64' in crash_stack
-              and '2dd71042118432be8f92dd4e3d3fe24a 0x460 TracewayExample' in crash_stack,
-              'the crash carries its iOS stack trace with the binary images', crash_stack[:160])
+        # The server symbolicates the binary-image frames; without the build's
+        # dSYM uploaded a frame names its image and offset.
+        check(crash_stack.startswith('Fatal Signal SIGSEGV (11)')
+              and ('TracewayExample+0x460' in crash_stack
+                   or '2dd71042118432be8f92dd4e3d3fe24a 0x460 TracewayExample' in crash_stack),
+              'the crash carries its iOS stack trace, symbolicated by the server', crash_stack[:160])
         messages = names.get('traceway.message', [])
         check(any((r.get('body') or '') == 'e2e after restart' or 'e2e after restart' in json.dumps(r) for r in messages),
               'the message after the restart was sent', f'{len(messages)} messages')

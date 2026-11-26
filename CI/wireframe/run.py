@@ -33,7 +33,7 @@ Needs Node with Playwright (--playwright), Chromium (--chromium) and
 rrweb-player (--rrweb-player, default the dashboard's copy in
 ../traceway/frontend/node_modules).
 """
-import argparse, html, json, os, shutil, subprocess, sys, tempfile
+import argparse, html, json, os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -337,7 +337,8 @@ def fetch(args, out):
     if args.dir:
         source = os.path.abspath(args.dir)
     else:
-        source = tempfile.mkdtemp(prefix='tw-gallery-')
+        source = os.path.join(out, 'download')
+        shutil.rmtree(source, ignore_errors=True)
         subprocess.run(['gh', 'run', 'download', str(args.gh_run), '-n', 'wireframe-gallery', '-D', source,
                         '-R', args.repo], check=True)
     if os.path.abspath(source) != os.path.abspath(out):
