@@ -88,6 +88,10 @@ jobs:
           echo "Using simulator: ${NAME:-iPhone 16}"
 
       - name: Run XCTest
+        env:
+          # Passed to the test process as WIREFRAME_GALLERY_OUT: where the
+          # wireframe gallery writes its recording and the app's pictures.
+          TEST_RUNNER_WIREFRAME_GALLERY_OUT: ${{ github.workspace }}/wireframe-gallery
         run: |
           xcodebuild test \
             -project TracewayCI.xcodeproj \
@@ -100,6 +104,15 @@ jobs:
         with:
           name: simulator-xcresult
           path: sim-results.xcresult
+          if-no-files-found: ignore
+
+      # `python3 CI/wireframe/run.py --gh-run <id>` renders it in
+      # rrweb-player and compares every checkpoint with the app's picture.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wireframe-gallery
+          path: wireframe-gallery
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------

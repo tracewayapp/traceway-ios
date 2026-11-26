@@ -26,6 +26,14 @@ final class WireframeCapture {
     /// Reads SwiftUI text from the accessibility elements of hosting views.
     static var readsSwiftUIText = true
 
+    /// Draws the shapes of symbols and template images; without it they are
+    /// squares of their color.
+    var glyphs: WireframeGlyphs? = WireframeGlyphs()
+    /// How long a glyph's rule stays on the page after its icon left the
+    /// screen, so an icon that comes back does not add it again.
+    static let glyphLingerMs: Int64 = 10_000
+    private var shownGlyphs = Set<String>()
+
     /// The window whose coordinate space the frames are in.
     private(set) weak var screenWindow: UIWindow?
 
@@ -79,6 +87,7 @@ final class WireframeCapture {
         blankRects = []
         blurRects = []
         hostTexts = []
+        shownGlyphs = []
 
         let width = Double(size.width), height = Double(size.height)
         let screenRect = WireframeRect(x: 0, y: 0, width: width, height: height)
@@ -96,6 +105,7 @@ final class WireframeCapture {
             let frame = main.convert(keyboard, from: main.screen.coordinateSpace)
             children.append(keyboardNode(frame, dark: main.traitCollection.userInterfaceStyle == .dark))
         }
+        children.insert(contentsOf: glyphStyles(), at: 0)
         let screen = element(
             screenNodeId,
             "width:\(WireframeCSS.px(width));height:\(WireframeCSS.px(height))",
@@ -137,6 +147,28 @@ final class WireframeCapture {
         )
         let style = place + colors + "display:flex;align-items:center;justify-content:center;font-size:13px;"
         return element(keyboardNodeId, style, [text(keyboardLabelTextId, "Keyboard")])
+    }
+
+    /// A style node for each glyph shown lately, first on the screen (a
+    /// style draws nothing), in a stable order.
+    private func glyphStyles() -> [VNode] {
+        guard let glyphs = glyphs else { return [] }
+        var styles: [VNode] = []
+        for glyph in glyphs.all {
+            if shownGlyphs.contains(glyph.cls) { glyph.lastShownMs = nowMs }
+            guard let css = glyph.css, glyph.lastShownMs > 0,
+                  nowMs - glyph.lastShownMs <= WireframeCapture.glyphLingerMs else { continue }
+            let styleId: Int
+            if let existing = glyph.styleId {
+                styleId = existing
+            } else {
+                styleId = WireframeCapture.nextId
+                WireframeCapture.nextId += 1
+                glyph.styleId = styleId
+            }
+            styles.append(intern(VNode(element: styleId, tag: "style", attributes: ["_cssText": css], children: [])))
+        }
+        return styles.sorted { $0.id < $1.id }
     }
 
     // MARK: - Ids and interning
@@ -326,6 +358,10 @@ final class WireframeCapture {
             activity(spinner, layer, p, s, &out)
         } else if let pages = view as? UIPageControl {
             pageControl(pages, layer, p, s, &out)
+        } else if let segmented = view as? UISegmentedControl {
+            self.segmented(segmented, layer, p, s, &out)
+        } else if let stepper = view as? UIStepper {
+            self.stepper(stepper, layer, p, s, &out)
         } else if let effect = view as? UIVisualEffectView {
             visualEffect(effect, layer, p, s, &out)
         } else if info.kind == .swiftUIHost && WireframeCapture.readsSwiftUIText {
@@ -674,6 +710,10 @@ final class WireframeCapture {
         let textColor = label.isHighlighted ? (label.highlightedTextColor ?? label.textColor) : label.textColor
         let color = WireframeCapture.color(textColor, traits) ?? WireframeCapture.color(UIColor.label, traits)
         style += WireframeCapture.fontCss(font, color: color)
+        let content = label.isHighlighted ? nil : runs(
+            label.attributedText, font: font, color: color, traits: traits, owner: label,
+            masked: privacy(p.box, s) == .mask
+        )
         let rtl = label.effectiveUserInterfaceLayoutDirection == .rightToLeft
         let align = WireframeCapture.align(label.textAlignment, rtl: rtl)
         if rtl { style += "direction:rtl;" }
@@ -709,7 +749,50 @@ final class WireframeCapture {
             if label.numberOfLines > 0 && !style.contains("overflow:hidden") { style += "overflow:hidden;" }
             cls = "t"
         }
-        out.append(element(id(label), style, [text(id(label, 1), shownText)], cls: cls))
+        out.append(element(id(label), style, content ?? [text(id(label, 1), shownText)], cls: cls))
+    }
+
+    /// The runs of `attributed` as spans when some differ from the font and
+    /// color of the text around them; nil when the text is all one style.
+    private func runs(
+        _ attributed: NSAttributedString?, font: UIFont, color: WireframeColor?,
+        traits: UITraitCollection, owner: AnyObject, masked: Bool
+    ) -> [VNode]? {
+        guard let attributed = attributed, attributed.length > 0 else { return nil }
+        var parts: [(String, String)] = []
+        var styled = false
+        let whole = attributed.string as NSString
+        attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length)) { attributes, range, stop in
+            if parts.count >= 50 {
+                stop.pointee = true
+                return
+            }
+            var css = ""
+            if let runFont = attributes[.font] as? UIFont, runFont != font {
+                css += WireframeCapture.fontCss(runFont, color: nil)
+            }
+            if let runColor = (attributes[.foregroundColor] as? UIColor).flatMap({ WireframeCapture.color($0, traits) }),
+               runColor != color {
+                css += "color:\(WireframeCSS.color(runColor));"
+            }
+            if let background = (attributes[.backgroundColor] as? UIColor).flatMap({ WireframeCapture.color($0, traits) }) {
+                css += WireframeCSS.fill(background)
+            }
+            var lines: [String] = []
+            if let underline = attributes[.underlineStyle] as? Int, underline != 0 { lines.append("underline") }
+            if let strike = attributes[.strikethroughStyle] as? Int, strike != 0 { lines.append("line-through") }
+            if !lines.isEmpty { css += "text-decoration:\(lines.joined(separator: " "));" }
+            if attributes[.link] != nil && lines.isEmpty { css += "text-decoration:underline;" }
+            if !css.isEmpty { styled = true }
+            let piece = whole.substring(with: range)
+            parts.append((masked ? WireframeCSS.mask(piece) : piece, css))
+        }
+        guard styled else { return nil }
+        var nodes: [VNode] = []
+        for (i, part) in parts.enumerated() where !part.0.isEmpty {
+            nodes.append(element(id(owner, 10 + 2 * i), part.1, [text(id(owner, 11 + 2 * i), part.0)], tag: "span"))
+        }
+        return nodes
     }
 
     private func fieldBorder(_ field: UITextField, dark: Bool, paints: Bool) -> (fill: String, radius: String, shadows: [String]) {
@@ -819,7 +902,10 @@ final class WireframeCapture {
                 textStyle += "line-height:\(lineHeight);"
                 if align != "left" { textStyle += "text-align:\(align);" }
                 if rtl { textStyle += "direction:rtl;" }
-                children.append(element(id(view, 1), textStyle, [text(id(view, 2), visible)], cls: "t"))
+                let maskTyped = view.isEditable && maskAllInputs
+                let content = runs(view.attributedText, font: font, color: color, traits: traits, owner: view,
+                                   masked: maskTyped || privacy(p.box, s) == .mask)
+                children.append(element(id(view, 1), textStyle, content ?? [text(id(view, 2), visible)], cls: "t"))
             }
         }
         out.append(element(id(view), style, children))
@@ -830,9 +916,19 @@ final class WireframeCapture {
     private func image(_ view: UIImageView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         let (baseStyle, paints) = boxCss(s, p, layer, view)
         var style = baseStyle
+        // An image view can hold views of its own, such as the label of a
+        // segment or a badge over a picture: they paint over the image.
+        var children: [VNode] = []
+        if !(view.subviews.isEmpty && (view.layer.sublayers?.isEmpty ?? true)) {
+            var inner = s
+            inner.transform = p.t
+            inner.origin = p.node
+            if view.clipsToBounds || layer.masksToBounds { inner.clip = s.clip.intersection(p.box) }
+            visitSublayers(of: view, inner, &children)
+        }
         let image = view.isHighlighted ? (view.highlightedImage ?? view.image) : view.image
         guard let shownImage = image, p.width > 0, p.height > 0 else {
-            if paints { out.append(element(id(view), style, [])) }
+            if paints || !children.isEmpty { out.append(element(id(view), style, children)) }
             return
         }
         let template = shownImage.renderingMode == .alwaysTemplate
@@ -840,17 +936,135 @@ final class WireframeCapture {
         if template && !s.blockImages && privacy(p.box, s) == .show {
             let tint = WireframeCapture.color(view.tintColor, view.traitCollection) ?? .black
             style += "color:\(WireframeCSS.color(tint));"
-            out.append(element(id(view), style, [], cls: "ic"))
+            if let glyph = glyphs?.lookup(shownImage, size: CGSize(width: p.width, height: p.height), contentMode: view.contentMode) {
+                shownGlyphs.insert(glyph.cls)
+                out.append(element(id(view), style, children, cls: "ic " + glyph.cls))
+            } else {
+                out.append(element(id(view), style, children, cls: "ic"))
+            }
+        } else if WireframeCapture.isStretchable(shownImage) && !children.isEmpty {
+            // A stretched background, such as a control's: its pixels are
+            // not read, and a placeholder over the content would hide it.
+            out.append(element(id(view), style, children))
         } else {
             // Pixels are never recorded: an image is a placeholder.
-            out.append(element(id(view), style, [], cls: "im"))
+            out.append(element(id(view), style, children, cls: "im"))
         }
+    }
+
+    /// Whether an image is drawn stretched between cap insets, the way
+    /// backgrounds and borders are.
+    private static func isStretchable(_ image: UIImage) -> Bool {
+        let insets = image.capInsets
+        return insets.top > 0 || insets.left > 0 || insets.bottom > 0 || insets.right > 0
+    }
+
+    /// The fill UIKit's grouped controls (segmented control, stepper) use
+    /// behind their content.
+    private static func controlFill(dark: Bool) -> String {
+        dark ? "background-color:rgba(118,118,128,.24);" : "background-color:rgba(118,118,128,.12);"
+    }
+
+    /// A segmented control as UIKit draws it: a rounded track, the selected
+    /// segment raised on it, and each segment's title or image centered in
+    /// its share of the width. The control's own subviews are internal.
+    private func segmented(_ control: UISegmentedControl, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+        let traits = control.traitCollection
+        let dark = traits.userInterfaceStyle == .dark
+        let count = min(control.numberOfSegments, 20)
+        var style = geometry(s, p) + WireframeCapture.controlFill(dark: dark)
+            + "border-radius:\(WireframeCSS.px(min(9, p.height / 2)));"
+        if !control.isEnabled { style += "opacity:.5;" }
+        let opacity = Double(layer.opacity)
+        if opacity < 0.999 { style += "opacity:\(WireframeCSS.num3(opacity));" }
+        guard count > 0, p.width > 0 else {
+            out.append(element(id(control), style, []))
+            return
+        }
+        // Widths the app set, the rest sharing what is left.
+        var widths = (0..<count).map { Double(control.widthForSegment(at: $0)) }
+        let fixed = widths.filter { $0 > 0 }.reduce(0, +)
+        let auto = widths.filter { $0 <= 0 }.count
+        let share = auto > 0 ? max(0, (p.width - fixed) / Double(auto)) : 0
+        widths = widths.map { $0 > 0 ? $0 : share }
+        let selected = control.selectedSegmentIndex
+        let normalAttributes = control.titleTextAttributes(for: .normal) ?? [:]
+        let selectedAttributes = control.titleTextAttributes(for: .selected) ?? [:]
+        var children: [VNode] = []
+        var x = 0.0
+        for i in 0..<count {
+            let w = widths[i]
+            let isSelected = i == selected
+            if isSelected {
+                let fill = WireframeCapture.color(control.selectedSegmentTintColor, traits)
+                    ?? (dark ? WireframeColor(r: 0.388, g: 0.388, b: 0.4) : .white)
+                let knob = WireframeCSS.rect(left: x + 2, top: 2, width: max(0, w - 4), height: max(0, p.height - 4))
+                    + "border-radius:\(WireframeCSS.px(min(7, p.height / 2 - 2)));"
+                    + WireframeCSS.fill(fill) + "box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);"
+                children.append(element(id(control, 1), knob, []))
+            } else if i > 0 && i - 1 != selected {
+                let line = WireframeCSS.rect(left: x - 0.5, top: p.height * 0.25, width: 1, height: p.height * 0.5)
+                    + (dark ? "background-color:rgba(84,84,88,.6);" : "background-color:rgba(60,60,67,.18);")
+                children.append(element(id(control, 100 + i), line, []))
+            }
+            let place = WireframeCSS.rect(left: x, top: 0, width: w, height: p.height)
+            if let title = control.titleForSegment(at: i), !title.isEmpty {
+                let attributes = isSelected ? selectedAttributes.merging(normalAttributes) { a, _ in a } : normalAttributes
+                let font = attributes[.font] as? UIFont
+                    ?? UIFont.systemFont(ofSize: 13, weight: isSelected ? .semibold : .regular)
+                var color = (attributes[.foregroundColor] as? UIColor).flatMap { WireframeCapture.color($0, traits) }
+                    ?? WireframeCapture.color(UIColor.label, traits)
+                if !control.isEnabledForSegment(at: i) { color = color?.withAlpha((color?.a ?? 1) * 0.35) }
+                let visible = shown(title, p.box, s) ?? ""
+                let textStyle = place + WireframeCapture.fontCss(font, color: color)
+                    + "line-height:\(WireframeCSS.px(p.height));align-items:center;justify-content:center;"
+                children.append(element(id(control, 200 + 2 * i), textStyle,
+                                        visible.isEmpty ? [] : [text(id(control, 201 + 2 * i), visible)], cls: "t n"))
+            } else if control.imageForSegment(at: i) != nil {
+                let side = min(w, p.height) * 0.6
+                let icon = WireframeCSS.rect(left: x + (w - side) / 2, top: (p.height - side) / 2, width: side, height: side)
+                    + "color:\(WireframeCSS.color(WireframeCapture.color(UIColor.label, traits) ?? .black));"
+                children.append(element(id(control, 200 + 2 * i), icon, [], cls: "ic"))
+            }
+            x += w
+        }
+        out.append(element(id(control), style, children))
+    }
+
+    /// A stepper: a rounded track split in two, a minus and a plus, each
+    /// faded where the value cannot go further.
+    private func stepper(_ stepper: UIStepper, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+        let traits = stepper.traitCollection
+        let dark = traits.userInterfaceStyle == .dark
+        var style = geometry(s, p) + WireframeCapture.controlFill(dark: dark)
+            + "border-radius:\(WireframeCSS.px(min(8, p.height / 2)));"
+        if !stepper.isEnabled { style += "opacity:.5;" }
+        let half = p.width / 2
+        let ink = WireframeCapture.color(UIColor.label, traits) ?? .black
+        let atMin = !stepper.wraps && stepper.value <= stepper.minimumValue
+        let atMax = !stepper.wraps && stepper.value >= stepper.maximumValue
+        func sign(_ role: Int, _ glyph: String, _ left: Double, _ faded: Bool) -> VNode {
+            let color = faded ? ink.withAlpha(ink.a * 0.3) : ink
+            let place = WireframeCSS.rect(left: left, top: 0, width: half, height: p.height)
+                + "font-size:20px;line-height:\(WireframeCSS.px(p.height));color:\(WireframeCSS.color(color));"
+                + "align-items:center;justify-content:center;"
+            return element(id(stepper, role), place, [text(id(stepper, role + 1), glyph)], cls: "t n")
+        }
+        let divider = WireframeCSS.rect(left: half - 0.5, top: p.height * 0.25, width: 1, height: p.height * 0.5)
+            + (dark ? "background-color:rgba(84,84,88,.6);" : "background-color:rgba(60,60,67,.29);")
+        out.append(element(id(stepper), style, [
+            sign(1, "\u{2212}", 0, atMin),
+            element(id(stepper, 3), divider, []),
+            sign(4, "+", half, atMax),
+        ]))
     }
 
     private func toggle(_ toggle: UISwitch, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         let traits = toggle.traitCollection
         let dark = traits.userInterfaceStyle == .dark
-        let w = min(51, p.width), h = min(31, p.height)
+        // The switch's bounds are its track: 51 x 31 up to iOS 18, 63 x 28
+        // with iOS 26's wider track and capsule knob.
+        let w = p.width, h = p.height
         let cx = p.width / 2, cy = p.height / 2
         let on = toggle.isOn
         let track = on
@@ -858,7 +1072,8 @@ final class WireframeCapture {
             : (dark ? "background-color:rgba(120,120,128,.32);" : "background-color:rgba(120,120,128,.16);")
         let thumb = WireframeCapture.color(toggle.thumbTintColor, traits) ?? .white
         let knob = max(0, h - 4)
-        let kx = on ? w - h + (h - knob) / 2 : (h - knob) / 2
+        let knobWidth = w / h > 2 ? min(knob * 1.5, w / 2) : knob
+        let kx = on ? w - knobWidth - (h - knob) / 2 : (h - knob) / 2
         var style = geometry(s, p)
         if !toggle.isEnabled { style += "opacity:.5;" }
         let opacity = Double(layer.opacity)
@@ -867,8 +1082,8 @@ final class WireframeCapture {
         let trackStyle = WireframeCSS.rect(left: cx - w / 2, top: cy - h / 2, width: w, height: h)
             + "border-radius:\(trackRadius);" + track
         let thumbFill = WireframeCSS.color(thumb)
-        let thumbStyle = WireframeCSS.rect(left: kx, top: (h - knob) / 2, width: knob, height: knob)
-            + "border-radius:50%;background-color:\(thumbFill);box-shadow:0 2px 6px rgba(0,0,0,.2);"
+        let thumbStyle = WireframeCSS.rect(left: kx, top: (h - knob) / 2, width: knobWidth, height: knob)
+            + "border-radius:\(WireframeCSS.px(knob / 2));background-color:\(thumbFill);box-shadow:0 2px 6px rgba(0,0,0,.2);"
         let knobNode = element(id(toggle, 2), thumbStyle, [])
         out.append(element(id(toggle), style, [element(id(toggle, 1), trackStyle, [knobNode])]))
     }
@@ -900,7 +1115,8 @@ final class WireframeCapture {
         let thumbStyle = WireframeCSS.rect(
             left: Double(thumb.minX) - ox, top: Double(thumb.minY) - oy,
             width: Double(thumb.width), height: Double(thumb.height)
-        ) + "border-radius:50%;background-color:\(thumbFill);box-shadow:0 .5px 4px rgba(0,0,0,.25),0 0 0 .5px rgba(0,0,0,.04);"
+        ) + "border-radius:\(WireframeCSS.px(min(Double(thumb.width), Double(thumb.height)) / 2));"
+            + "background-color:\(thumbFill);box-shadow:0 .5px 4px rgba(0,0,0,.25),0 0 0 .5px rgba(0,0,0,.04);"
         out.append(element(id(slider), style, [
             element(id(slider, 1), maxStyle, []),
             element(id(slider, 2), minStyle, []),
@@ -960,8 +1176,21 @@ final class WireframeCapture {
         let clips = view.clipsToBounds || layer.masksToBounds
         let paint = box(layer, p, clips: true)
         var style = geometry(s, p) + paint.css
-        if view.effect is UIBlurEffect {
-            let dark = view.traitCollection.userInterfaceStyle == .dark
+        let dark = view.traitCollection.userInterfaceStyle == .dark
+        if let effect = view.effect, NSStringFromClass(type(of: effect)).contains("Glass") {
+            // iOS 26's Liquid Glass: a lighter frost with a bright rim.
+            if !paint.paints {
+                style += dark ? "background-color:rgba(60,60,64,.55);" : "background-color:rgba(255,255,255,.6);"
+            }
+            if !style.contains("border-radius") {
+                // Bars and buttons are capsules; a large panel is rounded.
+                let side = min(p.width, p.height)
+                style += "border-radius:\(WireframeCSS.px(side <= 80 ? side / 2 : 26));"
+            }
+            style += "-webkit-backdrop-filter:blur(12px) saturate(1.6);backdrop-filter:blur(12px) saturate(1.6);"
+                + (dark ? "box-shadow:inset 0 0 0 .5px rgba(255,255,255,.18),0 4px 16px rgba(0,0,0,.3);"
+                        : "box-shadow:inset 0 0 0 .5px rgba(255,255,255,.7),0 4px 16px rgba(0,0,0,.08);")
+        } else if view.effect is UIBlurEffect {
             style += (dark ? "background-color:rgba(30,30,30,.72);" : "background-color:rgba(250,250,250,.72);")
                 + "-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);"
         }

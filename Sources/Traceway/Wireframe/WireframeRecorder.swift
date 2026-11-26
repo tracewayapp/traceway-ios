@@ -63,6 +63,10 @@ final class WireframeRecorder: ReplaySource {
     private var touchStarts: [Int: (x: Double, y: Double, ms: Int64)] = [:]
     private var captureSeconds: Double = 0
     private var captureCount = 0
+
+    /// The windows recorded, back to front; the app's visible windows when
+    /// nil. Main thread only.
+    var windows: (() -> [UIWindow])?
     #endif
 
     init(maxFrames: Int = 150, fps: Int = 4, debug: Bool = false, now: @escaping () -> Int64 = Clock.nowMs) {
@@ -466,6 +470,9 @@ final class WireframeRecorder: ReplaySource {
         keyboardFrame = frame.isEmpty || (screen != nil && frame.minY >= screen!.maxY) ? nil : frame
     }
 
+    /// Captures a frame now, off the timer. Main thread only.
+    func captureNow() { tick() }
+
     private func tick() {
         lock.lock()
         let active = running && !paused
@@ -479,9 +486,12 @@ final class WireframeRecorder: ReplaySource {
         if reset { capture.reset() }
         capture.maskAllInputs = mask
         let started = CFAbsoluteTimeGetCurrent()
-        let frame = capture.captureScreen(
-            timestampMs: now(), href: screenName?(), keyboardFrame: keyboardFrame
-        )
+        let frame: WireframeFrame?
+        if let windows = windows?() {
+            frame = capture.capture(windows: windows, timestampMs: now(), href: screenName?(), keyboardFrame: keyboardFrame)
+        } else {
+            frame = capture.captureScreen(timestampMs: now(), href: screenName?(), keyboardFrame: keyboardFrame)
+        }
         captureSeconds += CFAbsoluteTimeGetCurrent() - started
         captureCount += 1
         if debug, captureCount % 100 == 0 {
