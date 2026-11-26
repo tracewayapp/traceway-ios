@@ -314,15 +314,15 @@ final class GalleryDriver {
             guard lines.count < 4000, depth < 80 else { return }
             let layer = model.presentation() ?? model
             let frame = layer.convert(layer.bounds, to: root.presentation() ?? root)
-            var parts = [String(repeating: " ", count: depth) + NSStringFromClass(type(of: model))]
+            var parts = [String(repeating: " ", count: depth) + NSStringFromClass(Swift.type(of: model))]
             if let view = model.delegate as? UIView {
-                parts.append("view=" + NSStringFromClass(type(of: view)))
+                parts.append("view=" + NSStringFromClass(Swift.type(of: view)))
                 if let image = (view as? UIImageView)?.image {
                     parts.append("image(symbol=\(image.isSymbolImage) mode=\(image.renderingMode.rawValue) size=\(image.size) caps=\(image.capInsets))")
                 }
                 if let label = view as? UILabel { parts.append("text=\"\(label.text ?? "")\" lines=\(label.numberOfLines)") }
                 if view.isHidden { parts.append("HIDDEN-VIEW") }
-                if NSStringFromClass(type(of: view)).contains("Hosting") {
+                if NSStringFromClass(Swift.type(of: view)).contains("Hosting") {
                     parts.append("ax=\(view.accessibilityElements?.count ?? -1)/\(view.accessibilityElementCount())")
                 }
                 if view.responds(to: NSSelectorFromString("cornerConfiguration")),
@@ -336,7 +336,7 @@ final class GalleryDriver {
             if layer.backgroundColor != nil { parts.append("bg=" + color(layer.backgroundColor)) }
             if layer.cornerRadius > 0 { parts.append(String(format: "radius=%.1f curve=%@", layer.cornerRadius, layer.cornerCurve.rawValue)) }
             if layer.masksToBounds { parts.append("clips") }
-            if let mask = layer.mask { parts.append("mask=" + NSStringFromClass(type(of: mask))) }
+            if let mask = layer.mask { parts.append("mask=" + NSStringFromClass(Swift.type(of: mask))) }
             if layer.borderWidth > 0 { parts.append("border=\(layer.borderWidth) " + color(layer.borderColor)) }
             if layer.shadowOpacity > 0 { parts.append("shadow=\(layer.shadowOpacity)") }
             if !CATransform3DIsIdentity(layer.transform) {
@@ -351,11 +351,11 @@ final class GalleryDriver {
             if let shape = layer as? CAShapeLayer, let path = shape.path {
                 parts.append("path=\(path.boundingBox) fill=" + color(shape.fillColor) + " stroke=" + color(shape.strokeColor))
             }
-            if NSStringFromClass(type(of: model)).contains("Portal"),
+            if NSStringFromClass(Swift.type(of: model)).contains("Portal"),
                model.responds(to: NSSelectorFromString("sourceLayer")),
                let source = model.value(forKey: "sourceLayer") as? CALayer {
                 let sourceFrame = source.convert(source.bounds, to: root)
-                parts.append("PORTAL source=\(NSStringFromClass(type(of: source))) at \(sourceFrame)")
+                parts.append("PORTAL source=\(NSStringFromClass(Swift.type(of: source))) at \(sourceFrame)")
             }
             lines.append(parts.joined(separator: " "))
             for sublayer in model.sublayers ?? [] { walk(sublayer, depth + 1) }
