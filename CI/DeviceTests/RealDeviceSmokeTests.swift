@@ -21,19 +21,41 @@ final class RealDeviceSmokeTests: XCTestCase {
 
         let client = Traceway.start(
             connectionString: dsn,
-            options: TracewayOptions(debug: true, version: "ci-device")
+            options: TracewayOptions(debug: true, version: "ci-device", screenCapture: true)
         )
         XCTAssertNotNil(client, "Traceway.start should succeed on-device")
         XCTAssertNotNil(TracewayClient.shared)
-
-        XCTAssertEqual(client?.currentDeviceAttributes()["os.name"], "ios")
+        XCTAssertEqual(client?.instanceId.count, 36)
+        XCTAssertNotNil(client?.currentSessionId)
 
         struct DeviceSmokeError: Error {}
+        Traceway.log("device smoke breadcrumb")
         Traceway.capture(message: "device smoke message")
         Traceway.capture(DeviceSmokeError())
         Traceway.flush(timeout: 8)
 
         XCTAssertNotNil(TracewayClient.shared)
+        Traceway.shutdown()
+        XCTAssertNil(TracewayClient.shared)
+    }
+
+    /// Walks the host app's real windows with the wireframe recorder.
+    func testWireframeCapturesTheHostApp() throws {
+        let frame = try XCTUnwrap(WireframeCapture().captureScreen(
+            timestampMs: Clock.nowMs(), href: "/", keyboardFrame: nil
+        ), "the host app has a window")
+        XCTAssertGreaterThan(frame.width, 0)
+        XCTAssertGreaterThan(frame.height, 0)
+        let screen = try XCTUnwrap(frame.screen)
+        XCTAssertFalse(screen.children.isEmpty, "the window has content")
+        let document = serializeDocument(screen).encoded()
+        XCTAssertTrue(document.contains("\"tw\""))
+
+        // A second capture of an unchanged screen shares its nodes.
+        let capture = WireframeCapture()
+        let first = try XCTUnwrap(capture.captureScreen(timestampMs: Clock.nowMs(), href: "/", keyboardFrame: nil))
+        let second = try XCTUnwrap(capture.captureScreen(timestampMs: Clock.nowMs(), href: "/", keyboardFrame: nil))
+        XCTAssertNil(diffScreens(first.screen!, second.screen!))
     }
 
     func testBackendReachableDiagnostic() throws {
@@ -45,11 +67,12 @@ final class RealDeviceSmokeTests: XCTestCase {
         let urlString = String(dsn[dsn.index(after: at)...])
         let url = try XCTUnwrap(URL(string: urlString))
 
-        var request = URLRequest(url: url)
+        // An empty OTLP logs request: valid protobuf, and nothing to store.
+        var request = URLRequest(url: try resolveEndpoints(url.absoluteString).logs)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/x-protobuf", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.httpBody = Data(#"{"collectionFrames":[],"appVersion":"diag","serverName":""}"#.utf8)
+        request.httpBody = Data()
 
         let exp = expectation(description: "request")
         var status = -1
@@ -77,16 +100,9 @@ final class RealDeviceSmokeTests: XCTestCase {
     }
 
     func testGzipUsesDeviceZlib() throws {
-        let payload = Data(#"{"collectionFrames":[],"appVersion":"ci","serverName":""}"#.utf8)
+        let payload = Data(#"{"segments":[]}"#.utf8)
         let compressed = try XCTUnwrap(Gzip.compress(payload))
         XCTAssertEqual(Array(compressed.prefix(2)), [0x1f, 0x8b])
         XCTAssertEqual(Gzip.decompress(compressed), payload)
-    }
-
-    func testWireFormatOnDevice() {
-        let exception = ExceptionStackTrace(stackTrace: "boom", recordedAtMs: 1_700_000_000_000)
-        let json = exception.toJSON().serialize()
-        XCTAssertTrue(json.contains("\"recordedAt\":\"2023-11-14T22:13:20.000Z\""))
-        XCTAssertTrue(json.contains("\"traceId\":null"))
     }
 }

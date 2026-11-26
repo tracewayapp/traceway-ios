@@ -29,9 +29,14 @@ enum DeviceInfoCollector {
         info["runtime.version"] = swiftRuntimeVersion()
         info["telemetry.sdk.language"] = "swift"
 
+        if let major = version.split(separator: ".").first, !major.isEmpty {
+            info["os.major"] = String(major)
+        }
+
         let screen = screenInfo()
         if let resolution = screen.resolution { info["screen.resolution"] = resolution }
         if let density = screen.density { info["screen.density"] = density }
+        if let formFactor = screen.formFactor { info["device.form_factor"] = formFactor }
 
         return info
     }
@@ -57,12 +62,16 @@ enum DeviceInfoCollector {
             return id
         }
         #endif
+        #if canImport(Darwin)
         var size = 0
         sysctlbyname("hw.machine", nil, &size, nil, 0)
         guard size > 0 else { return "" }
         var machine = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.machine", &machine, &size, nil, 0)
         return String(cString: machine)
+        #else
+        return ""
+        #endif
     }
 
     private static func isPhysicalDevice() -> Bool {
@@ -92,15 +101,16 @@ enum DeviceInfoCollector {
         #endif
     }
 
-    private static func screenInfo() -> (resolution: String?, density: String?) {
+    private static func screenInfo() -> (resolution: String?, density: String?, formFactor: String?) {
         #if canImport(UIKit)
-        let read: () -> (String?, String?) = {
+        let read: () -> (String?, String?, String?) = {
             let screen = UIScreen.main
             let scale = screen.scale
             let bounds = screen.bounds
             let width = Int((bounds.width * scale).rounded())
             let height = Int((bounds.height * scale).rounded())
-            return ("\(width)x\(height)", String(format: "%.1f", scale))
+            let formFactor = UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
+            return ("\(width)x\(height)", String(format: "%.1f", scale), formFactor)
         }
         if Thread.isMainThread {
             return read()
@@ -108,11 +118,14 @@ enum DeviceInfoCollector {
             return DispatchQueue.main.sync(execute: read)
         }
         #else
-        return (nil, nil)
+        return (nil, nil, nil)
         #endif
     }
 
     private static func firstNonLoopbackIPv4() -> String? {
+        #if !canImport(Darwin)
+        return nil
+        #else
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else { return nil }
         defer { freeifaddrs(ifaddrPtr) }
@@ -143,5 +156,6 @@ enum DeviceInfoCollector {
             cursor = interface.ifa_next
         }
         return nil
+        #endif
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+#if canImport(zlib)
 import zlib
 
 enum Gzip {
@@ -90,3 +91,10 @@ enum Gzip {
         }
     }
 }
+#else
+/// Without zlib (Linux test hosts) bodies are sent uncompressed.
+enum Gzip {
+    static func compress(_ data: Data) -> Data? { nil }
+    static func decompress(_ data: Data) -> Data? { nil }
+}
+#endif

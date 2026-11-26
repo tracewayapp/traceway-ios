@@ -1,3 +1,4 @@
+#if canImport(zlib)
 import XCTest
 @testable import Traceway
 
@@ -27,3 +28,4 @@ final class GzipTests: XCTestCase {
         XCTAssertEqual(restored, input)
     }
 }
+#endif

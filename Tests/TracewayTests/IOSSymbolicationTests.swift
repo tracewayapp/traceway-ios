@@ -3,6 +3,7 @@ import XCTest
 
 final class IOSSymbolicationTests: XCTestCase {
 
+    #if canImport(Darwin)
     func testCaptureReturnsImagesWithUUIDs() {
         let images = BinaryImages.capture()
         XCTAssertFalse(images.isEmpty, "expected at least the test runner's images")
@@ -12,6 +13,7 @@ final class IOSSymbolicationTests: XCTestCase {
         }
         XCTAssertFalse(BinaryImages.currentArch().isEmpty)
     }
+    #endif
 
     func testMapAddressToImage() {
         let images = [

@@ -25,7 +25,7 @@ enum StackTraceFormatter {
         return format(type: type, message: message, frames: [])
     }
 
-    private static func errorTypeAndMessage(_ error: Error) -> (String, String?) {
+    static func errorTypeAndMessage(_ error: Error) -> (String, String?) {
 
         if isFoundationError(error) {
             let nsError = error as NSError

@@ -1,11 +1,12 @@
 # Testing & CI
 
-Three layers, matching `.github/workflows/tests.yml`:
+Four layers, matching `.github/workflows/tests.yml`:
 
 | Layer | Where it runs | What it covers | Secrets |
 | --- | --- | --- | --- |
-| `swift test` | macOS host | Logic suite: wire format, gzip, connection string, disk store, client state machine, crash-record conversion | none |
-| iOS Simulator XCTest | iOS Simulator | The same suite **+ on-device smoke tests** — real `UIScreen`/`UIDevice` attributes, live `Traceway.start`, gzip via device zlib | none |
+| `swift test` | Linux (`swift:6.3`) | The platform-neutral suite: settings merge and ceilings, triggers, ring buffer, OpAMP codec and client, routing, outbox, sessions, replay upload, wireframe DOM, diff and clip assembly, selectors, and the client end to end against in-memory exporters and a fake server | none |
+| `swift test` + iOS build | macOS host | The same suite on Apple's Foundation, plus a compile of the UIKit code for device and simulator | none |
+| iOS Simulator XCTest | iOS Simulator | The same suite **+ on-device smoke tests**: real `UIScreen`/`UIDevice` attributes, live `Traceway.start`, a wireframe capture of the host app's window, gzip via device zlib | none |
 | Firebase Test Lab | **real iPhone** | The full bundle on physical hardware, optionally reporting to a real backend | Apple + GCP |
 
 ## Run locally
@@ -62,7 +63,7 @@ Optional:
 
 | Secret | Description |
 | --- | --- |
-| `TRACEWAY_DSN` | `token@https://…/api/report`. Baked into the test bundle's `Info.plist` at build time and read by `RealDeviceSmokeTests`. If unset, the device test sends to an unreachable endpoint and only asserts the SDK stays healthy. |
+| `TRACEWAY_DSN` | `token@https://…`. Baked into the test bundle's `Info.plist` at build time and read by `RealDeviceSmokeTests`. If unset, the device test sends to an unreachable endpoint and only asserts the SDK stays healthy. |
 
 > **Why `Info.plist` and not an env var?** `gcloud firebase test ios run`
 > cannot inject environment variables into the XCTest process, so the DSN is

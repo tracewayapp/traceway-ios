@@ -21,11 +21,26 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # The platform-neutral suite (control plane, OpAMP, routing, outbox,
+  # wireframe DOM and diff, selectors, client) on Linux. No secrets.
+  # ---------------------------------------------------------------------------
+  linux-tests:
+    name: Swift tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: swift test
+        run: swift test
+
+  # ---------------------------------------------------------------------------
   # Fast logic suite on the macOS host + iOS compile verification. No secrets.
+  # The OpenTelemetry Swift dependencies need Xcode 26.4+ (Swift 6.3).
   # ---------------------------------------------------------------------------
   swift-tests:
     name: Swift tests + iOS build
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +65,7 @@ jobs:
   # ---------------------------------------------------------------------------
   simulator-tests:
     name: XCTest on iOS Simulator
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -95,13 +110,13 @@ jobs:
   build-device-bundle:
     name: Build device test bundle
     if: github.event_name == 'workflow_dispatch' && inputs.run_firebase
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.2'
+          xcode-version: latest-stable
 
       - name: Install XcodeGen
         run: brew install xcodegen

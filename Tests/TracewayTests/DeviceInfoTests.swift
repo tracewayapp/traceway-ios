@@ -13,9 +13,11 @@ final class DeviceInfoTests: XCTestCase {
         XCTAssertNotNil(info["runtime.version"])
     }
 
+    #if canImport(Darwin)
     func testHardwareModelNonEmpty() {
         XCTAssertFalse(DeviceInfoCollector.hardwareModel().isEmpty)
     }
+    #endif
 
     func testIsPhysicalIsBooleanString() {
         let value = DeviceInfoCollector.collectSync()["device.isPhysical"]

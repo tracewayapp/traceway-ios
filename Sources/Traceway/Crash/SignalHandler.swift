@@ -1,7 +1,6 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
-#endif
 
 private var twPathPtr: UnsafeMutablePointer<CChar>?
 private var twMetaPtr: UnsafeMutablePointer<UInt8>?
@@ -224,3 +223,4 @@ enum SignalHandler {
         twMetaLen = metadata.count
     }
 }
+#endif
