@@ -62,7 +62,13 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      # The client suite uses OpenTelemetry types directly, which a test
+      # bundle hosted in the app cannot link (the app's debug dylib does not
+      # export them); it runs under `swift test` on macOS and Linux.
       - path: Tests/TracewayTests
+        excludes:
+          - OTelTestSupport.swift
+          - TracewayClientTests.swift
       - path: CI/DeviceTests
     dependencies:
       - target: TracewayExample

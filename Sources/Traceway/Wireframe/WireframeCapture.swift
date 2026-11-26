@@ -58,7 +58,12 @@ final class WireframeCapture {
     /// The wireframe of the app's visible windows, or nil when there is no
     /// window to show.
     func captureScreen(timestampMs: Int64, href: String?, keyboardFrame: CGRect?) -> WireframeFrame? {
-        let windows = WireframeCapture.visibleWindows()
+        capture(windows: WireframeCapture.visibleWindows(), timestampMs: timestampMs, href: href, keyboardFrame: keyboardFrame)
+    }
+
+    /// The wireframe of `windows`, back to front, in the coordinate space of
+    /// the key one (or the first normal one).
+    func capture(windows: [UIWindow], timestampMs: Int64, href: String?, keyboardFrame: CGRect?) -> WireframeFrame? {
         guard let main = windows.first(where: { $0.isKeyWindow })
             ?? windows.first(where: { $0.windowLevel == .normal })
             ?? windows.first
