@@ -109,6 +109,7 @@ final class GalleryDriver {
     private(set) var checkpoints: [GalleryCheckpoint] = []
     private(set) var secrets: [String] = []
     private(set) var failures: [String] = []
+    private(set) var starts: [(id: String, at: Int64)] = []
     private var names = Set<String>()
     private var mutationsAtLast = 0
     private let startedAt = Clock.nowMs()
@@ -156,6 +157,7 @@ final class GalleryDriver {
 
     func run(_ scenario: GalleryScenario) {
         self.scenario = scenario.id
+        starts.append((scenario.id, Clock.nowMs()))
         print("GALLERY_SCENARIO \(scenario.id)")
         let controller = scenario.build()
         window.rootViewController = controller
@@ -196,6 +198,8 @@ final class GalleryDriver {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
+        // sRGB, as the browser renders the replay.
+        format.preferredRange = .standard
         let bounds = window.bounds
         let picture = UIGraphicsImageRenderer(bounds: bounds, format: format).pngData { [window] _ in
             window.drawHierarchy(in: bounds, afterScreenUpdates: true)
@@ -211,6 +215,7 @@ final class GalleryDriver {
             minMutations: minMutations
         ))
         print("GALLERY_CHECKPOINT \(full) \(at)")
+        writeTree(full)
         // The next step starts after the moment the replay is looked at.
         wait(Double(GalleryDriver.sampleMs) / 1000 + 0.2)
     }
@@ -294,6 +299,73 @@ final class GalleryDriver {
         }
     }
 
+    // MARK: - The layer tree, for diagnosing a conversion
+
+    /// Writes `tree/<checkpoint>.txt`: every layer of the window with its
+    /// class, its view's class, its frame on screen and what it paints.
+    private func writeTree(_ name: String) {
+        var lines: [String] = []
+        let root = window.layer
+        func color(_ cg: CGColor?) -> String {
+            guard let c = WireframeCapture.color(cg) else { return "-" }
+            return WireframeCSS.color(c)
+        }
+        func walk(_ model: CALayer, _ depth: Int) {
+            guard lines.count < 4000, depth < 80 else { return }
+            let layer = model.presentation() ?? model
+            let frame = layer.convert(layer.bounds, to: root.presentation() ?? root)
+            var parts = [String(repeating: " ", count: depth) + NSStringFromClass(type(of: model))]
+            if let view = model.delegate as? UIView {
+                parts.append("view=" + NSStringFromClass(type(of: view)))
+                if let image = (view as? UIImageView)?.image {
+                    parts.append("image(symbol=\(image.isSymbolImage) mode=\(image.renderingMode.rawValue) size=\(image.size) caps=\(image.capInsets))")
+                }
+                if let label = view as? UILabel { parts.append("text=\"\(label.text ?? "")\" lines=\(label.numberOfLines)") }
+                if view.isHidden { parts.append("HIDDEN-VIEW") }
+                if NSStringFromClass(type(of: view)).contains("Hosting") {
+                    parts.append("ax=\(view.accessibilityElements?.count ?? -1)/\(view.accessibilityElementCount())")
+                }
+                if view.responds(to: NSSelectorFromString("cornerConfiguration")),
+                   let corners = view.value(forKey: "cornerConfiguration") {
+                    parts.append("corners=\(String(describing: corners).prefix(80))")
+                }
+            }
+            parts.append(String(format: "frame=(%.1f,%.1f %.1fx%.1f)", frame.minX, frame.minY, frame.width, frame.height))
+            if layer.isHidden { parts.append("hidden") }
+            if layer.opacity < 1 { parts.append(String(format: "opacity=%.2f", layer.opacity)) }
+            if layer.backgroundColor != nil { parts.append("bg=" + color(layer.backgroundColor)) }
+            if layer.cornerRadius > 0 { parts.append(String(format: "radius=%.1f curve=%@", layer.cornerRadius, layer.cornerCurve.rawValue)) }
+            if layer.masksToBounds { parts.append("clips") }
+            if let mask = layer.mask { parts.append("mask=" + NSStringFromClass(type(of: mask))) }
+            if layer.borderWidth > 0 { parts.append("border=\(layer.borderWidth) " + color(layer.borderColor)) }
+            if layer.shadowOpacity > 0 { parts.append("shadow=\(layer.shadowOpacity)") }
+            if !CATransform3DIsIdentity(layer.transform) {
+                let t = layer.transform
+                parts.append(String(format: "transform=[%.2f %.2f %.2f %.2f | m34=%.4f | t=%.1f,%.1f]", t.m11, t.m12, t.m21, t.m22, t.m34, t.m41, t.m42))
+            }
+            if !CATransform3DIsIdentity(layer.sublayerTransform) { parts.append("SUBLAYER-TRANSFORM") }
+            if layer.contents != nil { parts.append("contents") }
+            if let filters = layer.filters, !filters.isEmpty { parts.append("filters=\(filters.count)") }
+            if let filters = layer.backgroundFilters, !filters.isEmpty { parts.append("bgfilters=\(filters.count)") }
+            if let filter = layer.compositingFilter { parts.append("compositing=\(String(describing: filter).prefix(40))") }
+            if let shape = layer as? CAShapeLayer, let path = shape.path {
+                parts.append("path=\(path.boundingBox) fill=" + color(shape.fillColor) + " stroke=" + color(shape.strokeColor))
+            }
+            if NSStringFromClass(type(of: model)).contains("Portal"),
+               model.responds(to: NSSelectorFromString("sourceLayer")),
+               let source = model.value(forKey: "sourceLayer") as? CALayer {
+                let sourceFrame = source.convert(source.bounds, to: root)
+                parts.append("PORTAL source=\(NSStringFromClass(type(of: source))) at \(sourceFrame)")
+            }
+            lines.append(parts.joined(separator: " "))
+            for sublayer in model.sublayers ?? [] { walk(sublayer, depth + 1) }
+        }
+        walk(root, 0)
+        let dir = outDir.appendingPathComponent("tree")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? lines.joined(separator: "\n").write(to: dir.appendingPathComponent("\(name).txt"), atomically: true, encoding: .utf8)
+    }
+
     // MARK: - Output
 
     func write(events: [JSON]) throws {
@@ -307,6 +379,7 @@ final class GalleryDriver {
             "startedAt": JSON(startedAt),
             "sampleMs": JSON(GalleryDriver.sampleMs),
             "checkpoints": .array(checkpoints.map { $0.json }),
+            "scenarios": .array(starts.map { ["id": .string($0.id), "at": JSON($0.at)] }),
             "secrets": .array(secrets.map { .string($0) }),
         ]
         try Data(run.encoded().utf8).write(to: outDir.appendingPathComponent("run.json"))

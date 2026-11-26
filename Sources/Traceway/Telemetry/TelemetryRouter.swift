@@ -30,7 +30,7 @@ final class TelemetryItem {
         case .span(var span):
             var attributes = span.attributes
             attributes[key] = value
-            span.settingAttributes(attributes)
+            span.replacingAttributes(attributes)
             record = .span(span)
         }
     }
@@ -146,7 +146,7 @@ final class TelemetryRouter {
             session != nil && Ids.unitHash(session!) < baselineRate ? "baseline" : "diagnostic"
         )
         attributes["traceway.collection.baseline_rate"] = .double(baselineRate)
-        span.settingAttributes(attributes)
+        span.replacingAttributes(attributes)
 
         // Requests are `network`; any other span an app makes through the
         // SDK's tracer is `custom`.
@@ -446,5 +446,17 @@ final class SpanBatcher {
             if batch.isEmpty { return }
             _ = exporter.export(spans: batch, explicitTimeout: nil)
         }
+    }
+}
+
+extension SpanData {
+    /// Sets the attributes and keeps the count of recorded attributes at
+    /// least as high: the OTLP exporter sends the difference as the dropped
+    /// count, an unsigned number, and traps when attributes were added
+    /// without it.
+    mutating func replacingAttributes(_ attributes: [String: AttributeValue]) {
+        let dropped = max(0, totalAttributeCount - self.attributes.count)
+        settingAttributes(attributes)
+        settingTotalAttributeCount(attributes.count + dropped)
     }
 }

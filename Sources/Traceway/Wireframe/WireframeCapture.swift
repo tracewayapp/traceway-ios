@@ -389,7 +389,12 @@ final class WireframeCapture {
         let opacity = Double(layer.opacity)
         let scrolls = view is UIScrollView
         let custom = info.kind == .customDraw
+        // A view whose own layer is a gradient or a shape (`layerClass`)
+        // paints it under its subviews.
+        let gradient = (layer as? CAGradientLayer).map { gradientCss($0, p) } ?? ""
+        let shape = (layer as? CAShapeLayer).flatMap { shapeNode($0, view.layer, p) }
         let group = paint.paints || clips || opacity < 0.999 || view is UIWindow || custom || scrolls
+            || !gradient.isEmpty || shape != nil
         var inner = s
         inner.transform = p.t
         if !group {
@@ -397,7 +402,7 @@ final class WireframeCapture {
             trailing?(&out, inner)
             return
         }
-        var style = geometry(s, p) + paint.css
+        var style = geometry(s, p) + paint.css + gradient
         if opacity < 0.999 { style += "opacity:\(WireframeCSS.num3(opacity));" }
         if clips {
             style += "overflow:hidden;"
@@ -409,6 +414,7 @@ final class WireframeCapture {
             // Drawn by the app's own draw(_:): its pixels are not read.
             children.append(element(id(view, 1), "width:100%;height:100%;", [], cls: "cp"))
         }
+        if let shape = shape { children.append(shape) }
         if scrolls || p.boundsX != 0 || p.boundsY != 0 {
             // The content sits in a node of its own that moves as it
             // scrolls: one attribute changes per frame, not every child's.
@@ -718,7 +724,10 @@ final class WireframeCapture {
         let align = WireframeCapture.align(label.textAlignment, rtl: rtl)
         if rtl { style += "direction:rtl;" }
         let cls: String
-        if label.numberOfLines == 1 {
+        // A label that may wrap but holds one line (a cell's title, sized
+        // to its text) is one line in the replay too: the browser's font is
+        // a little wider and would wrap its last word.
+        if label.numberOfLines == 1 || p.height < Double(font.lineHeight) * 1.6 {
             let measured: CGFloat
             if let attributed = label.attributedText, attributed.length > 0 {
                 measured = attributed.size().width
@@ -931,12 +940,15 @@ final class WireframeCapture {
             if paints || !children.isEmpty { out.append(element(id(view), style, children)) }
             return
         }
-        let template = shownImage.renderingMode == .alwaysTemplate
-            || (shownImage.isSymbolImage && shownImage.renderingMode != .alwaysOriginal)
+        // Symbols are the system's artwork and template images only their
+        // shape: both are drawn. Any other image is the app's or the user's
+        // picture and never is.
+        let template = shownImage.renderingMode == .alwaysTemplate || shownImage.isSymbolImage
         if template && !s.blockImages && privacy(p.box, s) == .show {
             let tint = WireframeCapture.color(view.tintColor, view.traitCollection) ?? .black
             style += "color:\(WireframeCSS.color(tint));"
-            if let glyph = glyphs?.lookup(shownImage, size: CGSize(width: p.width, height: p.height), contentMode: view.contentMode) {
+            if let glyph = glyphs?.lookup(shownImage, size: CGSize(width: p.width, height: p.height),
+                                          contentMode: view.contentMode, color: shownImage.isSymbolImage) {
                 shownGlyphs.insert(glyph.cls)
                 out.append(element(id(view), style, children, cls: "ic " + glyph.cls))
             } else {

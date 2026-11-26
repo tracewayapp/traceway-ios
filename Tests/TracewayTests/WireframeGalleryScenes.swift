@@ -537,7 +537,7 @@ enum GalleryScenes {
         override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
             let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
             var content = cell.defaultContentConfiguration()
-            content.text = "Row \(indexPath.section + 1).\(indexPath.row + 1)"
+            content.text = String(format: "Row %d.%02d", indexPath.section + 1, indexPath.row + 1)
             content.secondaryText = indexPath.row % 3 == 0 ? "Detail text" : nil
             content.image = indexPath.row % 4 == 0 ? UIImage(systemName: "folder") : nil
             cell.contentConfiguration = content
@@ -550,14 +550,20 @@ enum GalleryScenes {
         TableController(style: .insetGrouped)
     }, script: { d, controller in
         let table = (controller as! UITableViewController).tableView!
-        d.checkpoint(shows: ["Section 1", "Row 1.1", "Row 1.2", "Detail text"])
+        d.checkpoint(shows: ["Section 1", "Row 1.01", "Row 1.02", "Detail text"])
         d.scroll(table, to: CGPoint(x: 0, y: table.contentOffset.y + 600))
-        d.checkpoint("scrolled", hides: ["Row 1.1"])
-        let bottom = table.contentSize.height - table.bounds.height + table.adjustedContentInset.bottom
-        d.scroll(table, to: CGPoint(x: 0, y: bottom), seconds: 0.8)
-        d.checkpoint("bottom", shows: ["Row 3.20"], hides: ["Row 1.1"])
+        d.checkpoint("scrolled", shows: ["Row 1.15"], hides: ["Row 1.01"])
+        // Cells size themselves: the content's height is only known once
+        // the last rows were laid out.
+        let last = IndexPath(row: 19, section: 2)
+        table.scrollToRow(at: last, at: .bottom, animated: false)
+        table.layoutIfNeeded()
+        let bottom = table.contentOffset
+        table.contentOffset = CGPoint(x: 0, y: bottom.y - 900)
+        d.scroll(table, to: bottom, seconds: 0.8)
+        d.checkpoint("bottom", shows: ["Row 3.20"], hides: ["Row 1.01"])
         d.scroll(table, to: CGPoint(x: 0, y: -table.adjustedContentInset.top), seconds: 0.8)
-        d.checkpoint("top", shows: ["Row 1.1"], hides: ["Row 3.20"])
+        d.checkpoint("top", shows: ["Row 1.01"], hides: ["Row 3.20"])
     })
 
     // MARK: - Collection
@@ -617,7 +623,7 @@ enum GalleryScenes {
                 cell.contentView.addSubview(label)
                 return label
             }()
-            label.text = indexPath.section == 0 ? "Card \(indexPath.item + 1)" : "Tile \(indexPath.item + 1)"
+            label.text = String(format: indexPath.section == 0 ? "Card %02d" : "Tile %02d", indexPath.item + 1)
             return cell
         }
     }
@@ -626,15 +632,15 @@ enum GalleryScenes {
         CollectionController()
     }, script: { d, controller in
         let grid = (controller as! UICollectionViewController).collectionView!
-        d.checkpoint(shows: ["Card 1", "Card 2", "Tile 1", "Tile 6"])
+        d.checkpoint(shows: ["Card 01", "Card 02", "Tile 01", "Tile 06"])
         if let strip = grid.subviews.compactMap({ $0 as? UIScrollView }).first(where: { $0.bounds.height < 120 }) {
             d.scroll(strip, to: CGPoint(x: 400, y: 0))
-            d.checkpoint("strip", shows: ["Card 5"], hides: ["Card 1"])
+            d.checkpoint("strip", shows: ["Card 05"], hides: ["Card 01"])
         } else {
             d.fail("no horizontal section")
         }
         d.scroll(grid, to: CGPoint(x: 0, y: 500))
-        d.checkpoint("scrolled", shows: ["Tile 18"], hides: ["Tile 1"])
+        d.checkpoint("scrolled", shows: ["Tile 18"], hides: ["Tile 01"])
     })
 
     // MARK: - Navigation

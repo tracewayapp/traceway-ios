@@ -606,3 +606,23 @@ final class WireframeGlyphTests: XCTestCase {
         XCTAssertEqual(ImagePlacement.top.rect(image: image, box: box), WireframeRect(x: 10, y: 0, width: 20, height: 10))
     }
 }
+
+final class WireframeColorGlyphTests: XCTestCase {
+    func testOnlyChromaticBitmapsAreColored() {
+        // Premultiplied: black, half-covered gray, white.
+        XCTAssertFalse(MaskPNG.isColored(rgba: [0, 0, 0, 255, 64, 64, 64, 128, 255, 255, 255, 255]))
+        // An orange pixel.
+        XCTAssertTrue(MaskPNG.isColored(rgba: [255, 140, 0, 255]))
+        // Barely covered pixels do not count.
+        XCTAssertFalse(MaskPNG.isColored(rgba: [40, 0, 0, 40]))
+    }
+
+    func testTheColorPictureIsAnRGBAPNGWithStraightAlpha() throws {
+        let png = [UInt8](try XCTUnwrap(MaskPNG.encodeColor(rgba: [128, 0, 0, 128], width: 1, height: 1)))
+        XCTAssertEqual(Array(png[16..<26]), [0, 0, 0, 1, 0, 0, 0, 1, 8, 6])
+        #if !canImport(zlib)
+        // Stored block: filter byte, then the pixel unpremultiplied.
+        XCTAssertEqual(Array(png[41 + 7..<41 + 12]), [0, 255, 0, 0, 128])
+        #endif
+    }
+}

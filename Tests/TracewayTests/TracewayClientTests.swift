@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import OpenTelemetryApi
 import OpenTelemetrySdk
+import OpenTelemetryProtocolExporterCommon
 @testable import Traceway
 
 final class TracewayClientTests: XCTestCase {
@@ -339,6 +340,10 @@ final class TracewayClientTests: XCTestCase {
         for span in spans.spans {
             XCTAssertEqual(span.attributes["session.id"], .string(client.currentSessionId ?? ""))
             XCTAssertNotNil(span.attributes["traceway.collection.source"])
+            // The attributes the SDK adds count as recorded: the OTLP
+            // exporter sends total minus kept as the dropped count, unsigned.
+            XCTAssertGreaterThanOrEqual(span.totalAttributeCount, span.attributes.count)
+            XCTAssertEqual(SpanAdapter.toProtoSpan(spanData: span).droppedAttributesCount, 0)
         }
     }
 

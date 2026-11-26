@@ -178,7 +178,8 @@ final class UIKitWireframeTests: XCTestCase {
         let s = try screen()
         XCTAssertEqual(classes(try node("One line", in: s)), ["t", "n"])
         XCTAssertEqual(styleMap(try node("Centered", in: s))["justify-content"], "center")
-        XCTAssertEqual(styleMap(try node("Bold", in: s))["font-weight"], "700")
+        // iOS draws the bold system font semibold: 600, or 700.
+        XCTAssertGreaterThanOrEqual(Int(styleMap(try node("Bold", in: s))["font-weight"] ?? "") ?? 0, 600)
         XCTAssertEqual(classes(try node("This line is much too long for a box this narrow", in: s)), ["t", "n", "e"])
         XCTAssertEqual(classes(try node("Wrapped text over lines", in: s)), ["t"])
         XCTAssertNotNil(styleMap(try node("code()", in: s))["font-family"])
@@ -297,6 +298,7 @@ final class UIKitWireframeTests: XCTestCase {
         progress.progress = 0.4
         let spinner = UIActivityIndicatorView(style: .medium)
         spinner.frame = CGRect(x: 10, y: 130, width: 20, height: 20)
+        spinner.startAnimating()
         let pages = UIPageControl(frame: CGRect(x: 10, y: 160, width: 300, height: 30))
         pages.numberOfPages = 4
         pages.currentPage = 2

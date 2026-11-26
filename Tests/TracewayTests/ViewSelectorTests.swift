@@ -4,7 +4,7 @@ import XCTest
 
 /// A view of a fake hierarchy: what a selector reads of a UIView, without
 /// UIKit.
-private final class FakeView {
+final class FakeView {
     let type: String
     let ids: [String]
     let roles: Set<String>
@@ -88,7 +88,7 @@ private final class FakeView {
     }
 }
 
-private final class FakePath: SelectorPath {
+final class FakePath: SelectorPath {
     let views: [FakeView]
     private var infos: [ObjectIdentifier: ViewNodeInfo] = [:]
 

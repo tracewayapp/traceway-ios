@@ -26,6 +26,64 @@ enum MaskPNG {
             }
         }
         guard let pixels = Gzip.zlibStream(Data(raw)) else { return nil }
+        // 4 bits per pixel, grayscale.
+        return png(width: width, height: height, colorType: 0, depth: 4, pixels: pixels)
+    }
+
+    /// The rule that draws icons of class `cls` with the mask `png`: the
+    /// `.ic` square becomes the shape, in the icon's color.
+    static func css(cls: String, png: Data) -> String {
+        ".ic.\(cls)::before{inset:0;border-radius:0;opacity:1;mask:url(data:image/png;base64,"
+            + png.base64EncodedString() + ") 0 0/100% 100% no-repeat luminance}"
+    }
+
+    /// The rule that draws icons of class `cls` as the colored picture
+    /// `png`, for symbols that carry their own colors.
+    static func colorCss(cls: String, png: Data) -> String {
+        ".ic.\(cls)::before{inset:0;border-radius:0;opacity:1;background:url(data:image/png;base64,"
+            + png.base64EncodedString() + ") 0 0/100% 100% no-repeat}"
+    }
+
+    /// An 8-bit RGBA PNG of a bitmap with premultiplied alpha.
+    static func encodeColor(rgba: [UInt8], width: Int, height: Int) -> Data? {
+        guard width > 0, height > 0, rgba.count >= width * height * 4 else { return nil }
+        var raw = [UInt8](repeating: 0, count: height * (width * 4 + 1))
+        var o = 0
+        for y in 0..<height {
+            raw[o] = 0
+            o += 1
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let a = rgba[i + 3]
+                for c in 0..<3 {
+                    let v = rgba[i + c]
+                    raw[o + c] = a == 0 ? 0 : UInt8(min(255, (Int(v) * 255 + Int(a) / 2) / Int(a)))
+                }
+                raw[o + 3] = a
+                o += 4
+            }
+        }
+        guard let pixels = Gzip.zlibStream(Data(raw)) else { return nil }
+        return png(width: width, height: height, colorType: 6, depth: 8, pixels: pixels)
+    }
+
+    /// Whether a bitmap (premultiplied RGBA) draws in colors, not one gray:
+    /// a symbol with a palette or multicolor rendering. A monochrome symbol
+    /// draws in black or the label color, which the view's tint replaces.
+    static func isColored(rgba: [UInt8]) -> Bool {
+        var i = 0
+        while i + 3 < rgba.count {
+            let a = Int(rgba[i + 3])
+            if a > 64 {
+                let r = Int(rgba[i]) * 255 / a, g = Int(rgba[i + 1]) * 255 / a, b = Int(rgba[i + 2]) * 255 / a
+                if max(r, g, b) - min(r, g, b) > 40 { return true }
+            }
+            i += 4
+        }
+        return false
+    }
+
+    private static func png(width: Int, height: Int, colorType: UInt8, depth: UInt8, pixels: Data) -> Data {
         var out: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         func be32(_ v: UInt32) -> [UInt8] {
             [UInt8(v >> 24), UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff)]
@@ -34,18 +92,10 @@ enum MaskPNG {
             let body = Array(type.utf8) + data
             out += be32(UInt32(data.count)) + body + be32(Gzip.crc32(body))
         }
-        // Width, height, 4 bits per pixel, grayscale, no interlace.
-        chunk("IHDR", be32(UInt32(width)) + be32(UInt32(height)) + [4, 0, 0, 0, 0])
+        chunk("IHDR", be32(UInt32(width)) + be32(UInt32(height)) + [depth, colorType, 0, 0, 0])
         chunk("IDAT", [UInt8](pixels))
         chunk("IEND", [])
         return Data(out)
-    }
-
-    /// The rule that draws icons of class `cls` with the mask `png`: the
-    /// `.ic` square becomes the shape, in the icon's color.
-    static func css(cls: String, png: Data) -> String {
-        ".ic.\(cls)::before{inset:0;border-radius:0;opacity:1;mask:url(data:image/png;base64,"
-            + png.base64EncodedString() + ") 0 0/100% 100% no-repeat luminance}"
     }
 }
 
@@ -123,8 +173,11 @@ final class WireframeGlyphs {
 
     /// The glyph of `image` shown in a box of `size` the way `contentMode`
     /// places it, drawn now if it is new; nil once too many were drawn.
-    func lookup(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode) -> Glyph? {
-        let key = "\(Int((size.width * 10).rounded()))x\(Int((size.height * 10).rounded()))|\(contentMode.rawValue)"
+    /// With `color`, a symbol that draws in colors of its own (palette,
+    /// multicolor, hierarchical, or `.alwaysOriginal`) is kept in them;
+    /// otherwise only its shape is, shown in the view's tint.
+    func lookup(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode, color: Bool) -> Glyph? {
+        let key = "\(Int((size.width * 10).rounded()))x\(Int((size.height * 10).rounded()))|\(contentMode.rawValue)|\(color)"
         let sizes: Sizes
         if let existing = byImage.object(forKey: image) {
             sizes = existing
@@ -136,7 +189,7 @@ final class WireframeGlyphs {
         guard all.count < maxGlyphs else { return nil }
         let cls = "g\(next)"
         next += 1
-        let glyph = Glyph(cls: cls, css: draw(image, size: size, contentMode: contentMode).map { MaskPNG.css(cls: cls, png: $0) })
+        let glyph = Glyph(cls: cls, css: draw(image, size: size, contentMode: contentMode, color: color, cls: cls))
         sizes.bySize[key] = glyph
         all.append(glyph)
         return glyph
@@ -159,7 +212,7 @@ final class WireframeGlyphs {
         }
     }
 
-    private func draw(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode) -> Data? {
+    private func draw(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode, color: Bool, cls: String) -> String? {
         let w = Int((size.width * pixelRatio).rounded(.up))
         let h = Int((size.height * pixelRatio).rounded(.up))
         guard w > 0, h > 0, w <= 512, h <= 512 else { return nil }
@@ -182,7 +235,10 @@ final class WireframeGlyphs {
             return true
         }
         guard drawn else { return nil }
-        return MaskPNG.encode(rgba: pixels, width: w, height: h)
+        if color && (image.renderingMode == .alwaysOriginal || MaskPNG.isColored(rgba: pixels)) {
+            return MaskPNG.encodeColor(rgba: pixels, width: w, height: h).map { MaskPNG.colorCss(cls: cls, png: $0) }
+        }
+        return MaskPNG.encode(rgba: pixels, width: w, height: h).map { MaskPNG.css(cls: cls, png: $0) }
     }
 }
 #endif
