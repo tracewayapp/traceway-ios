@@ -613,7 +613,7 @@ public final class TracewayClient {
             var resource = resourceAttributes
             var attributes: [String: AttributeValue] = [:]
             for (key, value) in crash.attributes ?? [:] where key != Attr.sessionStartedAt {
-                if resourceAttributes[key] != nil {
+                if resourceAttributes[key] != nil || TracewayClient.describesTheRun(key) {
                     resource[key] = value
                 } else {
                     attributes[key] = .string(value)
@@ -645,6 +645,13 @@ public final class TracewayClient {
                      time: Clock.date(ms: report.recordedAtMs))
             }
         }
+    }
+
+    /// Keys of what describes a run (the app, the OS, the device), which a
+    /// crash record keeps among its attributes.
+    private static func describesTheRun(_ key: String) -> Bool {
+        ["service.", "os.", "device.", "screen.", "runtime.", "telemetry.", "deployment.", "traceway.sdk."]
+            .contains { key.hasPrefix($0) }
     }
 
     // MARK: - Threading

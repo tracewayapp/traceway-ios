@@ -116,7 +116,8 @@ final class IOSSymbolicationTests: XCTestCase {
             text: "TRACEWAY_SIGNAL_V1\nsignal=4294967296\ntime=99999999999999999\n---FRAMES---\n"
         ))
         XCTAssertEqual(record.header, "Fatal Signal SIG4294967296 (4294967296)")
-        XCTAssertLessThanOrEqual(record.recordedAtMs, Clock.nowMs())
+        // A time past any clock is not believed: the crash is dated now.
+        XCTAssertLessThanOrEqual(abs(record.recordedAtMs - Clock.nowMs()), 1000)
         let negative = try XCTUnwrap(CrashRecordStore.parse(
             text: "TRACEWAY_SIGNAL_V1\nsignal=-9223372036854775808\ntime=-9223372036854775808\n---FRAMES---\n"
         ))

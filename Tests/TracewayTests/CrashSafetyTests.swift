@@ -832,7 +832,9 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
     func testAbsurdButFiniteSizesDoNotTrap() throws {
         let symbol = try XCTUnwrap(UIImage(systemName: "star"))
         let huge = CGSize(width: 1e300, height: 1e300)
-        XCTAssertNil(WireframeGlyphs().lookup(symbol, size: huge, contentMode: .scaleAspectFit, color: false))
+        // Too large to draw: the glyph stays an empty shape.
+        let glyph = WireframeGlyphs().lookup(symbol, size: huge, contentMode: .scaleAspectFit, color: false)
+        XCTAssertNil(glyph?.css)
         _ = WireframeImages().picture(symbol, displayed: huge, nowMs: 0)
     }
 

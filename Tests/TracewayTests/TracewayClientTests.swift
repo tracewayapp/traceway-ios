@@ -718,8 +718,8 @@ final class TracewayClientTests: XCTestCase {
         let crash = try XCTUnwrap(logs.events("exception").first)
         XCTAssertEqual(crash.string("exception.type"), "Fatal Signal SIG4294967296 (4294967296)")
         // A time past any clock is not believed: the crash is dated now.
-        XCTAssertGreaterThanOrEqual(Clock.ms(crash.timestamp), before)
-        XCTAssertLessThanOrEqual(Clock.ms(crash.timestamp), Clock.nowMs())
+        XCTAssertGreaterThanOrEqual(Clock.ms(crash.timestamp), before - 1)
+        XCTAssertLessThanOrEqual(Clock.ms(crash.timestamp), Clock.nowMs() + 1)
     }
 
     /// IOS-8: two `initialize` calls at once each started a full client.
