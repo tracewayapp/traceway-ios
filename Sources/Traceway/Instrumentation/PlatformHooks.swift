@@ -30,12 +30,32 @@ extension TracewayClient {
         #if canImport(ObjectiveC)
         NSExceptionHandler.install { exception in TracewayClient.shared?.captureFatalException(exception) }
         #endif
+        installExitAndLogCapture()
         #if canImport(UIKit)
         PlatformHooks.install(self)
         #endif
         #if canImport(URLSessionInstrumentation)
         if options.captureNetwork { NetworkInstrumentation.install() }
         #endif
+    }
+
+    /// Why earlier runs ended (an `exit` marker, MetricKit) and the log
+    /// lines the app writes (the unified log, standard output and error).
+    private func installExitAndLogCapture() {
+        if options.captureExitReasons, let directory = onQueueSync({ stateDirectoryForHooks }) {
+            ExitMarker.install(directory: directory)
+        }
+        #if canImport(MetricKit) && os(iOS)
+        if options.captureExitReasons, #available(iOS 14.0, *) { MetricKitSubscriber.install() }
+        #endif
+        #if canImport(OSLog)
+        if options.captureLogs, #available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *) {
+            startLogCapture(OSLogReader(source: OSLogStoreSource(), since: Date()))
+        }
+        #endif
+        if options.captureStdout {
+            StdoutCapture.install { lines, stream in TracewayClient.shared?.recordStdLines(lines, stream: stream) }
+        }
     }
 
     func uninstallPlatformHooks() {
@@ -83,7 +103,7 @@ final class PlatformHooks {
         } else {
             recorder = nil
         }
-        vitalsHost = client.vitals != nil ? UIKitVitalsHost() : nil
+        vitalsHost = client.vitals.map { UIKitVitalsHost(frames: $0.recordsMetrics) }
     }
 
     static func install(_ client: TracewayClient) {
@@ -93,6 +113,10 @@ final class PlatformHooks {
             let hooks = PlatformHooks(client: client)
             current = hooks
             hooks.addObservers()
+            // The hang watchdog takes the main thread's stack from another
+            // thread; it is noted here, on it.
+            MainThreadStack.prepare()
+            client.runForeground(UIApplication.shared.applicationState != .background)
             client.screen.viewportProvider = PlatformHooks.viewport
             client.screen.viewport = PlatformHooks.viewport()
             if !swizzled {
@@ -100,7 +124,7 @@ final class PlatformHooks {
                 UIApplication.tracewaySwizzleSendEvent()
                 UIViewController.tracewaySwizzleViewDidAppear()
             }
-            if client.vitals != nil, !displaySwizzled {
+            if client.vitals?.recordsMetrics == true, !displaySwizzled {
                 displaySwizzled = true
                 UIViewController.tracewaySwizzleDisplayStart()
             }
@@ -137,7 +161,12 @@ final class PlatformHooks {
         ) { [weak self] _ in guarded("willEnterForeground") { self?.client?.appResumed() } })
         observers.append(center.addObserver(
             forName: UIApplication.willTerminateNotification, object: nil, queue: .main
-        ) { [weak self] _ in guarded("willTerminate") { self?.client?.flush(timeout: 2) } })
+        ) { [weak self] _ in
+            guarded("willTerminate") {
+                self?.client?.appTerminating()
+                self?.client?.flush(timeout: 2)
+            }
+        })
     }
 
     private func removeObservers() {
@@ -196,7 +225,7 @@ final class PlatformHooks {
     /// start of its time to initial display. A view loaded long before it
     /// appears counts from its appearance.
     func displayStarting(_ controller: UIViewController, load: Bool) {
-        guard let client = activeClient, client.vitals != nil else { return }
+        guard let client = activeClient, client.vitals?.recordsMetrics == true else { return }
         let now = Clock.nowMs()
         if load {
             controller.tracewayDisplayStartMs = now

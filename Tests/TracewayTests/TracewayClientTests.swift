@@ -762,6 +762,51 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 9)
     }
 
+    /// On the main thread `flush` waits at most 2 seconds, whatever its
+    /// timeout: longer is a hang the system may end the app for.
+    func testFlushOnTheMainThreadWaitsAtMostTwoSeconds() throws {
+        guard Thread.isMainThread else { throw XCTSkip("the test runs off the main thread here") }
+        let silent = HangingTransport()
+        let source = FakeReplaySource()
+        let client = try start(TracewayOptions(screenCapture: true), replay: source, transport: silent)
+        XCTAssertTrue(eventually { source.isRunning })
+        struct Boom: Error {}
+        Traceway.captureException(Boom())
+        XCTAssertTrue(eventually { !silent.requests(to: "/api/recordings").isEmpty })
+        for timeout in [10, nil] as [TimeInterval?] {
+            let started = Date()
+            client.flush(timeout: timeout)
+            let waited = Date().timeIntervalSince(started)
+            XCTAssertGreaterThanOrEqual(waited, 1.9, "\(String(describing: timeout))")
+            XCTAssertLessThan(waited, 4, "\(String(describing: timeout))")
+        }
+        let started = Date()
+        client.flush(timeout: 0.2)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5, "a shorter timeout is kept")
+    }
+
+    /// CONTRACT §14.7: spans the app makes with `Traceway.tracer` go through
+    /// Traceway with the session id, and nest under the interaction running.
+    func testTracerSpansCarryTheSessionAndNestUnderTheInteraction() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        let tracer = try XCTUnwrap(Traceway.tracer)
+        let checkout = Traceway.startInteraction("checkout")
+        checkout.run {
+            tracer.spanBuilder(spanName: "price.compute").startSpan().end()
+        }
+        checkout.end()
+        tracer.spanBuilder(spanName: "outside").startSpan().end()
+        client.flush(timeout: 5)
+        XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "outside" } })
+        let inner = try XCTUnwrap(spans.spans.first { $0.name == "price.compute" })
+        XCTAssertEqual(inner.traceId.hexString, checkout.traceId)
+        XCTAssertEqual(inner.parentSpanId?.hexString, checkout.spanId)
+        XCTAssertEqual(inner.attributes["session.id"], .string(client.currentSessionId ?? "none"))
+        let outside = try XCTUnwrap(spans.spans.first { $0.name == "outside" })
+        XCTAssertNotEqual(outside.traceId.hexString, checkout.traceId)
+        XCTAssertEqual(outside.attributes["session.id"], .string(client.currentSessionId ?? "none"))
+    }
+
     /// IOS-10: an `initialize` while the last client was still shutting
     /// down returned that client, and the SDK was off once it finished.
     func testStartingWhileTheLastClientShutsDownStartsANewOne() throws {

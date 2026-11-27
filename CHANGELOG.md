@@ -135,9 +135,9 @@ triggers, taps, wireframe session replay and app performance metrics.
 - **Replay images**: with the setting `replay.images` (`off`, `wifi` by
   default, `always`) and the option `replayImages` as its ceiling, the
   wireframe includes the pictures image views and SwiftUI image layers show:
-  downscaled to their displayed size (1.5 px per point, at most 512 px), JPEG
-  at 0.6 (PNG when small and see-through), at most 96 KiB each and 4 MiB per
-  session, encoded off the main thread, sent once per bitmap and size, never
+  downscaled to their displayed size (one pixel per point, at most 384 px),
+  JPEG at 0.45 (PNG when small and see-through), at most 48 KiB each and
+  4 MiB per session, encoded off the main thread, sent once per bitmap and size, never
   under a privacy mask. `wifi` means unmetered (`NWPathMonitor`: not
   cellular, a hotspot or Low Data Mode), decided for each frame. Session
   events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
@@ -196,6 +196,43 @@ triggers, taps, wireframe session replay and app performance metrics.
 - Timestamps the app sets that no clock reaches, and absurd view sizes, no
   longer trap; `maxBufferFrames` is held to 10,000 and `exportDelayMs` to a
   minute.
+- **Exit reasons** (CONTRACT §14.1, option `captureExitReasons`, on by
+  default): a MetricKit subscriber (iOS 14+) reports the crashes its
+  `MXCrashDiagnostic`s describe that the signal and `NSException` handlers did
+  not record (same signal within a minute) as `NativeCrash` issues with the
+  crashed thread's frames, under the run's app and OS version, plus
+  `app.crash`; watchdog terminations (`0x8badf00d`) become
+  `WatchdogTermination` issues and `app.anr`. The parser reads
+  `jsonRepresentation()`. At the next start a run that ended in the
+  foreground with no crash, shutdown, `exit` or `willTerminate`, no debugger
+  and the same app, build, OS and boot counts one `app.oom` (a heuristic,
+  never an issue). The signal handler keeps a thread's own alternate stack
+  and gives the main thread and the starting thread a 64 KiB one, so stack
+  overflows are recorded.
+- **App hangs as issues** (§14.2, options `captureAppHangs`, on, and
+  `appHangThresholdMs`, 2000): the hang watchdog suspends the main thread
+  once it has been blocked that long, takes its stack (`thread_get_state`, a
+  checked frame-pointer walk of at most 128 frames, nothing allocated while it
+  is suspended) and reports one `AppHang` issue, `Main thread blocked for
+  3.2 s`, with the screen, when it answers again. A hang that ended the app is
+  reported at the next start with `app.hang.fatal: true`. Not in the
+  background, not under a debugger. With `captureMetrics: false` the watchdog
+  runs for the issues alone.
+- **Log capture** (§14.3): on iOS 15+ the app's `NSLog`, `os_log` and `Logger`
+  lines are read from `OSLogStore(scope: .currentProcessIdentifier)` every 10
+  seconds and before an exception is recorded (`log.source: oslog`); option
+  `captureStdout` (off) tees standard output and error into console lines
+  (`log.source: stdout` / `stderr`), writing every byte to the original
+  descriptor first and never holding the writer up. The remote
+  `signals.console` mode, `minSeverity` and `sampleRate` apply as to
+  `Traceway.log`.
+- **Replay images are smaller** (§14.5): one pixel per point, at most 384 px a
+  side, JPEG at 0.45, PNG only for see-through pictures up to 96 px, at most
+  48 KiB after one retry at half size; up to 128 pictures per capture, and a
+  new one past that evicts the one shown longest ago instead of waiting.
+- `flush()` on the main thread waits at most 2 seconds whatever its timeout,
+  as on Android.
+- `app.user.affected` counts `anr` and `oom`.
 
 ## 0.1.0
 

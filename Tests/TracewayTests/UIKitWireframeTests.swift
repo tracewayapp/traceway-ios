@@ -518,7 +518,7 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         let rule = try XCTUnwrap(rules.first)
         XCTAssertTrue(rule.hasPrefix(".im.\(cls){background:url(data:image/jpeg;base64,"), rule)
         XCTAssertTrue(rule.hasSuffix(") center/cover no-repeat}"), rule)
-        XCTAssertLessThan(rule.count, 96 * 1024 * 4 / 3 + 100)
+        XCTAssertLessThan(rule.count, WireframeImageEncoding.maxEncodedBytes * 4 / 3 + 100)
     }
 
     func test17WifiOnAMeteredNetworkGivesPlaceholders() throws {

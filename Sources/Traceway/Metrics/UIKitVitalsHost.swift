@@ -6,6 +6,9 @@ import UIKit
 /// and the main queue for the hang watchdog. Everything but `requestDraw`,
 /// `cancelDraw` and `postToMain` runs on the main thread.
 final class UIKitVitalsHost: VitalsHost {
+    /// Whether the display link runs: only the hang watchdog needs nothing
+    /// of the frames (`captureMetrics: false`).
+    private let countsFrames: Bool
     private weak var vitals: AppVitals?
     private var link: CADisplayLink?
     private var observers: [NSObjectProtocol] = []
@@ -13,6 +16,10 @@ final class UIKitVitalsHost: VitalsHost {
     private var lastTimestamp: CFTimeInterval = 0
     private var lastTarget: CFTimeInterval = 0
     private let drawPending = Locked(false)
+
+    init(frames: Bool = true) {
+        countsFrames = frames
+    }
 
     func install(_ vitals: AppVitals) {
         self.vitals = vitals
@@ -36,6 +43,7 @@ final class UIKitVitalsHost: VitalsHost {
             forName: UIScene.willConnectNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.vitals?.sceneConnected() })
 
+        guard countsFrames else { return }
         let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick(_:)))
         link.add(to: .main, forMode: .common)
         link.isPaused = UIApplication.shared.applicationState == .background

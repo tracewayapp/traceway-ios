@@ -14,6 +14,8 @@ struct CrashRecord {
     var attributes: [String: String]?
     /// The app version of the run that crashed.
     var appVersion: String? = nil
+    /// The signal number the handler wrote (Darwin numbering).
+    var signal: Int = 0
 }
 
 enum CrashRecordStore {
@@ -138,7 +140,8 @@ enum CrashRecordStore {
             stackTrace: stackTrace,
             recordedAtMs: recordedAt(timeSec),
             attributes: attributes.isEmpty ? nil : attributes,
-            appVersion: appVersion
+            appVersion: appVersion,
+            signal: signo
         )
     }
 
@@ -152,9 +155,15 @@ enum CrashRecordStore {
     }
 
     static func renderWireTrace(header: String, arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {
+        header + wireTraceBody(arch: arch, images: images, addresses: addresses)
+    }
+
+    /// What follows the header line of a wire trace: the separator, the OS
+    /// and architecture line and one line per frame.
+    static func wireTraceBody(arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {
         let archToken = arch.isEmpty ? BinaryImages.currentArch() : arch
 
-        var out = header
+        var out = ""
         out += "\n*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***"
         out += "\nos: ios arch: \(archToken)"
 

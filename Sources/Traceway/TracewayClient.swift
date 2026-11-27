@@ -21,6 +21,15 @@ struct TracewayTestOverrides {
     /// sends them through `transport`.
     var metricsSink: ((Data) -> Int)?
     var metricsScheduler: MetricsScheduler?
+    /// Starts the vitals (and the hang watchdog) with this host; on the
+    /// `metricsScheduler`'s clock when there is one.
+    var vitalsHost: VitalsHost?
+    /// Stands in for taking the main thread's stack during a hang.
+    var captureMainStack: (() -> [UInt]?)?
+    /// Reads log lines from here instead of the unified log.
+    var osLogSource: OSLogEntrySource?
+    /// How long a likely out-of-memory exit waits for MetricKit.
+    var exitReasonGraceMs: Int64?
 }
 
 private let maxErrorsPerMinute = 60
@@ -77,8 +86,29 @@ public final class TracewayClient {
     let metrics: MetricsRecorder
     let memoryPeaks: MemoryPeaks
     /// Start, display, frame and hang measurements; nil without
-    /// `captureMetrics`. The UIKit hooks give it its host.
+    /// `captureMetrics` and `captureAppHangs` (with only the latter, only
+    /// its hang watchdog runs). The UIKit hooks give it its host.
     let vitals: AppVitals?
+    /// `AppHang` issues from the vitals' watchdog; nil without
+    /// `captureAppHangs`.
+    let appHangs: AppHangMonitor?
+    /// Where `appHangs` reports, set once the client is initialized.
+    private let hangSink = Locked<((AppHangReport) -> Void)?>(nil)
+    /// Reads the app's unified-log entries (`log.source: oslog`); used on
+    /// `logQueue` only.
+    private var osLog: OSLogReader?
+    private let logQueue = DispatchQueue(label: "app.traceway.logs", qos: .utility)
+    private var logTimer: DispatchWorkItem?
+    private let readsOSLog = Locked(false)
+    /// Whether console lines are recorded now (`captureLogs` and the
+    /// console's mode), read off the client's queue.
+    private let consoleCaptured = Locked(false)
+    /// This run, as the next run will read it; and the last run.
+    private var runRecord: RunRecord?
+    private var previousRun: RunRecord?
+    /// The `app.oom` count of a likely out-of-memory exit, waiting for
+    /// MetricKit to say it was a crash.
+    private var pendingOOM: DispatchWorkItem?
     /// What the metrics pipeline reads from any thread: the session, the
     /// installation id, the resource and the state store, as the client's
     /// queue last set them.
@@ -276,13 +306,41 @@ public final class TracewayClient {
             storageScope: routes.metrics.key
         )
         memoryPeaks = MemoryPeaks(recorder: metrics, store: { store.value }, storageScope: routes.metrics.key)
-        if options.captureMetrics {
-            let screen = self.screen
+        let screen = self.screen
+        if options.captureAppHangs {
+            let sink = hangSink
+            let capture = overrides?.captureMainStack ?? TracewayClient.mainThreadStack
+            appHangs = AppHangMonitor(
+                thresholdMs: options.effectiveAppHangThresholdMs,
+                captureStack: capture,
+                render: { CrashRecordStore.wireTraceBody(arch: BinaryImages.currentArch(),
+                                                         images: BinaryImages.capture(), addresses: $0) },
+                context: { TracewayClient.hangContext(screen: screen, session: session.value,
+                                                      resource: resource.value) },
+                report: { hang in sink.value?(hang) }
+            )
+        } else {
+            appHangs = nil
+        }
+        if options.captureMetrics || appHangs != nil {
+            // A test that drives the watchdog with a host of its own drives
+            // its clock too.
+            let clock: () -> Int64
+            if overrides?.vitalsHost != nil, let manual = overrides?.metricsScheduler {
+                clock = { manual.now() }
+            } else {
+                clock = AppVitals.monotonicMs
+            }
+            let hangThreshold = options.effectiveAppHangThresholdMs
             vitals = AppVitals(
                 recorder: metrics,
                 currentScreen: { TracewayClient.metricsScreen(screen) },
                 scheduler: scheduler,
-                reportHangsWithDebugger: options.reportHangsInDebug
+                uptimeMs: clock,
+                watchdogIntervalMs: appHangs != nil ? min(500, hangThreshold / 2) : 500,
+                reportHangsWithDebugger: options.reportHangsInDebug,
+                recordsMetrics: options.captureMetrics,
+                appHangs: appHangs
             )
         } else {
             vitals = nil
@@ -290,6 +348,28 @@ public final class TracewayClient {
 
         queue.setSpecific(key: TracewayClient.queueKey, value: 1)
         sessionsRef = { [weak self] in self?.sessions }
+        hangSink.value = { [weak self] hang in self?.reportAppHang(hang) }
+    }
+
+    /// Takes the main thread's stack while it is blocked; nil where it
+    /// cannot be taken.
+    static func mainThreadStack() -> [UInt]? {
+        #if canImport(Darwin)
+        return MainThreadStack.capture()
+        #else
+        return nil
+        #endif
+    }
+
+    /// What an `AppHang` carries of where the app was, read off the main
+    /// thread while it is blocked: the screen and session, and the run's
+    /// resource for a hang reported by the next run.
+    static func hangContext(screen: ScreenState, session: String?, resource: [String: String])
+        -> (attributes: [String: String], resource: [String: String]) {
+        var attributes: [String: String] = [:]
+        for (key, value) in screen.context(nowMs: Clock.nowMs()) { attributes[key] = value.description }
+        if let session = session { attributes[Attr.sessionId] = session }
+        return (attributes, resource)
     }
 
     /// Starts a client and makes it the shared one. Device information is
@@ -323,6 +403,10 @@ public final class TracewayClient {
         _shared = client
         sharedLock.unlock()
         client.installPlatformHooks()
+        if let host = overrides?.vitalsHost { client.vitals?.start(host: host) }
+        if let source = overrides?.osLogSource, options.captureLogs {
+            client.startLogCapture(OSLogReader(source: source, since: Date(timeIntervalSinceNow: -1)))
+        }
         return client
     }
 
@@ -390,7 +474,10 @@ public final class TracewayClient {
             }
         }
 
-        reportEarlierRuns(stateDir)
+        appHangs?.setDirectory(stateDir)
+        let crashes = reportEarlierRuns(stateDir)
+        let fatalHang = reportFatalHang(stateDir)
+        checkLastRunExit(stateDir, crashRecorded: crashes > 0 || fatalHang)
 
         if remoteConfigEnabled, let endpoints = endpoints {
             let client = OpampClient(
@@ -441,6 +528,10 @@ public final class TracewayClient {
     }
 
     private var remoteConfigEnabled: Bool { options.remoteConfig && !standalone }
+
+    /// Where the SDK keeps its state, for the platform hooks. On the
+    /// client's queue.
+    var stateDirectoryForHooks: URL? { stateDirectory }
 
     private func resolveStateDirectory() -> URL? {
         if let overrides = overrides { return overrides.stateDirectory }
@@ -602,10 +693,14 @@ public final class TracewayClient {
 
     /// Crashes the signal handler wrote in an earlier run, and reports the
     /// 1.x SDK left unsent, are reported now with their original time and
-    /// the session they happened in.
-    private func reportEarlierRuns(_ stateDir: URL?) {
+    /// the session they happened in. Returns the number of crashes.
+    @discardableResult
+    private func reportEarlierRuns(_ stateDir: URL?) -> Int {
         let base = supportDirectory()
-        for crash in CrashReporter.takePendingCrashes(baseDir: base) {
+        let pending = CrashReporter.takePendingCrashes(baseDir: base)
+        for crash in pending {
+            // MetricKit's report of the same crash is not sent again.
+            recordExit(ExitLedgerEntry(kind: .signal, signal: crash.signal, ms: crash.recordedAtMs))
             // The crashed run is described by its own resource (its app and
             // OS version), as when it would have sent the crash itself; the
             // rest of what it knew are the record's attributes. Only session
@@ -645,6 +740,7 @@ public final class TracewayClient {
                      time: Clock.date(ms: report.recordedAtMs))
             }
         }
+        return pending.count
     }
 
     /// Keys of what describes a run (the app, the OS, the device), which a
@@ -716,7 +812,9 @@ public final class TracewayClient {
         attrs["exception.stacktrace"] = .string(trace)
         attrs[Attr.exceptionId] = .string(Ids.uuidv4())
         let now = Date()
-        onQueue {
+        // The lines the app logged until now are read first: they are this
+        // exception's breadcrumbs.
+        afterLogs {
             self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: now, spanContext: spanContext)
         }
     }
@@ -751,10 +849,15 @@ public final class TracewayClient {
         attrs[Attr.exceptionId] = .string(Ids.uuidv4())
         if let reason = exception.reason { attrs["exception.message"] = .string(reason) }
         let now = Date()
+        let lines = readLogsNow(timeout: 0.5)
         onQueueSync {
+            emitLogLines(lines)
             emit(eventName: Events.exception, severity: .fatal, attributes: attrs, time: now)
+            // The runtime ends the process with SIGABRT next.
+            recordExit(ExitLedgerEntry(kind: .exception, signal: MetricKitDiagnostics.sigabrt, ms: Clock.ms(now)))
             saveTriggerProgress(now: true)
         }
+        store.flush()
         flush(timeout: timeout)
     }
     #endif
@@ -1048,19 +1151,30 @@ public final class TracewayClient {
 
     // MARK: - Flushing
 
+    /// The longest `flush` waits on the main thread, whatever its timeout:
+    /// a main thread blocked longer is a hang the system may end the app
+    /// for. The same on Android.
+    static let mainThreadFlushLimit: TimeInterval = 2
+
     /// Sends everything that is ready now: queued records, replay clips and
     /// telemetry that failed earlier, waiting at most `timeout` seconds (10
-    /// by default, as on Android; nil waits until done). Telemetry held in
-    /// the ring buffer stays there.
+    /// by default, as on Android; nil waits until done), and at most 2
+    /// seconds on the main thread. Telemetry held in the ring buffer stays
+    /// there.
     public func flush(timeout: TimeInterval? = 10) {
         if isOnQueue {
             flushAll {}
             return
         }
+        let limit = Thread.isMainThread
+            ? min(timeout ?? TracewayClient.mainThreadFlushLimit, TracewayClient.mainThreadFlushLimit)
+            : timeout
+        let started = DispatchTime.now()
+        awaitLogReads(timeout: min(0.5, max(0, limit ?? 0.5)))
         let done = DispatchSemaphore(value: 0)
         queue.async { self.flushAll { done.signal() } }
-        if let timeout = timeout {
-            _ = done.wait(timeout: .now() + timeout)
+        if let limit = limit {
+            _ = done.wait(timeout: started + max(0, limit))
         } else {
             done.wait()
         }
@@ -1153,6 +1267,9 @@ public final class TracewayClient {
                 done.leave()
                 return
             }
+            // The next run must not take this one's end for a crash.
+            self.runShutDown()
+            self.stopLogCapture()
             if let session = self.sessions?.current {
                 self.emitSessionEnd(session, endedAtMs: Clock.nowMs())
                 // The session may go on after a restart: its memory is
@@ -1210,6 +1327,7 @@ public final class TracewayClient {
     func appResumed() {
         onQueue {
             guard !self.isShutdown else { return }
+            self.runForeground(true)
             self.sessions?.markActivity()
             self.opamp?.poll()
             self.outbox?.drain()
@@ -1226,6 +1344,8 @@ public final class TracewayClient {
                 return
             }
             self.replay.onPaused()
+            self.runForeground(false)
+            self.settlePendingExit()
             if self.options.captureMetrics, self.started {
                 self.memoryPeaks.remember(self.sessions?.currentId)
                 // Stored before it is sent: the app may not live to see the answer.
@@ -1357,6 +1477,7 @@ public final class TracewayClient {
             )
         }
         updateCrashMetadata(session)
+        runSessionChanged(session.id)
         applyReplay()
         scheduleRefresh()
     }
@@ -1740,6 +1861,7 @@ public final class TracewayClient {
     }
 
     private func onSettingsChanged(_ settings: Settings) {
+        consoleCaptured.value = options.captureLogs && control.modeFor("console") != .off
         runCaptures(settings)
         buffer.retain { control.canExport($0.signal) }
         if !settings.persist { persisted?.clear() }
@@ -1879,6 +2001,328 @@ public final class TracewayClient {
         sharedLock.lock()
         _shared = nil
         sharedLock.unlock()
+    }
+}
+
+// MARK: - Exit reasons, app hangs and log capture (CONTRACT §14)
+
+extension TracewayClient {
+    // MARK: Exit reasons
+
+    /// Notes a crash or fatal hang the SDK recorded itself, so MetricKit's
+    /// report of the same one is not sent again. On the client's queue.
+    func recordExit(_ entry: ExitLedgerEntry) {
+        let ledger = ExitReasons.ledger(store.get(ExitReasons.ledgerKey))
+        let updated = ExitReasons.appending(entry, to: ledger, nowMs: Clock.nowMs())
+        store.set(ExitReasons.ledgerKey, .array(updated.map { $0.encoded() }))
+    }
+
+    /// Writes this run's record for the next run, and decides whether the
+    /// last run most likely ran out of memory: then `app.oom` is counted,
+    /// unless MetricKit reports a crash within `ExitReasons.oomGraceMs`.
+    private func checkLastRunExit(_ stateDir: URL?, crashRecorded: Bool) {
+        guard options.captureExitReasons, stateDir != nil else { return }
+        let previous = RunRecord.decode(store.get(ExitReasons.runKey))
+        let exited = ExitMarker.take(directory: stateDir)
+        let current = RunRecord(
+            startedAtMs: Clock.nowMs(),
+            appVersion: serviceVersion,
+            appBuild: ExitReasons.appBuild,
+            osVersion: resourceAttributes["os.version"] ?? "",
+            bootTimeSec: ExitReasons.bootTimeSec(),
+            foreground: false,
+            debugger: AppVitals.debuggerAttached(),
+            sessionId: sessions?.currentId
+        )
+        previousRun = previous
+        runRecord = current
+        store.set(ExitReasons.runKey, current.encoded())
+        guard let last = previous, options.captureMetrics else { return }
+        let ledger = ExitReasons.ledger(store.get(ExitReasons.ledgerKey))
+        let uncaught = ledger.contains { $0.kind == .exception && $0.ms >= last.startedAtMs }
+        guard ExitReasons.likelyOutOfMemory(previous: last, current: current, exited: exited,
+                                            crashRecorded: crashRecorded || uncaught)
+        else { return }
+        let work = DispatchWorkItem { [weak self] in self?.commitPendingOOM() }
+        pendingOOM = work
+        let grace = min(max(overrides?.exitReasonGraceMs ?? ExitReasons.oomGraceMs, 0), 600_000)
+        queue.asyncAfter(deadline: .now() + .milliseconds(Int(grace)), execute: work)
+    }
+
+    /// Counts the likely out-of-memory exit now. On the client's queue.
+    private func commitPendingOOM() {
+        guard let pending = pendingOOM else { return }
+        pending.cancel()
+        pendingOOM = nil
+        guard !isShutdown else { return }
+        metrics.oom()
+    }
+
+    /// Changes this run's record; a debugger attached since is noted. On
+    /// the client's queue.
+    private func updateRun(_ change: (inout RunRecord) -> Void) {
+        guard var record = runRecord else { return }
+        change(&record)
+        if !record.debugger, AppVitals.debuggerAttached() { record.debugger = true }
+        guard record != runRecord else { return }
+        runRecord = record
+        store.set(ExitReasons.runKey, record.encoded())
+    }
+
+    /// The app is in the foreground now (`true`) or not; any thread.
+    func runForeground(_ foreground: Bool) {
+        onQueue { self.updateRun { $0.foreground = foreground } }
+    }
+
+    /// The system told the app it terminates (`willTerminate`): not an
+    /// abnormal exit. Any thread; saved by the flush that follows.
+    func appTerminating() {
+        onQueue { self.updateRun { $0.terminated = true } }
+    }
+
+    private func runSessionChanged(_ session: String) {
+        updateRun { $0.sessionId = session }
+    }
+
+    private func runShutDown() {
+        updateRun { $0.shutdown = true }
+    }
+
+    /// Commits a likely out-of-memory exit before the app may be killed in
+    /// the background. On the client's queue.
+    private func settlePendingExit() {
+        if pendingOOM != nil { commitPendingOOM() }
+    }
+
+    // MARK: MetricKit
+
+    /// A MetricKit diagnostic payload (`jsonRepresentation()`), with its
+    /// window when the caller has it: its crashes the SDK did not record
+    /// itself become issues (`app.crash`), its watchdog terminations
+    /// `WatchdogTermination` issues (`app.anr`). Any thread.
+    func receiveDiagnosticPayload(_ data: Data, begin: Date?, end: Date?) {
+        onQueue { [weak self] in self?.handleDiagnosticPayload(data, begin: begin, end: end) }
+    }
+
+    private func handleDiagnosticPayload(_ data: Data, begin: Date?, end: Date?) {
+        guard !isShutdown, options.captureExitReasons else { return }
+        let crashes = MetricKitDiagnostics.parseCrashes(data, begin: begin, end: end)
+        guard !crashes.isEmpty else { return }
+        // The last run crashed: it did not run out of memory.
+        pendingOOM?.cancel()
+        pendingOOM = nil
+        let ledger = ExitReasons.ledger(store.get(ExitReasons.ledgerKey))
+        for crash in crashes {
+            if crash.isWatchdogTermination {
+                if options.captureMetrics { metrics.anr() }
+                // The hang it ended was reported already, with its stack.
+                if ExitReasons.fatalHangReported(crash, ledger: ledger) { continue }
+            } else {
+                if ExitReasons.recordedInProcess(crash, ledger: ledger) { continue }
+                if options.captureMetrics { metrics.crash() }
+            }
+            emitMetricKitCrash(crash)
+        }
+    }
+
+    /// A crash or watchdog termination MetricKit saw, under the resource of
+    /// the run it ended, with that run's session when it was the last one.
+    private func emitMetricKitCrash(_ crash: MetricKitCrash) {
+        var resource = resourceAttributes
+        if let version = crash.appVersion { resource["service.version"] = version }
+        if let os = crash.osVersion.flatMap(MetricKitDiagnostics.osVersionNumber) {
+            resource["os.version"] = "iOS \(os)"
+            if let major = os.split(separator: ".").first { resource["os.major"] = String(major) }
+        }
+        if let device = crash.deviceType { resource["device.model"] = device }
+        var attrs: [String: AttributeValue] = [
+            "exception.type": .string(crash.issueType),
+            "exception.stacktrace": .string(crash.stackTrace),
+            "exception.escaped": .bool(true),
+            "traceway.exit.source": .string("metrickit"),
+            Attr.exceptionId: .string(Ids.uuidv4()),
+        ]
+        if !crash.isWatchdogTermination { attrs["traceway.crash"] = .bool(true) }
+        attrs["exception.message"] = .string(crash.issueMessage)
+        if let reason = crash.terminationReason { attrs["traceway.exit.reason"] = .string(reason) }
+        if let type = crash.exceptionType {
+            attrs["traceway.exit.mach_exception"] = .string(MetricKitDiagnostics.machExceptionName(type))
+        }
+        if let signal = crash.signal { attrs["traceway.exit.signal"] = .int(signal) }
+        let beginMs = millisecondsSaturating(crash.begin.timeIntervalSince1970)
+        if let last = previousRun, let session = last.sessionId,
+           beginMs >= Int64.saturatingSum(last.startedAtMs, -60_000) {
+            attrs[Attr.sessionId] = .string(session)
+        }
+        let atMs = min(millisecondsSaturating(crash.end.timeIntervalSince1970), Clock.nowMs())
+        emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: attrs, resource: resource,
+                       time: Clock.date(ms: atMs))
+    }
+
+    // MARK: App hangs
+
+    /// The hang a process that died during it left on disk, reported with
+    /// `app.hang.fatal = true` under that run's resource. Whether there was
+    /// one. On the client's queue.
+    private func reportFatalHang(_ stateDir: URL?) -> Bool {
+        guard let hang = AppHangMonitor.takeFatal(directory: stateDir) else { return false }
+        recordExit(ExitLedgerEntry(kind: .hang, signal: 0, ms: Int64.saturatingSum(hang.startedAtMs, hang.blockedMs)))
+        guard options.captureAppHangs else { return true }
+        var resource = resourceAttributes
+        for (key, value) in hang.resource { resource[key] = value }
+        emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: appHangAttributes(hang),
+                       resource: resource, time: Clock.date(ms: hang.startedAtMs))
+        return true
+    }
+
+    /// A hang that ended, from the hang monitor's queue: an `AppHang` issue
+    /// with the main thread's stack, unless `ignoreErrors` or
+    /// `beforeCapture` says otherwise.
+    func reportAppHang(_ hang: AppHangReport) {
+        guard !isShutdown, !hang.fatal else { return }
+        let message = hang.message
+        guard !ignored(type: AppHangReport.type, message: message) else { return }
+        let attrs = appHangAttributes(hang)
+        guard reports(TracewayCapturedError(
+            error: nil, type: AppHangReport.type, message: message, isMessage: false,
+            attributes: TracewayClient.strings(attrs), stackTrace: hang.stackTrace
+        )) else { return }
+        let time = Clock.date(ms: hang.startedAtMs)
+        afterLogs { self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: time) }
+    }
+
+    private func appHangAttributes(_ hang: AppHangReport) -> [String: AttributeValue] {
+        var attrs: [String: AttributeValue] = [:]
+        for (key, value) in hang.attributes { attrs[key] = .string(value) }
+        if let ms = hang.attributes["app.screen.duration_ms"].flatMap({ Int($0) }) {
+            attrs["app.screen.duration_ms"] = .int(ms)
+        }
+        attrs["exception.type"] = .string(AppHangReport.type)
+        attrs["exception.message"] = .string(hang.message)
+        attrs["exception.stacktrace"] = .string(hang.stackTrace)
+        attrs["app.hang.duration_ms"] = .int(Int(clamping: hang.blockedMs))
+        attrs["app.hang.fatal"] = .bool(hang.fatal)
+        attrs[Attr.exceptionId] = .string(Ids.uuidv4())
+        return attrs
+    }
+
+    // MARK: Log capture
+
+    /// Reads the app's unified-log entries every 10 seconds, and before an
+    /// exception is recorded (`log.source: oslog`).
+    func startLogCapture(_ reader: OSLogReader) {
+        readsOSLog.value = true
+        logQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.osLog = reader
+            self.scheduleLogPoll()
+        }
+    }
+
+    /// On `logQueue`.
+    private func scheduleLogPoll() {
+        logTimer?.cancel()
+        logTimer = nil
+        guard !isShutdown, osLog != nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pollLogs()
+            self?.scheduleLogPoll()
+        }
+        logTimer = work
+        logQueue.asyncAfter(deadline: .now() + .seconds(10), execute: work)
+    }
+
+    /// Hands the lines logged since the last read to the client's queue. On
+    /// `logQueue`.
+    private func pollLogs() {
+        guard let reader = osLog, !isShutdown, consoleCaptured.value else { return }
+        let lines = reader.read()
+        guard !lines.isEmpty else { return }
+        onQueue { self.emitLogLines(lines) }
+    }
+
+    /// On the client's queue.
+    private func emitLogLines(_ lines: [CapturedLogLine]) {
+        for line in lines {
+            var attrs: [String: AttributeValue] = ["log.source": .string("oslog")]
+            if !line.subsystem.isEmpty { attrs["oslog.subsystem"] = .string(line.subsystem) }
+            if !line.category.isEmpty { attrs["oslog.category"] = .string(line.category) }
+            emit(eventName: nil, severity: line.level.severity, body: line.message, attributes: attrs, time: line.date)
+        }
+    }
+
+    /// Runs `work` on the client's queue once the lines logged so far are
+    /// recorded, so an exception's breadcrumbs include them.
+    func afterLogs(_ work: @escaping () -> Void) {
+        guard readsOSLog.value else {
+            onQueue(work)
+            return
+        }
+        let job = Unchecked(work)
+        logQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.pollLogs()
+            self.onQueue(job.value)
+        }
+    }
+
+    /// The lines logged so far, read within `timeout` seconds (a crash is
+    /// on its way).
+    private func readLogsNow(timeout: TimeInterval) -> [CapturedLogLine] {
+        guard readsOSLog.value, consoleCaptured.value else { return [] }
+        let box = Locked<[CapturedLogLine]>([])
+        let done = DispatchSemaphore(value: 0)
+        logQueue.async { [weak self] in
+            box.value = self?.osLog?.read() ?? []
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + timeout) == .success else { return [] }
+        return box.value
+    }
+
+    /// Waits up to `timeout` seconds for log reads already queued, so a
+    /// flush sends what they found.
+    private func awaitLogReads(timeout: TimeInterval) {
+        guard readsOSLog.value else { return }
+        let drained = DispatchSemaphore(value: 0)
+        logQueue.async { drained.signal() }
+        _ = drained.wait(timeout: .now() + timeout)
+    }
+
+    private func stopLogCapture() {
+        logQueue.async { [weak self] in
+            self?.logTimer?.cancel()
+            self?.logTimer = nil
+        }
+    }
+
+    /// Lines the app wrote to standard output or error (`captureStdout`),
+    /// as console lines with `log.source` `stdout` / `stderr`. The SDK's own
+    /// lines are left out, and `NSLog`'s copy on standard error while the
+    /// unified log is read. Any thread.
+    func recordStdLines(_ lines: [String], stream: String) {
+        guard !isShutdown, consoleCaptured.value else { return }
+        let skipNSLog = stream == "stderr" && readsOSLog.value
+        let kept = lines.filter { !OSLogReader.isOwnLine($0) && !(skipNSLog && TracewayClient.isNSLogLine($0)) }
+        guard !kept.isEmpty else { return }
+        let now = Date()
+        let severity: Severity = stream == "stderr" ? .error : .info
+        onQueue {
+            for line in kept {
+                self.emit(eventName: nil, severity: severity, body: OSLogReader.clip(line),
+                          attributes: ["log.source": .string(stream)], time: now)
+            }
+        }
+    }
+
+    private static let nsLogLine = try? NSRegularExpression(
+        pattern: #"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+[+-]\d{4} [^\[\]]+\[\d+:[0-9a-fA-F]+\] "#
+    )
+
+    /// `2024-05-01 10:00:00.123456+0200 MyApp[1234:56789] text`: what
+    /// `NSLog` writes to standard error besides the unified log.
+    static func isNSLogLine(_ line: String) -> Bool {
+        nsLogLine?.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
     }
 }
 

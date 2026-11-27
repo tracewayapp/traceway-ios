@@ -1,0 +1,70 @@
+{
+  "timeStampEnd" : "2026-11-20 10:49:00",
+  "timeStampBegin" : "2026-11-20 10:49:00",
+  "crashDiagnostics" : [
+    {
+      "version" : "1.0.0",
+      "callStackTree" : {
+        "callStackPerThread" : true,
+        "callStacks" : [
+          {
+            "threadAttributed" : false,
+            "callStackRootFrames" : [
+              {
+                "binaryUUID" : "11111111-2222-3333-4444-555555555555",
+                "offsetIntoBinaryTextSegment" : 4096,
+                "sampleCount" : 1,
+                "binaryName" : "libsystem_kernel.dylib",
+                "address" : 7516192768
+              }
+            ]
+          },
+          {
+            "threadAttributed" : true,
+            "callStackRootFrames" : [
+              {
+                "binaryUUID" : "70B89F27-1634-3580-A695-57CDB41D7743",
+                "offsetIntoBinaryTextSegment" : 165304,
+                "sampleCount" : 1,
+                "binaryName" : "ShopApp",
+                "address" : 4295132600,
+                "subFrames" : [
+                  {
+                    "binaryUUID" : "70B89F27-1634-3580-A695-57CDB41D7743",
+                    "offsetIntoBinaryTextSegment" : 160000,
+                    "sampleCount" : 1,
+                    "binaryName" : "ShopApp",
+                    "address" : 4295127296,
+                    "subFrames" : [
+                      {
+                        "binaryUUID" : "A1B2C3D4-E5F6-0718-293A-4B5C6D7E8F90",
+                        "offsetIntoBinaryTextSegment" : 2048,
+                        "sampleCount" : 1,
+                        "binaryName" : "UIKitCore",
+                        "address" : 6442452992
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "diagnosticMetaData" : {
+        "appBuildVersion" : "42",
+        "appVersion" : "1.4.0",
+        "regionFormat" : "US",
+        "exceptionType" : 1,
+        "osVersion" : "iPhone OS 17.2 (21C62)",
+        "deviceType" : "iPhone15,2",
+        "signal" : 11,
+        "exceptionCode" : 0,
+        "platformArchitecture" : "arm64e",
+        "bundleIdentifier" : "com.example.shop",
+        "virtualMemoryRegionInfo" : "0 is not in any region.",
+        "terminationReason" : "Namespace SIGNAL, Code 0xb"
+      }
+    }
+  ]
+}

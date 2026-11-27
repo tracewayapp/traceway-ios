@@ -105,11 +105,19 @@ final class FrameTally {
 /// probe to the main thread, unless the last one has not run yet, and the
 /// time the probe waited is how long the main thread could not respond.
 /// Nothing spins: one block every half second, only while started.
-/// Thread-safe.
+///
+/// With a `stallThresholdMs`, a tick that finds the probe still waiting
+/// that long calls `onStall` on the timer's thread while the main thread is
+/// still blocked (the `AppHang` capture takes its stack then), and the probe
+/// calls `onRecovered` once it runs. Thread-safe.
 final class HangWatchdog {
     private final class Probe {
         let postedAt: Int64
-        init(postedAt: Int64) { self.postedAt = postedAt }
+        let id: Int
+        init(postedAt: Int64, id: Int) {
+            self.postedAt = postedAt
+            self.id = id
+        }
     }
 
     /// A monotonic clock that stops while the device sleeps.
@@ -121,10 +129,18 @@ final class HangWatchdog {
     /// True while a hang is not the app's (a debugger stopped it).
     private let excused: () -> Bool
     private let onHang: (_ blockedMs: Int64) -> Void
+    private let stallThresholdMs: Int64?
+    /// The probe `id` has waited `waitedMs` so far; the main thread is
+    /// still blocked. Called at every tick until it runs.
+    private let onStall: ((_ id: Int, _ waitedMs: Int64) -> Void)?
+    /// Probe `id`, which waited `stallThresholdMs` or more, ran after
+    /// `blockedMs`. On the main thread.
+    private let onRecovered: ((_ id: Int, _ blockedMs: Int64) -> Void)?
     private let lock = NSLock()
     private var running = false
     private var timer: MetricsCancellable?
     private var probe: Probe?
+    private var nextProbeId = 0
 
     init(
         clock: @escaping () -> Int64,
@@ -133,6 +149,9 @@ final class HangWatchdog {
         thresholdMs: Int64,
         intervalMs: Int64,
         excused: @escaping () -> Bool = { false },
+        stallThresholdMs: Int64? = nil,
+        onStall: ((_ id: Int, _ waitedMs: Int64) -> Void)? = nil,
+        onRecovered: ((_ id: Int, _ blockedMs: Int64) -> Void)? = nil,
         onHang: @escaping (_ blockedMs: Int64) -> Void
     ) {
         self.clock = clock
@@ -141,6 +160,9 @@ final class HangWatchdog {
         self.thresholdMs = thresholdMs
         self.intervalMs = intervalMs
         self.excused = excused
+        self.stallThresholdMs = stallThresholdMs
+        self.onStall = onStall
+        self.onRecovered = onRecovered
         self.onHang = onHang
     }
 
@@ -168,12 +190,20 @@ final class HangWatchdog {
             return
         }
         var post: Probe?
-        if probe == nil {
-            post = Probe(postedAt: clock())
+        var stall: (id: Int, waitedMs: Int64)?
+        if let pending = probe {
+            if let threshold = stallThresholdMs {
+                let waited = clock() - pending.postedAt
+                if waited >= threshold { stall = (pending.id, waited) }
+            }
+        } else {
+            nextProbeId = nextProbeId &+ 1
+            post = Probe(postedAt: clock(), id: nextProbeId)
             probe = post
         }
         timer = schedule(intervalMs) { [weak self] in self?.tick() }
         lock.unlock()
+        if let stall = stall, !excused() { onStall?(stall.id, stall.waitedMs) }
         guard let p = post else { return }
         if !postToMain({ [weak self] in self?.ran(p) }) {
             lock.lock()
@@ -195,6 +225,7 @@ final class HangWatchdog {
         guard isRunning else { return }
         let blocked = at - p.postedAt
         if blocked >= thresholdMs && !excused() { onHang(blocked) }
+        if let threshold = stallThresholdMs, blocked >= threshold { onRecovered?(p.id, blocked) }
     }
 }
 
@@ -262,6 +293,11 @@ final class AppVitals {
     }
 
     private let recorder: MetricsRecorder
+    /// False when only the hang watchdog runs (`captureMetrics: false`,
+    /// `captureAppHangs: true`): nothing reaches the recorder.
+    let recordsMetrics: Bool
+    /// The `AppHang` issues the watchdog's stalls become, when captured.
+    let appHangs: AppHangMonitor?
     /// The screen being shown, normalized, for the frame and hang dimensions.
     private let currentScreen: () -> String?
     /// The clock of the process start and of every duration measured here.
@@ -299,14 +335,20 @@ final class AppVitals {
         epochMs: @escaping () -> Int64 = Clock.nowMs,
         hangThresholdMs: Int64 = 2000,
         watchdogIntervalMs: Int64 = 500,
-        reportHangsWithDebugger: Bool = false
+        reportHangsWithDebugger: Bool = false,
+        recordsMetrics: Bool = true,
+        appHangs: AppHangMonitor? = nil
     ) {
         self.recorder = recorder
+        self.recordsMetrics = recordsMetrics
+        self.appHangs = appHangs
         self.currentScreen = currentScreen
         self.elapsedMs = elapsedMs
         self.epochMs = epochMs
         frameClock = uptimeMs
+        let countsFrames = recordsMetrics
         tally = FrameTally { [weak recorder] screen, total, slow, frozen in
+            guard countsFrames else { return }
             recorder?.frames(screen: screen, total: total, slow: slow, frozen: frozen)
         }
         watchdog = HangWatchdog(
@@ -316,8 +358,11 @@ final class AppVitals {
             thresholdMs: hangThresholdMs,
             intervalMs: watchdogIntervalMs,
             excused: { [weak self] in !reportHangsWithDebugger && self?.currentHost?.debuggerAttached() == true },
+            stallThresholdMs: appHangs?.thresholdMs,
+            onStall: { [weak appHangs] id, waited in appHangs?.stalled(id: id, waitedMs: waited) },
+            onRecovered: { [weak appHangs] id, blocked in appHangs?.recovered(id: id, blockedMs: blocked) },
             onHang: { [weak self] ms in
-                guard let self = self else { return }
+                guard let self = self, self.recordsMetrics else { return }
                 self.recorder.hang(Double(ms), screen: self.lastScreen ?? self.currentScreen())
             }
         )
@@ -365,6 +410,9 @@ final class AppVitals {
         let h = host
         lock.unlock()
         watchdog?.stop()
+        // A hang under way when the SDK stops is never reported: it must
+        // not come back as fatal at the next start.
+        appHangs?.cancel()
         h?.uninstall()
         tally.flush()
     }
@@ -500,7 +548,7 @@ final class AppVitals {
         let ms = elapsedMs() - v.startMs
         let name = v.screen
         lock.unlock()
-        if ms >= 0 && ms <= maxStartMs { recorder.screenFullyDisplayed(name, ms: Double(ms)) }
+        if recordsMetrics, ms >= 0 && ms <= maxStartMs { recorder.screenFullyDisplayed(name, ms: Double(ms)) }
     }
 
     /// The frame `VitalsHost.requestDraw` waited for is drawn.
@@ -524,6 +572,7 @@ final class AppVitals {
             if ms >= 0 && ms <= maxStartMs { displayed = (v.screen, ms) }
         }
         lock.unlock()
+        guard recordsMetrics else { return }
         if let start = start {
             recorder.appStart(Double(start.ms), type: start.type,
                               slow: Double(start.ms) >= AppVitals.slowStartMs(start.type))
@@ -539,7 +588,7 @@ final class AppVitals {
         let isForeground = foreground
         let name = screen
         lock.unlock()
-        guard isForeground else { return }
+        guard isForeground, recordsMetrics else { return }
         tally.add(screen: name, kind: kind, nowMs: frameClock())
     }
 

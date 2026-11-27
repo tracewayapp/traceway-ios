@@ -163,10 +163,11 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   `ImageLayer`) that are not icons. Never a screenshot. Never under a blank
   or blur mask. Symbols and template images stay glyphs.
 - **Encoding** (`WireframeImageEncoding`): the bitmap is drawn alone with
-  `UIGraphicsImageRenderer` at its displayed size × 1.5 pixels per point,
-  never more pixels than it has, the longest side at most 512; JPEG at
-  quality 0.6, PNG when it has see-through pixels and is at most 128 px. An
-  encoding over 96 KiB is tried once more at half size, then dropped.
+  `UIGraphicsImageRenderer` at its displayed size × 1 (one pixel per
+  point), never more pixels than it has, the longest side at most 384; JPEG
+  at quality 0.45, PNG when it has see-through pixels and is at most 96 px.
+  An encoding over 48 KiB is tried once more at half size, then dropped
+  (CONTRACT §14.5).
   Encoding runs off the main thread: the first frame shows the placeholder,
   a later one the picture.
 - **DOM**: one `style` node per picture in the screen node,
@@ -177,9 +178,10 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   aspect fill uses the rule's `cover`).
 - **Dedup and limits**: a picture is found again by its bitmap (the
   `UIImage`, or the layer and its contents) and displayed size, so the same
-  photo in many cells is sent once. At most 64 pictures are held; one not
-  shown for 30 s makes room. A rule lingers 30 s after its picture left the
-  screen.
+  photo in many cells is sent once. At most 128 pictures are held; a new
+  one past that evicts the one shown longest ago (never one on the frame
+  being captured), whose rule leaves the page. A rule lingers 30 s after its
+  picture left the screen.
 - **Budget**: at most 4 MiB of encoded image data per session, counted in
   `CollectionBudget` and saved with the replay budget; past it, pictures stay
   placeholders. A new session encodes and counts its pictures again.
@@ -269,8 +271,8 @@ gzipped, to `/api/recordings`; an exception's clip carries its
 | nodes per frame / depth | 3,000 / 128 |
 | rich text runs per label | 50 |
 | glyphs per recorder | 300, at most 512 px a side; a rule lingers 10 s |
-| pictures per recorder | 64; a rule lingers 30 s |
-| picture size | 512 px longest side, 96 KiB encoded |
+| pictures per recorder | 128, the one shown longest ago evicted first; a rule lingers 30 s |
+| picture size | 384 px longest side, 48 KiB encoded |
 | image data per session | 4 MiB |
 | replay per session | 50 MiB and 10,000 rrweb events (`CollectionBudget`) |
 | upload queue | 10 MiB, retries after 5 s, 30 s and 120 s |

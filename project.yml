@@ -69,6 +69,7 @@ targets:
         excludes:
           - OTelTestSupport.swift
           - TracewayClientTests.swift
+          - AppExitsClientTests.swift
       - path: CI/DeviceTests
     dependencies:
       - target: TracewayExample

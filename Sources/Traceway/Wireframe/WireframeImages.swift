@@ -4,24 +4,42 @@ import UIKit
 #endif
 
 /// How the wireframe inlines a picture, the same on every Traceway SDK
-/// that does: the bitmap an image view shows (never a screenshot of the
-/// window), downscaled to its displayed size at 1.5 pixels per point with
-/// the longest side at most 512 pixels, encoded as JPEG at quality 0.6 (PNG
-/// when it has see-through pixels and is at most 128 pixels), and dropped
-/// when it still takes more than 96 KiB at half that size. Each picture is
-/// a CSS rule in a style node of its own: `.im.p<N>{background:url(data:…)
-/// center/cover no-repeat}`; the node showing it gets the classes `im p<N>`
-/// and an inline size and position for its content mode.
+/// that does (CONTRACT §14.5): the bitmap an image view shows (never a
+/// screenshot of the window), downscaled to its displayed size at one pixel
+/// per point with the longest side at most 384 pixels, encoded as JPEG at
+/// quality 0.45 (PNG when it has see-through pixels and is at most 96
+/// pixels), and dropped when it still takes more than 48 KiB at half that
+/// size. Each picture is a CSS rule in a style node of its own:
+/// `.im.p<N>{background:url(data:…) center/cover no-repeat}`; the node
+/// showing it gets the classes `im p<N>` and an inline size and position for
+/// its content mode.
 enum WireframeImageEncoding {
-    static let pixelsPerPoint = 1.5
-    static let maxSide = 512
-    static let maxPNGSide = 128
-    static let jpegQuality = 0.6
-    static let maxEncodedBytes = 96 * 1024
+    static let pixelsPerPoint = 1.0
+    static let maxSide = 384
+    static let maxPNGSide = 96
+    static let jpegQuality = 0.45
+    static let maxEncodedBytes = 48 * 1024
+    /// Pictures one capture holds at most; a new one past it evicts the one
+    /// shown longest ago.
+    static let maxPictures = 128
+
+    /// Which picture a new one replaces when `lastShownMs.count` pictures
+    /// are held: none below `maxPictures`; else the one shown longest ago,
+    /// but never one the frame being captured (`nowMs`) shows. Nil when
+    /// there is room, or when every picture is on this frame.
+    static func evictionIndex(lastShownMs: [Int64], nowMs: Int64, maxPictures: Int = maxPictures) -> Int? {
+        guard lastShownMs.count >= maxPictures else { return nil }
+        var oldest: Int?
+        for (index, shown) in lastShownMs.enumerated() where shown < nowMs {
+            if let current = oldest, lastShownMs[current] <= shown { continue }
+            oldest = index
+        }
+        return oldest
+    }
 
     /// The pixel size a picture shown at `displayed` points is encoded at:
-    /// 1.5 pixels per point, never more pixels than the bitmap has, the
-    /// longest side at most 512. Nil when there is nothing to draw.
+    /// one pixel per point, never more pixels than the bitmap has, the
+    /// longest side at most 384. Nil when there is nothing to draw.
     static func pixelSize(
         displayed: (width: Double, height: Double),
         source: (width: Double, height: Double)
@@ -89,8 +107,9 @@ enum WireframeImageEncoding {
 /// bitmap and the size it is shown at, so the same photo in many cells is
 /// encoded and sent once. Encoding runs off the main thread: the frame that
 /// first shows a picture draws the placeholder, a later one the picture.
-/// At most `maxPictures` are held; one not shown for `lingerMs` makes room
-/// for a new one. Every encoded byte counts against the session's image
+/// At most `maxPictures` are held; a new one past that evicts the one shown
+/// longest ago (its style leaves the page; it is encoded again if it comes
+/// back), never one the current frame shows. Every encoded byte counts against the session's image
 /// allowance in `budget`; past it, and when a new session starts, pictures
 /// are encoded (and counted) again or stay placeholders. Main thread only.
 final class WireframeImages {
@@ -108,7 +127,7 @@ final class WireframeImages {
         init(cls: String) { self.cls = cls }
     }
 
-    static let maxPictures = 64
+    static let maxPictures = WireframeImageEncoding.maxPictures
     /// Encodes waiting or under way. Each holds its full-size bitmap until
     /// it runs, which the app may have let go already: a picture beyond
     /// this is a placeholder for now and is encoded once there is room.
@@ -210,12 +229,11 @@ final class WireframeImages {
 
     private func add(_ nowMs: Int64) -> Picture? {
         if all.count >= WireframeImages.maxPictures {
-            let gone = all.enumerated()
-                .filter { nowMs - $0.element.lastShownMs > WireframeImages.lingerMs }
-                .min { $0.element.lastShownMs < $1.element.lastShownMs }
-            guard let oldest = gone else { return nil }
-            oldest.element.evicted = true
-            all.remove(at: oldest.offset)
+            guard let oldest = WireframeImageEncoding.evictionIndex(
+                lastShownMs: all.map { $0.lastShownMs }, nowMs: nowMs, maxPictures: WireframeImages.maxPictures
+            ), oldest < all.count else { return nil }
+            all[oldest].evicted = true
+            all.remove(at: oldest)
         }
         let picture = Picture(cls: "p\(next)")
         next += 1

@@ -58,26 +58,46 @@ final class ReplayImagesTests: XCTestCase {
 
     // MARK: - Encoding
 
+    /// CONTRACT §14.5: one pixel per point, at most 384 a side.
     func testPicturesAreEncodedAtTheirDisplayedSize() {
         func size(_ w: Double, _ h: Double, source: (Double, Double)) -> [Int]? {
             WireframeImageEncoding.pixelSize(displayed: (w, h), source: source).map { [$0.width, $0.height] }
         }
-        XCTAssertEqual(size(100, 80, source: (4000, 3000)), [150, 120], "1.5 pixels per point")
-        XCTAssertEqual(size(400, 300, source: (4000, 3000)), [512, 384], "the longest side is at most 512")
-        XCTAssertEqual(size(300, 600, source: (4000, 4000)), [256, 512])
+        XCTAssertEqual(WireframeImageEncoding.pixelsPerPoint, 1)
+        XCTAssertEqual(size(100, 80, source: (4000, 3000)), [100, 80], "one pixel per point")
+        XCTAssertEqual(size(400, 300, source: (4000, 3000)), [384, 288], "the longest side is at most 384")
+        XCTAssertEqual(size(300, 600, source: (4000, 4000)), [192, 384])
         XCTAssertEqual(size(100, 100, source: (60, 60)), [60, 60], "never more pixels than the bitmap has")
         XCTAssertNil(size(0, 100, source: (60, 60)))
         XCTAssertNil(size(.infinity, 100, source: (60, 60)))
     }
 
     func testPNGOnlyForSmallSeeThroughPictures() {
-        XCTAssertTrue(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 128, height: 40))
-        XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 129, height: 40))
+        XCTAssertTrue(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 96, height: 40))
+        XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 97, height: 40))
         XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: false, width: 32, height: 32))
-        XCTAssertEqual(WireframeImageEncoding.jpegQuality, 0.6)
-        XCTAssertEqual(WireframeImageEncoding.maxEncodedBytes, 96 * 1024)
+        XCTAssertEqual(WireframeImageEncoding.jpegQuality, 0.45)
+        XCTAssertEqual(WireframeImageEncoding.maxEncodedBytes, 48 * 1024)
         XCTAssertEqual(WireframeImageEncoding.retrySize((width: 300, height: 201)).map { [$0.width, $0.height] }, [150, 100])
         XCTAssertNil(WireframeImageEncoding.retrySize((width: 1, height: 1)))
+    }
+
+    /// At most 128 pictures per capture; a new one evicts the one shown
+    /// longest ago, never one on the frame being captured, so a full
+    /// screen of pictures never stops new ones for good.
+    func testANewPicturePastTheLimitEvictsTheOneShownLongestAgo() {
+        XCTAssertEqual(WireframeImageEncoding.maxPictures, 128)
+        XCTAssertNil(WireframeImageEncoding.evictionIndex(lastShownMs: Array(repeating: 0, count: 127), nowMs: 10))
+        var shown = (0..<128).map { Int64(1000 + $0) }
+        shown[40] = 5
+        XCTAssertEqual(WireframeImageEncoding.evictionIndex(lastShownMs: shown, nowMs: 2000), 40)
+        // Pictures on this frame stay; the oldest of the others goes.
+        XCTAssertEqual(WireframeImageEncoding.evictionIndex(lastShownMs: [7, 3, 7, 5], nowMs: 7, maxPictures: 4), 1)
+        XCTAssertNil(WireframeImageEncoding.evictionIndex(lastShownMs: [7, 7], nowMs: 7, maxPictures: 2),
+                     "every picture is on this frame: the new one waits")
+        // Shown long ago (past the 30 s linger) or a moment ago, the oldest goes.
+        XCTAssertEqual(WireframeImageEncoding.evictionIndex(lastShownMs: [90_000, 99_999], nowMs: 100_000,
+                                                            maxPictures: 2), 0)
     }
 
     func testThePictureIsARuleOverThePlaceholder() {

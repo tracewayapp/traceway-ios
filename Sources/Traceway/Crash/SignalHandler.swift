@@ -198,16 +198,26 @@ private func twRaisedByHardware(_ signo: Int32, _ info: UnsafeMutablePointer<sig
     return signo == SIGSEGV || signo == SIGBUS || signo == SIGILL || signo == SIGFPE || signo == SIGTRAP
 }
 
-/// Gives the calling thread a stack of its own for the handler, so a stack
-/// overflow on it can still be recorded. Each thread needs its own.
+/// The alternate signal stack: 64 KiB, at least what Darwin requires.
+private let twAltStackSize = max(64 * 1024, Int(MINSIGSTKSZ))
+
+/// Gives the calling thread a stack of its own for the handler (CONTRACT
+/// §14.1), so a stack overflow on it can still be recorded: the overflowing
+/// stack has no room left for the handler's frames. Each thread needs its
+/// own. One the thread already has (the app's, another crash reporter's)
+/// is kept.
 private func twInstallAltStack() {
-    let altSize = 64 * 1024
-    guard let alt = malloc(altSize) else { return }
+    var current = stack_t()
+    if sigaltstack(nil, &current) == 0, current.ss_flags & SS_DISABLE == 0, current.ss_sp != nil,
+       current.ss_size >= Int(MINSIGSTKSZ) {
+        return
+    }
+    guard let alt = malloc(twAltStackSize) else { return }
     var ss = stack_t()
     ss.ss_sp = alt
-    ss.ss_size = altSize
+    ss.ss_size = twAltStackSize
     ss.ss_flags = 0
-    sigaltstack(&ss, nil)
+    if sigaltstack(&ss, nil) != 0 { free(alt) }
 }
 
 enum SignalHandler {
@@ -364,6 +374,26 @@ enum SignalHandler {
         twInHandler = 0
         twSuppressCrashRecord = 0
         twMeta = nil
+    }
+
+    /// The calling thread's alternate signal stack: its base and size, and
+    /// whether it is on.
+    static func altStackForTesting() -> (base: UInt, size: Int, enabled: Bool) {
+        var current = stack_t()
+        guard sigaltstack(nil, &current) == 0 else { return (0, 0, false) }
+        return (UInt(bitPattern: current.ss_sp), current.ss_size, current.ss_flags & SS_DISABLE == 0)
+    }
+
+    /// Sets up the calling thread's alternate stack as `install` does.
+    static func installAltStackForTesting() {
+        twInstallAltStack()
+    }
+
+    /// The flags of the action installed for `signal` now.
+    static func actionFlagsForTesting(_ signal: Int32) -> Int32 {
+        var action = sigaction()
+        guard sigaction(signal, nil, &action) == 0 else { return 0 }
+        return action.sa_flags
     }
 
     /// The frame walk on its own, writing to `fd`.

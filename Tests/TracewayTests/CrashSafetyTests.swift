@@ -391,6 +391,60 @@ final class CrashSafetyTests: XCTestCase {
         XCTAssertEqual(counts.count, 1)
     }
 
+    /// CONTRACT §14's hooks with everything broken inside: a unified log
+    /// that cannot be read, a main thread whose stack cannot be taken,
+    /// MetricKit payloads of any shape, state files nobody can read, lines
+    /// of any size. Reports still leave, and after `shutdown` the hooks do
+    /// nothing.
+    func testTheExitHangAndLogHooksContainWhatBreaksInside() throws {
+        let state = temporaryDirectory().appendingPathComponent("traceway_v2")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try Data("{".utf8).write(to: state.appendingPathComponent(AppHangMonitor.fileName))
+        try Data("not a marker".utf8).write(to: state.appendingPathComponent(ExitMarker.fileName))
+        let source = FakeOSLogSource()
+        source.failNext(1000)
+        let host = FakeVitalsHost()
+        let scheduler = ManualMetricsScheduler(nowMs: Clock.nowMs())
+        let client = try TracewayClient.start(
+            connectionString: "token@https://traceway.example.com",
+            options: TracewayOptions(recordAllSessions: true, exportDelayMs: 50, appHangThresholdMs: 1000),
+            overrides: TracewayTestOverrides(
+                transport: server, stateDirectory: state,
+                deviceAttributes: ["os.name": "ios", "device.model": "iPhone15,2"],
+                metricsScheduler: scheduler, vitalsHost: host, captureMainStack: { nil }, osLogSource: source
+            )
+        )
+        struct Boom: Error {}
+        Traceway.captureException(Boom())
+        for payload in [Data(), Data("{".utf8), Data((0..<4096).map { UInt8($0 % 256) }),
+                        Data(#"{"crashDiagnostics":[1,"x",null,{"diagnosticMetaData":[]}]}"#.utf8),
+                        Data(#"{"timeStampBegin":"2026-11-20 10:49:00","crashDiagnostics":[{"callStackTree":{"callStacks":[[]]}}]}"#.utf8)] {
+            client.receiveDiagnosticPayload(payload, begin: nil, end: nil)
+        }
+        client.recordStdLines([String(repeating: "z", count: 1_000_000), "", "\u{0}"], stream: "stdout")
+        client.recordStdLines(["odd stream"], stream: "")
+        // A hang whose stack cannot be taken.
+        host.runMain()
+        scheduler.advance(500)
+        for _ in 0..<6 { scheduler.advance(500) }
+        host.runMain()
+        client.appHangs?.settle()
+        assertStillWorks(client, "after the §14 hooks broke")
+        XCTAssertTrue(sent("Boom"), "an exception goes out though the log could not be read")
+        XCTAssertFalse(sent("Main thread blocked"))
+        client.shutdown()
+
+        let before = server.requests.count
+        client.receiveDiagnosticPayload(try metricKitFixture("crash-signal"), begin: Date(), end: Date())
+        client.recordStdLines(["late"], stream: "stdout")
+        client.runForeground(true)
+        client.appTerminating()
+        client.reportAppHang(AppHangReport(blockedMs: 3000, startedAtMs: 0, traceBody: "", attributes: [:],
+                                           resource: [:], fatal: false))
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(server.requests.count, before, "nothing after shutdown")
+    }
+
     // MARK: - The app's crashes reach the handlers before Traceway's (§13.3)
 
     #if canImport(ObjectiveC)
@@ -483,6 +537,152 @@ final class CrashSafetyTests: XCTestCase {
         XCTAssertLessThanOrEqual(SignalHandler.metadataAllocationsForTesting - before, 2)
         XCTAssertEqual(SignalHandler.publishedMetadataForTesting, last)
     }
+
+    /// §14.1: the handler runs on a stack of its own, so a stack overflow,
+    /// which leaves no room on the thread's stack, is still recorded. A
+    /// recursion to death would end the test run, so the setup is checked:
+    /// the action asks for the alternate stack, the thread has one, and a
+    /// signal is handled on it.
+    func testTheSignalHandlerHasAStackOfItsOwn() throws {
+        SignalHandler.uninstallForTesting()
+        var original = sigaction()
+        var probe = sigaction()
+        sigemptyset(&probe.sa_mask)
+        probe.sa_flags = SA_SIGINFO | SA_ONSTACK
+        probe.__sigaction_u.__sa_sigaction = stackProbeHandler
+        sigaction(SIGSEGV, &probe, &original)
+        defer {
+            SignalHandler.uninstallForTesting()
+            sigaction(SIGSEGV, &original, nil)
+        }
+        let path = scratchDirectory(self).appendingPathComponent("crash.tw").path
+        SignalHandler.install(crashPath: path, metadata: [])
+        XCTAssertNotEqual(SignalHandler.actionFlagsForTesting(SIGSEGV) & SA_ONSTACK, 0)
+        let alt = SignalHandler.altStackForTesting()
+        XCTAssertTrue(alt.enabled)
+        XCTAssertGreaterThanOrEqual(alt.size, Int(MINSIGSTKSZ))
+        probedStackAddress = 0
+        raise(SIGSEGV)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "Traceway's handler recorded it")
+        XCTAssertGreaterThanOrEqual(probedStackAddress, alt.base, "handled on the alternate stack")
+        XCTAssertLessThan(probedStackAddress, alt.base + UInt(alt.size))
+
+        // A thread that has an alternate stack of its own keeps it; one
+        // without gets Traceway's.
+        let result = Locked<(kept: Bool, given: Bool)>((false, false))
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            let size = 128 * 1024
+            let mine = malloc(size)
+            var own = stack_t()
+            own.ss_sp = mine
+            own.ss_size = size
+            own.ss_flags = 0
+            sigaltstack(&own, nil)
+            SignalHandler.installAltStackForTesting()
+            let kept = SignalHandler.altStackForTesting()
+            var off = stack_t()
+            off.ss_flags = SS_DISABLE
+            sigaltstack(&off, nil)
+            free(mine)
+            SignalHandler.installAltStackForTesting()
+            let given = SignalHandler.altStackForTesting()
+            result.value = (kept.base == UInt(bitPattern: mine) && kept.size == size,
+                            given.enabled && given.size == 64 * 1024)
+            done.signal()
+        }
+        thread.start()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(result.value.kept, "the thread's own alternate stack is kept")
+        XCTAssertTrue(result.value.given, "a thread without one gets Traceway's")
+    }
+
+    /// §14.2: from another thread, the main thread's stack while it is
+    /// blocked, inside this test's binary, without touching it otherwise.
+    func testTheMainThreadsStackIsTakenWhileItIsBlocked() throws {
+        guard Thread.isMainThread else { throw XCTSkip("the test runs off the main thread here") }
+        MainThreadStack.prepare()
+        XCTAssertTrue(MainThreadStack.isPrepared)
+        XCTAssertNil(MainThreadStack.capture(), "not from the main thread itself")
+        let taken = Locked<[UInt]?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+            taken.value = MainThreadStack.capture()
+            done.signal()
+        }
+        blockTheMainThread(seconds: 1)
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+        let frames = try XCTUnwrap(taken.value)
+        XCTAssertLessThanOrEqual(frames.count, MainThreadStack.maxFrames)
+        BinaryImages.resetForTesting()
+        let images = BinaryImages.capture()
+        let mine = try XCTUnwrap(images.first { $0.loadAddr == UInt(bitPattern: #dsohandle) }, "this test's image")
+        XCTAssertTrue(frames.contains { BinaryImages.map(address: $0, images: images)?.image.name == mine.name },
+                      "a frame of the blocked test function")
+    }
+
+    /// The suspended walk reads the registers at fixed offsets of the thread
+    /// state, without the C struct: they are the SDK headers' fields.
+    func testTheRegisterOffsetsAreTheThreadStateFields() throws {
+        let layout = try XCTUnwrap(MainThreadStack.layout)
+        func read(_ bytes: UnsafeRawBufferPointer, _ offset: Int) -> UInt64 {
+            bytes.load(fromByteOffset: offset, as: UInt64.self)
+        }
+        #if arch(arm64)
+        var state = arm_thread_state64_t()
+        state.__pc = 0x1111_2222_3333_4444
+        state.__fp = 0x5555_6666_7777_8888
+        state.__lr = 0x9999_aaaa_bbbb_cccc
+        XCTAssertEqual(withUnsafeBytes(of: &state) { read($0, layout.pc) }, 0x1111_2222_3333_4444)
+        XCTAssertEqual(withUnsafeBytes(of: &state) { read($0, layout.fp) }, 0x5555_6666_7777_8888)
+        XCTAssertEqual(withUnsafeBytes(of: &state) { read($0, layout.lr ?? 0) }, 0x9999_aaaa_bbbb_cccc)
+        XCTAssertEqual(Int(layout.words), MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size)
+        XCTAssertEqual(layout.flavor, thread_state_flavor_t(ARM_THREAD_STATE64))
+        #elseif arch(x86_64)
+        var state = x86_thread_state64_t()
+        state.__rip = 0x1111_2222_3333_4444
+        state.__rbp = 0x5555_6666_7777_8888
+        XCTAssertEqual(withUnsafeBytes(of: &state) { read($0, layout.pc) }, 0x1111_2222_3333_4444)
+        XCTAssertEqual(withUnsafeBytes(of: &state) { read($0, layout.fp) }, 0x5555_6666_7777_8888)
+        XCTAssertNil(layout.lr)
+        XCTAssertEqual(Int(layout.words), MemoryLayout<x86_thread_state64_t>.size / MemoryLayout<natural_t>.size)
+        XCTAssertEqual(layout.flavor, thread_state_flavor_t(x86_THREAD_STATE64))
+        #endif
+    }
+
+    /// §14.2 end to end on a real main thread: blocked for 2.5 s, it is
+    /// one `AppHang` issue whose stack is inside this test's binary.
+    func testABlockedMainThreadIsOneAppHangWithItsStack() throws {
+        guard Thread.isMainThread else { throw XCTSkip("the test runs off the main thread here") }
+        MainThreadStack.prepare()
+        BinaryImages.resetForTesting()
+        let images = BinaryImages.capture()
+        let mine = try XCTUnwrap(images.first { $0.loadAddr == UInt(bitPattern: #dsohandle) }?.name)
+        let client = try TracewayClient.start(
+            connectionString: "token@https://traceway.example.com",
+            options: TracewayOptions(exportDelayMs: 50, reportHangsInDebug: true, appHangThresholdMs: 1500),
+            overrides: TracewayTestOverrides(
+                transport: server,
+                deviceAttributes: ["os.name": "ios", "device.model": "iPhone15,2"],
+                vitalsHost: MainQueueVitalsHost()
+            )
+        )
+        runMainLoop(for: 0.6)
+        blockTheMainThread(seconds: 2.5)
+        runMainLoop(for: 0.5)
+        client.appHangs?.settle()
+        runMainLoop(for: 0.3)
+        client.flush(timeout: 2)
+        XCTAssertTrue(eventually { self.sent("Main thread blocked for") }, "an AppHang was sent")
+        let hangs = server.requests(to: "/api/otel/v1/logs").filter { request in
+            var body = request.body
+            if request.headers["Content-Encoding"] == "gzip", let plain = Gzip.decompress(body) { body = plain }
+            return body.range(of: Data("Main thread blocked for".utf8)) != nil
+        }
+        XCTAssertEqual(hangs.count, 1, "one AppHang")
+        XCTAssertTrue(sent("AppHang"))
+        XCTAssertTrue(sent(" \(mine)"), "a frame inside \(mine)")
+    }
     #endif
 }
 
@@ -502,6 +702,41 @@ private func previousSignalHandler(
     _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
 ) {
     previousSignalCalls += 1
+}
+
+/// Where the probe handler's stack was when it ran.
+private var probedStackAddress: UInt = 0
+private func stackProbeHandler(
+    _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
+) {
+    var marker: UInt8 = 0
+    withUnsafeMutablePointer(to: &marker) { probedStackAddress = UInt(bitPattern: $0) }
+}
+
+/// Blocks the calling (main) thread inside this binary.
+@inline(never)
+private func blockTheMainThread(seconds: TimeInterval) {
+    Thread.sleep(forTimeInterval: seconds)
+}
+
+/// Runs the main run loop for `seconds`.
+private func runMainLoop(for seconds: TimeInterval) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+}
+
+/// The hang watchdog's platform side on the real main queue.
+private final class MainQueueVitalsHost: VitalsHost {
+    func install(_ vitals: AppVitals) {}
+    func uninstall() {}
+    func requestDraw() {}
+    func cancelDraw() {}
+    func postToMain(_ task: @escaping () -> Void) -> Bool {
+        DispatchQueue.main.async(execute: task)
+        return true
+    }
+    func checkLaunch(_ result: @escaping (LaunchInfo) -> Void) {}
+    func debuggerAttached() -> Bool { false }
 }
 #endif
 
@@ -870,6 +1105,31 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
             context.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
         }
         XCTAssertNotNil(images.picture(later, displayed: CGSize(width: 100, height: 75), nowMs: 1))
+    }
+
+    /// §14.5: past 128 pictures a new one evicts the one shown longest ago,
+    /// instead of staying a placeholder until pictures age out.
+    func testPicturesPastTheLimitEvictTheOneShownLongestAgo() {
+        let images = WireframeImages()
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
+        var shown: [UIImage] = []
+        var first: WireframeImages.Picture?
+        for i in 0..<(WireframeImages.maxPictures + 2) {
+            let image = renderer.image { context in
+                UIColor(red: CGFloat(i % 16) / 16, green: CGFloat(i / 16) / 16, blue: 0.5, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+            }
+            shown.append(image)
+            let deadline = Date().addingTimeInterval(5)
+            while images.pendingEncodes >= WireframeImages.maxPendingEncodes && Date() < deadline { settle(0.01) }
+            let picture = images.picture(image, displayed: CGSize(width: 8, height: 8), nowMs: Int64(i))
+            XCTAssertNotNil(picture, "picture \(i)")
+            if i == 0 { first = picture }
+        }
+        XCTAssertEqual(images.all.count, WireframeImages.maxPictures)
+        XCTAssertFalse(images.all.contains { $0 === first }, "the oldest went")
+        XCTAssertTrue(images.all.contains { $0.cls == "p\(WireframeImages.maxPictures + 1)" }, "the newest is in")
+        XCTAssertEqual(shown.count, WireframeImages.maxPictures + 2)
     }
 }
 #endif

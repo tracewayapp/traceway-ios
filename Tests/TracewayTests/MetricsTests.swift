@@ -212,7 +212,7 @@ final class MetricsCatalogTests: XCTestCase {
         let catalog: Set<String> = [
             "app.start.duration", "app.screen.ttid", "app.screen.ttfd",
             "app.frames.slow", "app.frames.slow.total", "app.frames.frozen",
-            "app.frames.frozen.total", "app.hang", "app.hang.duration", "app.crash",
+            "app.frames.frozen.total", "app.hang", "app.hang.duration", "app.anr", "app.crash", "app.oom",
             "app.session", "app.user", "app.user.affected", "app.memory.peak",
             "app.request.duration", "app.request.bytes", "app.request.failed",
             "app.request.failed.total",
@@ -220,7 +220,7 @@ final class MetricsCatalogTests: XCTestCase {
         let names: Set<String> = [
             metricAppStart, metricScreenTTID, metricScreenTTFD,
             metricFramesSlow, "\(metricFramesSlow).total", metricFramesFrozen, "\(metricFramesFrozen).total",
-            metricHang, metricHangDuration, metricCrash, metricSession, metricUser, metricUserAffected,
+            metricHang, metricHangDuration, metricANR, metricCrash, metricOOM, metricSession, metricUser, metricUserAffected,
             metricMemoryPeak, metricRequestDuration, metricRequestBytes, metricRequestFailed,
             "\(metricRequestFailed).total",
         ]

@@ -1,0 +1,45 @@
+{
+  "timeStampEnd" : "2026-11-22 18:01:00",
+  "timeStampBegin" : "2026-11-22 18:00:00",
+  "crashDiagnostics" : [
+    {
+      "version" : "1.0.0",
+      "callStackTree" : {
+        "callStackPerThread" : true,
+        "callStacks" : [
+          {
+            "threadAttributed" : true,
+            "callStackRootFrames" : [
+              {
+                "binaryUUID" : "22222222-3333-4444-5555-666666666666",
+                "offsetIntoBinaryTextSegment" : 40960,
+                "sampleCount" : 1,
+                "binaryName" : "libsystem_c.dylib",
+                "address" : 7516233728
+              }
+            ]
+          }
+        ]
+      },
+      "diagnosticMetaData" : {
+        "appBuildVersion" : "43",
+        "appVersion" : "1.5.0",
+        "exceptionType" : 10,
+        "osVersion" : "iPhone OS 17.4 (21E219)",
+        "deviceType" : "iPhone16,1",
+        "signal" : 6,
+        "exceptionCode" : 0,
+        "platformArchitecture" : "arm64e",
+        "terminationReason" : "Namespace SIGNAL, Code 0x6",
+        "objectiveCexceptionReason" : {
+          "composedMessage" : "-[NSNull length]: unrecognized selector sent to instance 0x1f2e3d4c0",
+          "formatString" : "-[%@ %@]: unrecognized selector sent to instance %p",
+          "arguments" : [ "NSNull", "length", "0x1f2e3d4c0" ],
+          "exceptionType" : "NSInvalidArgumentException",
+          "className" : "NSException",
+          "exceptionName" : "NSInvalidArgumentException"
+        }
+      }
+    }
+  ]
+}

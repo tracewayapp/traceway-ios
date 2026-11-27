@@ -8,6 +8,8 @@ let metricFramesFrozen = "app.frames.frozen"
 let metricHang = "app.hang"
 let metricHangDuration = "app.hang.duration"
 let metricCrash = "app.crash"
+let metricANR = "app.anr"
+let metricOOM = "app.oom"
 let metricSession = "app.session"
 let metricUser = "app.user"
 let metricUserAffected = "app.user.affected"
@@ -25,7 +27,9 @@ let startHot = "hot"
 /// server accepts exactly these (`app.user.affected` in its catalog).
 enum UserIssue: String, CaseIterable {
     case crash
+    case anr
     case hang
+    case oom
     case slowStart = "slow_start"
     case frozenFrames = "frozen_frames"
     case failedRequest = "failed_request"
@@ -365,6 +369,24 @@ final class MetricsRecorder {
         user(.crash)
         guard active else { return }
         locked { aggregator.count(metricCrash) }
+    }
+
+    /// The system ended the app for not responding (a watchdog
+    /// termination, `0x8badf00d`), reported by MetricKit after the fact.
+    func anr() {
+        if deferred({ self.anr() }) { return }
+        user(.anr)
+        guard active else { return }
+        locked { aggregator.count(metricANR) }
+    }
+
+    /// The last run most likely ran out of memory in the foreground (the
+    /// next-launch heuristic): a count, never an issue.
+    func oom() {
+        if deferred({ self.oom() }) { return }
+        user(.oom)
+        guard active else { return }
+        locked { aggregator.count(metricOOM) }
     }
 
     /// A finished HTTP request the SDK saw.

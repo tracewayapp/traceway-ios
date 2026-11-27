@@ -94,11 +94,15 @@ final class MetricsClientTests: XCTestCase {
 
     func testCaptureMetricsFalseSendsNoMetrics() throws {
         let client = try start(TracewayOptions(captureMetrics: false, remoteConfig: false))
-        XCTAssertNil(client.vitals)
+        // Only the hang watchdog runs, for AppHang issues.
+        XCTAssertEqual(client.vitals?.recordsMetrics, false)
         Traceway.count("cart.add")
         client.flush(timeout: 10)
         XCTAssertTrue(server.requests(to: "/api/otel/v1/metrics").isEmpty)
         XCTAssertNil(client.resourceAttributes["traceway.metrics"])
+        client.shutdown()
+        let none = try start(TracewayOptions(captureMetrics: false, remoteConfig: false, captureAppHangs: false))
+        XCTAssertNil(none.vitals)
     }
 
     func testTheOptionsDimensionsAreOnEveryPayload() throws {

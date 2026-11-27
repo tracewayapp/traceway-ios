@@ -37,7 +37,8 @@ public struct TracewayOptions {
     /// Keep SDK state and undelivered telemetry on disk across restarts,
     /// and record hard crashes (signal handlers write them to disk).
     public var persistToDisk: Bool
-    /// Record `Traceway.log` lines (signal `console`).
+    /// Record log lines (signal `console`): `Traceway.log`, and on iOS 15
+    /// and later what the app logs with `NSLog`, `os_log` and `Logger`.
     public var captureLogs: Bool
     /// Record URLSession requests as client spans (signal `network`).
     public var captureNetwork: Bool
@@ -91,10 +92,31 @@ public struct TracewayOptions {
     /// exactly like a hang does, and there is no telling them apart. Turn it
     /// on to test hang reporting from Xcode.
     public var reportHangsInDebug: Bool
+    /// Report why earlier runs ended: crashes and watchdog terminations
+    /// MetricKit saw that the SDK's own handlers did not record, and
+    /// `app.oom` when the last run most likely ran out of memory in the
+    /// foreground (see "Exit reasons" in the README).
+    public var captureExitReasons: Bool
+    /// Report a main thread blocked for `appHangThresholdMs` or more in the
+    /// foreground as an `AppHang` issue with the main thread's stack; one
+    /// that ends the process is reported at the next start. Not while a
+    /// debugger is attached, unless `reportHangsInDebug`.
+    public var captureAppHangs: Bool
+    /// How long the main thread must be blocked to be an `AppHang` issue
+    /// (250–60,000 ms).
+    public var appHangThresholdMs: Int
+    /// Record what the app writes to standard output and standard error
+    /// (`print`) as log lines (`log.source: stdout` / `stderr`). Off by
+    /// default: it redirects the process's file descriptors 1 and 2 through
+    /// a pipe; every write still reaches the original destination first.
+    public var captureStdout: Bool
 
     /// The most frames the replay buffer holds, whatever `maxBufferFrames`
     /// asks for.
     static let maxBufferFramesLimit = 10_000
+
+    /// `appHangThresholdMs` held to what the watchdog can measure.
+    var effectiveAppHangThresholdMs: Int64 { Int64(min(max(appHangThresholdMs, 250), 60_000)) }
 
     public init(
         sampleRate: Double = 1.0,
@@ -124,7 +146,11 @@ public struct TracewayOptions {
         propagateTraceHeaderUrls: [String] = [],
         ignoreErrors: [TracewayErrorPattern]? = nil,
         beforeCapture: ((TracewayCapturedError) throws -> Bool)? = nil,
-        reportHangsInDebug: Bool = false
+        reportHangsInDebug: Bool = false,
+        captureExitReasons: Bool = true,
+        captureAppHangs: Bool = true,
+        appHangThresholdMs: Int = 2000,
+        captureStdout: Bool = false
     ) {
         self.sampleRate = sampleRate
         self.debug = debug
@@ -154,6 +180,10 @@ public struct TracewayOptions {
         self.ignoreErrors = ignoreErrors
         self.beforeCapture = beforeCapture
         self.reportHangsInDebug = reportHangsInDebug
+        self.captureExitReasons = captureExitReasons
+        self.captureAppHangs = captureAppHangs
+        self.appHangThresholdMs = appHangThresholdMs
+        self.captureStdout = captureStdout
     }
 
     /// What is not reported unless `ignoreErrors` says otherwise: a phone

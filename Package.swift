@@ -48,8 +48,9 @@ let package = Package(
             name: "TracewayTests",
             dependencies: ["Traceway"],
             // The shared wireframe stylesheet, byte for byte the Android
-            // and Flutter SDKs' copy; `wireframeCss` must equal it.
-            resources: [.copy("Resources/wireframe.css")]
+            // and Flutter SDKs' copy; `wireframeCss` must equal it. MetricKit
+            // payloads as `jsonRepresentation()` gives them, for the parser.
+            resources: [.copy("Resources/wireframe.css"), .copy("Resources/MetricKit")]
         ),
     ],
     swiftLanguageModes: [.v5]

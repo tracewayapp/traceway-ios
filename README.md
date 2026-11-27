@@ -16,7 +16,15 @@ device, without a release.
 ## Features
 
 - Uncaught `NSException`s and fatal signals (Swift traps, `fatalError`, bad
-  memory access), symbolicated server-side from your uploaded dSYMs
+  memory access, stack overflows), symbolicated server-side from your
+  uploaded dSYMs
+- **Exit reasons**: crashes MetricKit saw that the in-process handlers could
+  not record, watchdog terminations (`0x8badf00d`), and a count of likely
+  out-of-memory exits
+- **App hangs as issues**: a main thread blocked for 2 s is an `AppHang`
+  issue with the main thread's stack, also when the hang ended the app
+- **Log capture**: what the app logs with `NSLog`, `os_log` and `Logger`
+  (iOS 15+), and `print` output when you opt in
 - **OpenTelemetry inside**: every record is an OpenTelemetry log record or span
   made with `opentelemetry-swift`, and leaves through its OTLP/HTTP exporters
 - **Ring buffer**: logs, requests, navigation, taps and custom events stay on
@@ -166,6 +174,32 @@ A log line is an OpenTelemetry log record without an event name (signal
 `console`), with the severity of its `TracewayLogLevel` (`trace`, `debug`,
 `info`, `warn`, `error`, `fatal`), `log.source: api` and your attributes. The
 console's `minSeverity` setting (`info` by default) drops lines below it.
+
+#### Automatic log capture
+
+On iOS 15 and later the SDK also reads what the app itself logs through the
+unified log (`NSLog`, `os_log`, `Logger`), with
+`OSLogStore(scope: .currentProcessIdentifier)`: every 10 seconds, and right
+before an exception is recorded, so the lines just before it are among its
+breadcrumbs. Each line is a console record with `log.source: oslog`, its
+level as severity (`debug`, `info` for info and notice, `error`, `fatal` for
+a fault) and `oslog.subsystem` / `oslog.category` when set. The system
+frameworks' entries (`com.apple.*` subsystems) and the SDK's own lines are
+left out; a line keeps at most 16 KiB, a read at most the newest 1,000 lines.
+
+`print` does not reach the unified log. With `captureStdout: true` the SDK
+tees standard output and standard error: file descriptors 1 and 2 point at a
+pipe, a thread of the SDK writes every byte to the original destination
+first and then records each line (`log.source: stdout`, severity `info`;
+`stderr`, severity `error`). It never holds the writer up: lines wait on a
+queue of their own, at most 1,000 at a time, and past that they are dropped
+(never the bytes). Off by default, as it redirects the process's
+descriptors; standard output becomes line buffered.
+
+All of it is the `console` signal: the remote `signals.console` settings
+(mode, `minSeverity`, `sampleRate`) apply exactly as to `Traceway.log`, and
+`captureLogs: false` turns all of it off. While the console is off the
+unified log is not read at all.
 
 ### Actions and events
 
@@ -497,9 +531,11 @@ captures stream the session as segments. A session uploads at most 50 MiB and
 
 The pictures `UIImageView`s show, and the image layers SwiftUI uses for
 photos, can be part of the replay. Never a screenshot of the window: only the
-bitmap the view shows, downscaled to its displayed size (1.5 pixels per
-point, at most 512 pixels a side), as JPEG at quality 0.6 (PNG for small
-see-through images), at most 96 KiB each and 4 MiB per session. A picture
+bitmap the view shows, downscaled to its displayed size (one pixel per
+point, at most 384 pixels a side), as JPEG at quality 0.45 (PNG for
+see-through images of at most 96 pixels), at most 48 KiB each (else tried
+once at half size, then dropped) and 4 MiB per session. A capture holds up
+to 128 pictures; a new one past that replaces the one shown longest ago. A picture
 seen for the first time is encoded off the main thread: the frame that first
 shows it has the placeholder, a later one the picture. The same picture in
 many cells is sent once.
@@ -576,8 +612,10 @@ Android and Flutter SDKs', so the same dashboards and SLOs work for all three.
 | `app.screen.ttfd` (`screen`) | Time to full display: from the same start until the app calls `Traceway.reportFullyDisplayed()` |
 | `app.frames.slow`, `app.frames.frozen` (with `.total`, by `screen`) | A `CADisplayLink` in the foreground: slow when a frame took more than one and a half frame durations at the display's rate, frozen at 700 ms or more |
 | `app.hang`, `app.hang.duration` | The main thread ran nothing for 2 s or more while the app was in the foreground; not while a debugger is attached unless `reportHangsInDebug` is set |
-| `app.crash` | Uncaught `NSException`s, and fatal signals counted at the next start |
-| `app.session`, `app.user`, `app.user.affected` (`issue`) | Sessions; users counted once a day per installation, and once a day per problem they met (`crash`, `hang`, `slow_start`, `frozen_frames`, `failed_request`), so no id leaves the device |
+| `app.crash` | Uncaught `NSException`s, fatal signals counted at the next start, and crashes only MetricKit saw (see [Exit reasons](#exit-reasons)) |
+| `app.anr` | Watchdog terminations (`0x8badf00d`) MetricKit reported |
+| `app.oom` | Runs that most likely ran out of memory in the foreground, counted at the next start (a heuristic, never an issue) |
+| `app.session`, `app.user`, `app.user.affected` (`issue`) | Sessions; users counted once a day per installation, and once a day per problem they met (`crash`, `anr`, `hang`, `oom`, `slow_start`, `frozen_frames`, `failed_request`), so no id leaves the device |
 | `app.memory.peak` | The process's peak physical footprint (`task_vm_info`, what the system's memory limit counts), once per session |
 | `app.request.duration`, `app.request.bytes`, `app.request.failed` (`host`) | Every URLSession request the SDK records (up to 20 hosts, then `other`) |
 
@@ -701,7 +739,11 @@ mobile SDKs.
 | `propagateTraceHeaderUrls` | `[]` | URL prefixes whose requests carry `traceparent` |
 | `ignoreErrors` | `nil` (`defaultIgnoreErrors`) | Issues not reported, matched against `Type: message` (see [Errors and messages](#errors-and-messages)) |
 | `beforeCapture` | `nil` | Sees every exception and message; returning false drops it |
-| `reportHangsInDebug` | `false` | Report hangs (`app.hang`) while a debugger is attached too |
+| `reportHangsInDebug` | `false` | Report hangs (`app.hang` and `AppHang` issues) while a debugger is attached too |
+| `captureExitReasons` | `true` | Report crashes and watchdog terminations only MetricKit saw, and count likely out-of-memory exits (see [Exit reasons](#exit-reasons)) |
+| `captureAppHangs` | `true` | Report a main thread blocked for `appHangThresholdMs` as an `AppHang` issue (see [App hangs](#app-hangs)) |
+| `appHangThresholdMs` | `2000` | How long the main thread must be blocked to be an `AppHang` (250–60,000) |
+| `captureStdout` | `false` | Record `print` and other standard output / error lines (see [Automatic log capture](#automatic-log-capture)) |
 
 ## Crashes and symbolication
 
@@ -717,6 +759,54 @@ After `initialize`, the SDK records:
 The handlers are installed once per process, and the ones installed before
 Traceway's (another crash reporter's) still get every crash, once, after it:
 a fault the hardware raised reaches them with its own `siginfo` and context.
+The handler runs on an alternate signal stack (`sigaltstack`, 64 KiB, on the
+main thread and the thread that starts the SDK; a thread's own alternate
+stack is kept), so a stack overflow, which leaves no room on the crashing
+stack, is still recorded. There is no Mach exception server: it would fight
+debuggers and other crash reporters, and the signals already cover
+`EXC_BAD_ACCESS`, `EXC_BAD_INSTRUCTION`, `EXC_ARITHMETIC` and
+`EXC_BREAKPOINT`.
+
+### Exit reasons
+
+With `captureExitReasons` (on by default) the SDK also learns how earlier
+runs ended:
+
+- **MetricKit** (iOS 14+; delivered at the next launch from iOS 15): each
+  `MXCrashDiagnostic` the in-process handlers did not already record (the
+  same signal within a minute of MetricKit's window) becomes an issue of type
+  `NativeCrash` (`SIGSEGV (EXC_BAD_ACCESS)`, or the uncaught Objective-C
+  exception on iOS 17+), with the crashed thread's frames in the same wire
+  format, under the app and OS version that crashed, `traceway.exit.*`
+  attributes and `app.crash`. A watchdog termination (`0x8badf00d`, the
+  system ended an app that did not respond in time) is an issue of type
+  `WatchdogTermination` and counts `app.anr`; when it ended a hang the SDK
+  already reported as fatal, it is only counted. The payload's JSON
+  (`jsonRepresentation()`) is what is read.
+- **Out of memory**: iOS says nothing when it ends an app for its memory. At
+  the next start, a run that was in the foreground, recorded no crash or
+  fatal hang, did not `shutdown`, `exit` or receive `willTerminate`, ran no
+  debugger and had the same app version, build, OS version and boot counts
+  one `app.oom`, unless MetricKit reports a crash within 20 seconds. A
+  heuristic: a count, never an issue.
+
+### App hangs
+
+The watchdog behind `app.hang` also reports hangs as issues
+(`captureAppHangs`, on by default). When the main thread has not answered
+for `appHangThresholdMs` (2 s), the watchdog's thread suspends it, reads its
+registers (`thread_get_state`), walks its frame records (at most 128, each
+read checked with `vm_read_overwrite` to lie on the main thread's stack) and
+resumes it at once; nothing is allocated or locked while it is suspended.
+When the main thread answers again, the hang is one issue of type `AppHang`,
+`Main thread blocked for 3.2 s`, with those frames (symbolicated like
+crashes), the screen it happened on and `app.hang.fatal: false`. While the
+main thread is blocked the hang is kept on disk: if the app is killed during
+it (by the user or the system's watchdog), the next start reports it with
+`app.hang.fatal: true` and `Main thread blocked for at least 12.3 s`. Hangs
+in the background or while a debugger is attached are not reported (unless
+`reportHangsInDebug`). `ignoreErrors` and `beforeCapture` see `AppHang`
+issues like other exceptions.
 
 The SDK itself never takes the app down: its sources keep no traps
 (`try!`, force unwraps, unchecked conversions of numbers it is sent), the
@@ -737,6 +827,9 @@ the home screen, then relaunch after the crash.
 | What | Record | Signal |
 |------|--------|--------|
 | Uncaught `NSException`s, fatal signals | `exception` (`traceway.crash: true`) | `errors` |
+| Crashes and watchdog terminations MetricKit saw | `exception` (`NativeCrash`, `WatchdogTermination`; `traceway.exit.source: metrickit`) | `errors` |
+| A main thread blocked for 2 s | `exception` (`AppHang`, `app.hang.fatal`) | `errors` |
+| `NSLog`, `os_log` and `Logger` lines (iOS 15+); `print` with `captureStdout` | log records (`log.source: oslog`, `stdout`, `stderr`) | `console` |
 | View controllers appearing | `browser.navigation` | `navigation` |
 | Taps | `browser.user_action.click` | `userActions` |
 | URLSession requests | client spans | `network` |
@@ -756,7 +849,7 @@ and `screen.density`.
 |----------|---------|
 | iOS 13+ (UIKit, SwiftUI) | everything above |
 | iPadOS | as iOS; a trackpad pointer is replayed as a mouse |
-| macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay, URLSession instrumentation, or start, frame and hang measurements |
+| macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay, URLSession instrumentation, MetricKit, or start, frame and hang measurements |
 
 ### Platform differences
 
@@ -764,7 +857,9 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
 
 - **Start**: `Traceway.initialize(connectionString:options:)`, because Swift keeps `Traceway.init(…)` for initializers. The browser and Android call it `init`, Flutter `run`. It returns the `TracewayClient`, or nil when the settings are invalid (logged, not thrown); a nil connection string starts standalone. `Traceway.start` is a deprecated alias.
 - **Masks** belong to views: the `UIView.tracewayMask` property and the SwiftUI modifier `.tracewayMask(_:)`. The marker that needs no code is the `accessibilityIdentifier` (`traceway-mask`, `traceway-blank`), where the browser uses CSS classes, Android `android:tag` / `testTag` and Flutter a `ValueKey`; it works for UIKit views only. `TracewayMaskMode.blank(color:)` takes a `UIColor`.
-- **Seconds**: `flush(timeout:)` waits at most `timeout` seconds (`TimeInterval`, the Swift idiom; 10 by default, as on Android), where the browser, Android and Flutter take milliseconds.
+- **Seconds**: `flush(timeout:)` waits at most `timeout` seconds (`TimeInterval`, the Swift idiom; 10 by default, as on Android), where the browser, Android and Flutter take milliseconds. On the main thread it waits at most 2 seconds whatever the timeout, as on Android: a longer block is a hang the system may end the app for.
+- **Exit reasons** come from MetricKit and a next-launch heuristic, where Android reads `ApplicationExitInfo`: a crash MetricKit saw is a `NativeCrash` issue only when the signal handler did not record it, a watchdog termination is `WatchdogTermination` (Android's ANR is `ApplicationNotResponding`), and out-of-memory exits are a heuristic count (`app.oom`) because iOS reports none. MetricKit delivers at the next launch on iOS 15+ and up to a day later on iOS 14.
+- **Log capture**: the unified log (`log.source: oslog`, iOS 15+) where Android rewrites `android.util.Log` calls (`logcat`) with its Gradle plugin; `print` only through the opt-in `captureStdout` tee, which redirects file descriptors (Android captures `System.out`/`System.err` streams).
 - **Properties**: `Traceway.instanceId` and `Traceway.currentSessionId` are static properties (`getInstanceId()` and `currentSessionId()` in the browser, `getInstanceId()` on Android and Flutter).
 - **Errors carry no stack of their own**: `captureException(_:attributes:)` records the stack of the caller; an `NSException` is reported with its own when uncaught.
 - **Navigation**: view controllers are reported without code; SwiftUI navigation and routers use `.tracewayScreen(_:)` or `recordNavigation(_:action:from:route:)` (arguments by label).
