@@ -214,6 +214,16 @@ extension GalleryScenes {
 
         static func force(_ view: UIView) {
             view.semanticContentAttribute = .forceRightToLeft
+            if let label = view as? UILabel {
+                // A label works out its natural alignment when it gets its
+                // text: it gets it again, right to left.
+                let text = label.attributedText, alignment = label.textAlignment
+                label.attributedText = nil
+                label.textAlignment = alignment == .natural ? .left : .natural
+                label.attributedText = text
+                label.textAlignment = alignment
+            }
+            view.setNeedsLayout()
             view.subviews.forEach(force)
         }
     }
