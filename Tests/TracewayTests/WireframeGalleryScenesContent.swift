@@ -429,11 +429,13 @@ extension GalleryScenes {
     static func imagesScript(pictures: Bool) -> (GalleryDriver, UIViewController) -> Void {
         { d, controller in
             // The first frames show placeholders while the pictures encode.
+            d.waitForPictures(pictures ? 4 : 0)
             d.checkpoint(shows: ["Photo fill", "Photo fit", "Photo center", "Photo crop", "Symbols keep their shape"],
-                         settle: 1.2, pictures: pictures)
+                         settle: 0.6, pictures: pictures)
             (controller.view.viewWithTag(2101) as? UIImageView)?.image = GalleryScenes.sunset
             (controller.view.viewWithTag(2110) as? UIImageView)?.tintColor = .systemPink
-            d.checkpoint("changed", shows: ["Photo fill", "Photo crop"], settle: 1.2, pictures: pictures)
+            d.waitForPictures(pictures ? 5 : 0)
+            d.checkpoint("changed", shows: ["Photo fill", "Photo crop"], settle: 0.6, pictures: pictures)
         }
     }
 

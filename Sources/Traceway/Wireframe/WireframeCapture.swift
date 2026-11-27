@@ -422,6 +422,13 @@ final class WireframeCapture {
             return
         case .swiftUIDrawing:
             swiftUIDrawing(view, layer, p, s, &out)
+            // SwiftUI holds the UIKit views of overlays and backgrounds (a
+            // UIViewRepresentable, a privacy mask's marker) in such a view.
+            let inner = s.entering(p, view.layer)
+            for subview in view.subviews {
+                guard budget > 0 else { break }
+                visit(subview, inner, &out)
+            }
             return
         default:
             break

@@ -255,18 +255,16 @@ extension GalleryScenes {
         let alert = UIAlertController(title: "Delete photo?", message: "This cannot be undone.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive))
-        controller.present(alert, animated: true)
+        d.present(alert, over: controller)
         d.checkpoint("alert", shows: ["Delete photo?", "This cannot be undone.", "Cancel", "Delete", "Behind the dialog"],
                      settle: 0.8)
-        alert.dismiss(animated: false)
-        d.wait(0.4)
+        d.dismiss(alert)
         let sheet = UIAlertController(title: "Share", message: nil, preferredStyle: .actionSheet)
         sheet.addAction(UIAlertAction(title: "Copy link", style: .default))
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        controller.present(sheet, animated: true)
+        d.present(sheet, over: controller)
         d.checkpoint("action-sheet", shows: ["Share", "Copy link", "Cancel"], hides: ["Delete photo?"], settle: 0.8)
-        sheet.dismiss(animated: false)
-        d.wait(0.4)
+        d.dismiss(sheet)
         d.checkpoint("dismissed", shows: ["Behind the dialog"], hides: ["Copy link"])
     })
 
@@ -286,13 +284,13 @@ extension GalleryScenes {
         let presentation = content.sheetPresentationController
         presentation?.detents = [.medium(), .large()]
         presentation?.prefersGrabberVisible = true
-        controller.present(content, animated: true)
-        d.checkpoint(shows: ["A half-height sheet", "Under the sheet"], settle: 0.9)
+        d.present(content, over: controller)
+        d.checkpoint(shows: ["A half-height sheet", "Under the sheet"], settle: 0.6)
         presentation?.animateChanges { presentation?.selectedDetentIdentifier = .large }
         text.text = "Now a full-height sheet"
         d.checkpoint("large", shows: ["Now a full-height sheet"], hides: ["A half-height sheet"], settle: 0.9)
-        content.dismiss(animated: true)
-        d.checkpoint("dismissed", shows: ["Under the sheet"], hides: ["Now a full-height sheet"], settle: 0.9)
+        d.dismiss(content)
+        d.checkpoint("dismissed", shows: ["Under the sheet"], hides: ["Now a full-height sheet"], settle: 0.6)
     })
 
     // MARK: - 22 menus: a popover over its anchor
@@ -331,9 +329,9 @@ extension GalleryScenes {
             popover.permittedArrowDirections = .up
             popover.delegate = GalleryScenes.popoverStyle
         }
-        d.tap(anchor) { controller.present(menu, animated: true) }
-        d.checkpoint(shows: ["Rename file", "Duplicate file", "Move to trash", "More actions", "Behind the menu"], settle: 0.9)
-        d.tap(at: CGPoint(x: 60, y: d.size.height - 120)) { menu.dismiss(animated: true) }
+        d.tap(anchor) { d.present(menu, over: controller) }
+        d.checkpoint(shows: ["Rename file", "Duplicate file", "Move to trash", "More actions", "Behind the menu"], settle: 0.6)
+        d.tap(at: CGPoint(x: 60, y: d.size.height - 120)) { d.dismiss(menu) }
         d.checkpoint("dismissed", shows: ["More actions", "Further down the page"], hides: ["Rename file"], settle: 0.9)
     })
 }

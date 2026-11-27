@@ -56,8 +56,9 @@ final class WireframeRecorder: ReplaySource {
     var screenName: (() -> String?)?
 
     #if canImport(UIKit)
-    // Main thread only.
-    private var capture: WireframeCapture?
+    /// The capture behind the frames, made at the first tick. Main thread
+    /// only.
+    private(set) var capture: WireframeCapture?
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var keyboardFrame: CGRect?

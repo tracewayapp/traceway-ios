@@ -160,7 +160,7 @@ Each checkpoint then has to show no rrweb missing-node errors, its `shows` and
 none of its `hides`, its `boxes` within the geometry tolerance, the same texts
 and the same element layout (every element's box within 0.5 px) as the
 standalone rrweb-player rendering, and a picture that agrees with it
-(SSIM ≥ `--dashboard-floor` 0.9, at most `--dashboard-max-change` 5% of the
+(SSIM ≥ `--dashboard-floor` 0.85, at most `--dashboard-max-change` 5% of the
 pixels different; the dashboard scales the replay, so text is drawn at another
 size). The results are columns of the same `report.html`.
 

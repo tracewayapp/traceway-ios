@@ -257,6 +257,32 @@ final class GalleryDriver {
         return condition()
     }
 
+    /// Waits until the recorder's capture holds `count` encoded pictures
+    /// (at most 5 seconds), and notes it when it does not.
+    func waitForPictures(_ count: Int) {
+        guard count > 0 else { return }
+        let encoded = { self.recorder.capture?.images.all.filter { $0.css != nil }.count ?? 0 }
+        if !wait(upTo: 5, until: { encoded() >= count }) {
+            fail("\(encoded()) of \(count) pictures encoded; policy \(recorder.imagePolicy), "
+                + "capture policy \(recorder.capture.map { "\($0.imagePolicy)" } ?? "none"), "
+                + "pictures \(recorder.capture?.images.all.map { "\($0.cls)=\($0.css == nil ? "pending" : "ready")" } ?? [])")
+        }
+    }
+
+    /// Presents `presented` over `controller` and waits until it is up.
+    func present(_ presented: UIViewController, over controller: UIViewController) {
+        var done = false
+        controller.present(presented, animated: true) { done = true }
+        if !wait(upTo: 5, until: { done }) { fail("\(Swift.type(of: presented)) did not finish presenting") }
+    }
+
+    /// Dismisses `presented` and waits until it is gone.
+    func dismiss(_ presented: UIViewController) {
+        var done = false
+        presented.dismiss(animated: true) { done = true }
+        if !wait(upTo: 5, until: { done }) { fail("\(Swift.type(of: presented)) did not finish dismissing") }
+    }
+
     /// Lays out and lets animations end.
     func settle(_ seconds: TimeInterval = 0.45) {
         window.layoutIfNeeded()
