@@ -487,6 +487,18 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(navigations.last?.string("navigation.from"), "/orders/42")
         XCTAssertEqual(navigations.last?.string("app.screen.name"), "/done")
         XCTAssertEqual(ScreenState.template(" checkout "), "/checkout")
+    }
+
+    func testANavigationCanNameItsRouteTemplate() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        Traceway.recordNavigation("/orders/8841", from: "/cart", route: "orders/:id")
+        struct Declined: Error {}
+        Traceway.captureException(Declined())
+        Traceway.recordNavigation("/home")
+        client.flush(timeout: 5)
+        let navigations = logs.events("browser.navigation")
+        XCTAssertEqual(navigations.map { $0.string("app.screen.route") }, ["/orders/:id", nil])
+        XCTAssertEqual(try XCTUnwrap(logs.events("exception").first).string("app.screen.route"), "/orders/:id")
         XCTAssertNil(ScreenState.template("  "))
         XCTAssertEqual(ScreenState.template(String(repeating: "a", count: 100))?.count, 64)
     }
