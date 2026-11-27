@@ -9,6 +9,8 @@ final class StateStore {
     private let directory: URL?
     private var values: [String: JSON] = [:]
     private var writeScheduled = false
+    /// Set when a newer client took over the file: nothing is written then.
+    private var sealed = false
     private let writer = DispatchQueue(label: "app.traceway.state", qos: .utility)
     private let lock = NSLock()
 
@@ -51,6 +53,13 @@ final class StateStore {
         }
     }
 
+    /// Stops writing the file for good: a newer client owns it now.
+    func seal() {
+        lock.lock()
+        sealed = true
+        lock.unlock()
+    }
+
     /// Writes now; returns once the file is on disk.
     func flush() {
         writer.sync { self.write() }
@@ -60,8 +69,9 @@ final class StateStore {
         lock.lock()
         writeScheduled = false
         var snapshot = values
+        let sealed = self.sealed
         lock.unlock()
-        guard let file = file, let directory = directory else { return }
+        guard !sealed, let file = file, let directory = directory else { return }
         if let destination = destination { snapshot["destination"] = .string(destination) }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

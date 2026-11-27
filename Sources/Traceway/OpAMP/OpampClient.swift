@@ -264,9 +264,10 @@ final class OpampClient {
 
     private func backOff(_ retryAfterMs: Int64?) {
         if let requested = retryAfterMs {
-            backoffMs = requested
+            // The error response's delay is not capped by the header's parser.
+            backoffMs = min(max(requested, 0), HTTPResult.maxRetryAfterMs)
         } else if backoffMs > 0 {
-            backoffMs = min(backoffMs * 2, OpampClient.maxBackoffMs)
+            backoffMs = min(Int64.saturatingProduct(backoffMs, 2), OpampClient.maxBackoffMs)
         } else {
             backoffMs = OpampClient.firstBackoffMs
         }

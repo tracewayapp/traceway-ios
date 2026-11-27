@@ -50,8 +50,15 @@ private let maxAnchors = 8
 private let maxHits = 1000
 private let maxRestoreAgeMs: Int64 = 86_400_000
 
+/// Saturating: a step built past the settings parser (which holds every
+/// duration to a day) still cannot trap.
 private func millis(_ seconds: Double) -> Int64 {
-    Int64((seconds * 1000).rounded())
+    millisecondsSaturating(seconds)
+}
+
+/// `now` minus `seconds`, saturating.
+private func before(_ now: Int64, _ seconds: Double) -> Int64 {
+    Int64.saturatingSum(now, -millis(seconds))
 }
 
 /// Runs the server-defined triggers against every event on the device. A
@@ -165,10 +172,10 @@ final class TriggerEngine {
         let rawHits = object["hits"]?.array
         let needed = step.count ?? 1
         if needed > 1 {
-            let oldest = step.periodSeconds.map { now - millis($0) } ?? now - maxRestoreAgeMs
+            let oldest = step.periodSeconds.map { before(now, $0) } ?? Int64.saturatingSum(now, -maxRestoreAgeMs)
             let hits: [Int64] = (rawHits ?? []).compactMap { value in
                 guard let n = value.number, n <= Double(now), n >= Double(oldest) else { return nil }
-                return Int64(n)
+                return Int64(saturating: n)
             }
             restored.hits = hits.count > maxHits ? Array(hits.suffix(maxHits)) : hits
         }
@@ -177,13 +184,13 @@ final class TriggerEngine {
             return restored
         }
         let maxAge = step.withinSeconds.map(millis) ?? maxRestoreAgeMs
-        let dropped = rawHits != nil && needed > 1 ? rawHits!.count - restored.hits.count : 0
+        let dropped = needed > 1 ? (rawHits?.count ?? 0) - restored.hits.count : 0
         for anchor in rawAnchors.prefix(maxAnchors) {
             guard let pair = anchor.array, pair.count >= 2,
                   let at = pair[0].number, at <= Double(now), Double(now) - at <= Double(maxAge),
                   let start = pair[1].int, start >= 0
             else { continue }
-            restored.anchors.append(Anchor(Int64(at), min(restored.hits.count, max(0, start - dropped))))
+            restored.anchors.append(Anchor(Int64(saturating: at), min(restored.hits.count, max(0, start - dropped))))
         }
         if restored.anchors.isEmpty { restored.hits = [] }
         return restored
@@ -250,7 +257,7 @@ final class TriggerEngine {
             let at = state.steps[k]
             if at.anchors.isEmpty { continue }
             if let within = step.withinSeconds, within > 0 {
-                let oldest = now - millis(within)
+                let oldest = before(now, within)
                 if at.anchors[0].at < oldest {
                     at.anchors = at.anchors.filter { $0.at >= oldest }
                     if at.anchors.isEmpty { at.hits = [] }
@@ -309,7 +316,7 @@ final class TriggerEngine {
             return false
         }
         if let cooldown = trigger.cooldownSeconds, cooldown > 0, state.fires > 0,
-           Double(nowMs - state.lastFireMs) < cooldown * 1000
+           Double(nowMs) - Double(state.lastFireMs) < cooldown * 1000
         {
             skipped[trigger.id] = "cooldown"
             return false
@@ -325,7 +332,7 @@ private func countHit(_ at: StepState, _ step: TriggerStep, _ now: Int64) {
     at.hits.append(now)
     var drop = max(0, at.hits.count - maxHits)
     if let period = step.periodSeconds, period > 0 {
-        let cutoff = now - millis(period)
+        let cutoff = before(now, period)
         while drop < at.hits.count && at.hits[drop] < cutoff { drop += 1 }
     }
     if drop > 0 {

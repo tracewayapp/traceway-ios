@@ -28,6 +28,16 @@ enum CrashReporter {
         #endif
     }
 
+    /// Whether the signal handler records crashes in this process: without
+    /// it there is no metadata to keep up to date.
+    static var recordsSignals: Bool {
+        #if canImport(Darwin)
+        return SignalHandler.isInstalled
+        #else
+        return false
+        #endif
+    }
+
     /// What a crash record says about the app: the session it happened in
     /// and the attributes known then. Called when they change.
     static func updateMetadata(_ metadata: [String: String], appVersion: String) {

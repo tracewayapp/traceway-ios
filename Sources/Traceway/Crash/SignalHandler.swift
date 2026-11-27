@@ -2,15 +2,20 @@ import Foundation
 #if canImport(Darwin)
 import Darwin
 
+// Everything the handler reads is allocated by `install` and never freed,
+// so the handler only does async-signal-safe work: plain loads, `open`,
+// `write`, `close`, `sigaction`, `raise` and `vm_read_overwrite`.
 private var twPathPtr: UnsafeMutablePointer<CChar>?
-private var twMetaPtr: UnsafeMutablePointer<UInt8>?
-private var twMetaLen: Int = 0
+/// The published metadata block: an `Int` byte count, then the bytes. One
+/// pointer, so the handler never pairs a new pointer with an old length.
+private var twMeta: UnsafeMutableRawPointer?
 private var twImagesPtr: UnsafeMutablePointer<UInt8>?
 private var twImagesLen: Int = 0
 private var twBacktracePtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
 private var twIntScratch: UnsafeMutablePointer<UInt8>?
+/// Two words a frame record is copied into before it is read.
+private var twFrameScratch: UnsafeMutablePointer<UInt>?
 private var twPrevActions: UnsafeMutablePointer<sigaction>?
-private var twAltStack: UnsafeMutableRawPointer?
 private var twInstalled = false
 private var twInHandler: sig_atomic_t = 0
 private var twSuppressCrashRecord: sig_atomic_t = 0
@@ -19,6 +24,7 @@ private let twBacktraceCap: Int32 = 128
 private let twIntScratchLen = 32
 private let twHandledSignals: [Int32] = [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP]
 private let twHandlerFrameSkip = 2
+private let twMetaHeader = MemoryLayout<Int>.stride
 
 @inline(__always)
 private func twWrite(_ fd: Int32, _ text: StaticString) {
@@ -32,13 +38,14 @@ private func twWriteInt(_ fd: Int32, _ value: Int) {
         _ = write(fd, scratch, 1)
         return
     }
+    // In magnitude, digit by digit: `-Int.min` would overflow.
     var v = value
     let negative = v < 0
-    if negative { v = -v }
     var index = twIntScratchLen
-    while v > 0 && index > 0 {
+    while v != 0 && index > 0 {
         index -= 1
-        scratch[index] = UInt8(48 + (v % 10))
+        let digit = v % 10
+        scratch[index] = UInt8(48 + (digit < 0 ? -digit : digit))
         v /= 10
     }
     if negative && index > 0 {
@@ -81,14 +88,23 @@ private func twCrashContext(_ context: UnsafeMutableRawPointer?) -> (pc: UInt, f
     #endif
 }
 
+/// Walks the frame records from `fp0`. A smashed stack can point anywhere:
+/// each record is copied with `vm_read_overwrite`, which fails instead of
+/// faulting inside the handler on memory that is not readable.
 private func twWriteFrameChain(_ fd: Int32, _ fp0: UInt) {
+    guard let scratch = twFrameScratch else { return }
     var fp = fp0
     var prev: UInt = 0
     var n = 0
     while fp != 0, fp % 16 == 0, fp > prev, n < Int(twBacktraceCap) {
-        guard let frame = UnsafeRawPointer(bitPattern: fp) else { break }
-        let savedFP = frame.load(as: UInt.self)
-        let savedLR = frame.load(fromByteOffset: 8, as: UInt.self)
+        var copied: vm_size_t = 0
+        let size = vm_size_t(2 * MemoryLayout<UInt>.size)
+        let result = vm_read_overwrite(
+            mach_task_self_, vm_address_t(fp), size, vm_address_t(UInt(bitPattern: scratch)), &copied
+        )
+        if result != KERN_SUCCESS || copied != size { break }
+        let savedFP = scratch[0]
+        let savedLR = scratch[1]
         if savedLR == 0 { break }
         twWriteHex(fd, savedLR)
         twWrite(fd, "\n")
@@ -103,9 +119,8 @@ private func twSignalHandler(
     _ info: UnsafeMutablePointer<siginfo_t>?,
     _ context: UnsafeMutableRawPointer?
 ) {
-
     if twInHandler != 0 || twSuppressCrashRecord != 0 {
-        twRestoreAndReRaise(signo)
+        twForward(signo, info)
         return
     }
     twInHandler = 1
@@ -120,8 +135,9 @@ private func twSignalHandler(
             twWrite(fd, "time=")
             twWriteInt(fd, Int(time(nil)))
             twWrite(fd, "\n")
-            if let meta = twMetaPtr, twMetaLen > 0 {
-                _ = write(fd, meta, twMetaLen)
+            if let meta = twMeta {
+                let length = meta.load(as: Int.self)
+                if length > 0 { _ = write(fd, meta.advanced(by: twMetaHeader), length) }
             }
 
             if let images = twImagesPtr, twImagesLen > 0 {
@@ -148,25 +164,80 @@ private func twSignalHandler(
         }
     }
 
-    twRestoreAndReRaise(signo)
+    twForward(signo, info)
 }
 
-private func twRestoreAndReRaise(_ signo: Int32) {
-    if let prev = twPrevActions, signo >= 0, signo < 32 {
+/// Hands the signal to the handler installed before Traceway's, exactly
+/// once, as if Traceway's had never been there. Its action is restored
+/// first. A fault the hardware raised is then left to happen again: the
+/// handler returns, the instruction runs again and faults, and the kernel
+/// calls the previous handler with the crash's own `siginfo` and context
+/// (or ends the process, for the default action). A signal sent by
+/// software (`abort`, `raise`, `kill`) does not come back on its own, so it
+/// is raised again; it is delivered when this handler returns.
+private func twForward(_ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?) {
+    if let prev = twPrevActions, signo > 0, signo < 32 {
         sigaction(signo, prev.advanced(by: Int(signo)), nil)
     } else {
         signal(signo, SIG_DFL)
     }
+    if twRaisedByHardware(signo, info) { return }
     raise(signo)
 }
 
+/// A synchronous fault of the instruction that crashed: its `si_code` is a
+/// fault code, not one of the codes of a signal that was sent.
+private func twRaisedByHardware(_ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?) -> Bool {
+    guard let info = info else { return false }
+    let code = info.pointee.si_code
+    guard code > 0, code < SI_USER else { return false }
+    #if arch(x86_64)
+    // `int3` traps after the instruction: run again, the code would go on.
+    if signo == SIGTRAP { return false }
+    #endif
+    return signo == SIGSEGV || signo == SIGBUS || signo == SIGILL || signo == SIGFPE || signo == SIGTRAP
+}
+
+/// Gives the calling thread a stack of its own for the handler, so a stack
+/// overflow on it can still be recorded. Each thread needs its own.
+private func twInstallAltStack() {
+    let altSize = 64 * 1024
+    guard let alt = malloc(altSize) else { return }
+    var ss = stack_t()
+    ss.ss_sp = alt
+    ss.ss_size = altSize
+    ss.ss_flags = 0
+    sigaltstack(&ss, nil)
+}
+
 enum SignalHandler {
+    /// Serializes install and metadata updates: two starts at once must
+    /// not both install, or the second would chain to the first.
+    private static let lock = NSLock()
+    /// Orders a block's bytes before the pointer that publishes it.
+    private static let publishLock = NSLock()
+    /// Spare metadata blocks, so an update reuses memory instead of leaking
+    /// a buffer each time. The published one is never written.
+    private static var metaBlocks: [(block: UnsafeMutableRawPointer, capacity: Int)] = []
+    private static var metaAllocations = 0
 
+    static var isInstalled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return twInstalled
+    }
+
+    /// Installs the handlers once per process; later calls only update the
+    /// metadata. The handlers that were installed before are kept and get
+    /// every signal after Traceway's handler.
     static func install(crashPath: String, metadata: [UInt8], imagesSection: [UInt8] = []) {
-        guard !twInstalled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !twInstalled else {
+            storeMetadata(metadata)
+            return
+        }
 
-        twIntScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: twIntScratchLen)
-        twBacktracePtr = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: Int(twBacktraceCap))
+        prepareScratch()
         twPrevActions = UnsafeMutablePointer<sigaction>.allocate(capacity: 32)
         twPrevActions?.initialize(repeating: sigaction(), count: 32)
 
@@ -183,16 +254,12 @@ enum SignalHandler {
             twImagesLen = imagesSection.count
         }
 
-        setMetadata(metadata)
+        storeMetadata(metadata)
 
-        let altSize = 64 * 1024
-        let alt = malloc(altSize)
-        twAltStack = alt
-        var ss = stack_t()
-        ss.ss_sp = alt
-        ss.ss_size = altSize
-        ss.ss_flags = 0
-        sigaltstack(&ss, nil)
+        // The alternate stack is per thread: the main thread's is the one a
+        // stack overflow in the app needs most.
+        twInstallAltStack()
+        if !Thread.isMainThread { DispatchQueue.main.async { twInstallAltStack() } }
 
         for sig in twHandledSignals {
             var action = sigaction()
@@ -206,6 +273,14 @@ enum SignalHandler {
         twInstalled = true
     }
 
+    private static func prepareScratch() {
+        if twIntScratch == nil { twIntScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: twIntScratchLen) }
+        if twFrameScratch == nil { twFrameScratch = UnsafeMutablePointer<UInt>.allocate(capacity: 2) }
+        if twBacktracePtr == nil {
+            twBacktracePtr = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: Int(twBacktraceCap))
+        }
+    }
+
     // Called once another handler (the NSException handler) has already
     // recorded the crash: the runtime's follow-up abort() must not produce a
     // second crash record for the same event. The process is dying, so the
@@ -214,13 +289,89 @@ enum SignalHandler {
         twSuppressCrashRecord = 1
     }
 
+    /// What a crash record says about the app. Ignored until the handlers
+    /// are installed (`persistToDisk: false` never installs them).
     static func setMetadata(_ metadata: [UInt8]) {
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: max(metadata.count, 1))
-        for (i, byte) in metadata.enumerated() { buffer[i] = byte }
+        lock.lock()
+        defer { lock.unlock() }
+        guard twInstalled else { return }
+        storeMetadata(metadata)
+    }
 
-        twMetaLen = 0
-        twMetaPtr = buffer
-        twMetaLen = metadata.count
+    /// Under `lock`. Fills a block the handler does not read, then
+    /// publishes it with one pointer store. Blocks are reused; one too small
+    /// is replaced by one twice as large, and the old one is kept (never
+    /// freed), since a handler on another thread may still be reading it.
+    private static func storeMetadata(_ metadata: [UInt8]) {
+        let published = twMeta
+        var index = metaBlocks.firstIndex { $0.block != published && $0.capacity >= metadata.count }
+        if index == nil {
+            let spare = metaBlocks.firstIndex { $0.block != published }
+            let capacity = max(metadata.count, 2 * (spare.map { metaBlocks[$0].capacity } ?? 1024))
+            let block = UnsafeMutableRawPointer.allocate(byteCount: twMetaHeader + capacity,
+                                                         alignment: MemoryLayout<Int>.alignment)
+            metaAllocations += 1
+            if let spare = spare {
+                metaBlocks[spare] = (block, capacity)
+                index = spare
+            } else {
+                metaBlocks.append((block, capacity))
+                index = metaBlocks.count - 1
+            }
+        }
+        guard let slot = index else { return }
+        let block = metaBlocks[slot].block
+        // A release then an acquire order the bytes before the pointer that
+        // publishes them; the handler reads through that pointer.
+        publishLock.lock()
+        block.storeBytes(of: metadata.count, as: Int.self)
+        metadata.withUnsafeBytes { bytes in
+            if let base = bytes.baseAddress {
+                block.advanced(by: twMetaHeader).copyMemory(from: base, byteCount: bytes.count)
+            }
+        }
+        publishLock.unlock()
+        publishLock.lock()
+        twMeta = block
+        publishLock.unlock()
+    }
+
+    // MARK: - Testing
+
+    /// Metadata blocks allocated so far.
+    static var metadataAllocationsForTesting: Int {
+        lock.lock(); defer { lock.unlock() }
+        return metaAllocations
+    }
+
+    /// The metadata the handler would write now.
+    static var publishedMetadataForTesting: [UInt8] {
+        lock.lock(); defer { lock.unlock() }
+        guard let meta = twMeta else { return [] }
+        let length = meta.load(as: Int.self)
+        return Array(UnsafeRawBufferPointer(start: meta.advanced(by: twMetaHeader), count: length))
+    }
+
+    /// Puts back the actions that were installed before Traceway's and
+    /// forgets the install, so a test can install again.
+    static func uninstallForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        if twInstalled, let prev = twPrevActions {
+            for sig in twHandledSignals { sigaction(sig, prev.advanced(by: Int(sig)), nil) }
+        }
+        twInstalled = false
+        twInHandler = 0
+        twSuppressCrashRecord = 0
+        twMeta = nil
+    }
+
+    /// The frame walk on its own, writing to `fd`.
+    static func writeFrameChainForTesting(_ fd: Int32, framePointer: UInt) {
+        lock.lock()
+        prepareScratch()
+        lock.unlock()
+        twWriteFrameChain(fd, framePointer)
     }
 }
 #endif

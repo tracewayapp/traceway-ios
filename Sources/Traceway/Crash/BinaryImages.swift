@@ -15,10 +15,28 @@ enum BinaryImages {
         let name: String
     }
 
+    /// Read and written under `lock`: the first captures can come from any
+    /// thread at once (an issue while the SDK starts).
     private static var snapshot: [LoadedImage]?
+    private static let lock = NSLock()
 
+    /// The images loaded now, scanned once.
     static func capture() -> [LoadedImage] {
+        lock.lock()
+        defer { lock.unlock() }
         if let snapshot = snapshot { return snapshot }
+        let images = scan()
+        snapshot = images
+        return images
+    }
+
+    static func resetForTesting() {
+        lock.lock()
+        snapshot = nil
+        lock.unlock()
+    }
+
+    private static func scan() -> [LoadedImage] {
         var images: [LoadedImage] = []
         #if canImport(Darwin)
         let count = _dyld_image_count()
@@ -33,7 +51,6 @@ enum BinaryImages {
             images.append(LoadedImage(loadAddr: loadAddr, size: textSize, uuid: uuid, name: name))
         }
         #endif
-        snapshot = images
         return images
     }
 

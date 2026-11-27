@@ -29,7 +29,8 @@ final class TracewayClientTests: XCTestCase {
         connectionString: String? = "token@https://traceway.example.com",
         stateDirectory: URL? = nil,
         replay: ReplaySource? = nil,
-        random: (() -> Double)? = nil
+        random: (() -> Double)? = nil,
+        transport: HTTPTransport? = nil
     ) throws -> TracewayClient {
         var options = options
         options.exportDelayMs = 50
@@ -39,7 +40,7 @@ final class TracewayClientTests: XCTestCase {
             overrides: TracewayTestOverrides(
                 logExporter: logs,
                 spanExporter: spans,
-                transport: server,
+                transport: transport ?? server,
                 stateDirectory: stateDirectory,
                 deviceAttributes: ["os.name": "ios", "device.model": "iPhone15,2"],
                 random: random,
@@ -409,7 +410,8 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(crash.string("exception.type"), "Fatal Signal SIGSEGV (11)")
         XCTAssertEqual(crash.attributes["traceway.crash"], .bool(true))
         XCTAssertEqual(crash.string("session.id"), "11111111-2222-4333-8444-555555555555")
-        XCTAssertEqual(crash.attributes["traceway.session.started_at"], .int(1_699_999_990_000))
+        // Only session events carry the session's start.
+        XCTAssertNil(crash.attributes["traceway.session.started_at"])
         XCTAssertEqual(Clock.ms(crash.timestamp), 1_700_000_000_000)
         XCTAssertTrue(crash.string("exception.stacktrace")?.contains("0123456789abcdef0123456789abcdef 0x123 MyApp") == true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: crashDir.appendingPathComponent("crash-1.tw").path))
@@ -684,6 +686,269 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(outbox.pendingCount, 0)
         outbox.dispose()
         other.dispose()
+    }
+
+    // MARK: - Crash safety (review IOS-3, 7, 8, 10, 18, 19, 20, 21)
+
+    /// IOS-3: on Apple platforms `JSONSerialization` raises an Objective-C
+    /// exception for anything that is not JSON, which no `catch` stops.
+    func testACollectionThatIsNotJSONIsIgnoredInsteadOfRaising() throws {
+        let client = try start(TracewayOptions(collection: [
+            "captures": [["until": Date()]],
+            "buffer": ["maxAgeSeconds": Double.nan],
+        ]))
+        XCTAssertNotNil(client.currentSessionId)
+        XCTAssertEqual(client.onQueueSync { client.control.settings.bufferMaxAgeSeconds },
+                       defaultSettings().bufferMaxAgeSeconds)
+    }
+
+    /// IOS-7: a corrupt crash file used to trap at every start, before it
+    /// was removed: a crash loop until the app was reinstalled.
+    func testACorruptCrashFileIsReportedAndRemovedWithoutTrapping() throws {
+        let base = scratchDirectory(self)
+        let crashDir = CrashRecordStore.directory(base: base)
+        try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
+        let file = crashDir.appendingPathComponent("crash-7.tw")
+        try "TRACEWAY_SIGNAL_V1\nsignal=4294967296\ntime=99999999999999999\n---FRAMES---\n0x1\n"
+            .write(to: file, atomically: true, encoding: .utf8)
+        let before = Clock.nowMs()
+        let client = try start(stateDirectory: base.appendingPathComponent("traceway_v2"))
+        client.flush(timeout: 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        let crash = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(crash.string("exception.type"), "Fatal Signal SIG4294967296 (4294967296)")
+        // A time past any clock is not believed: the crash is dated now.
+        XCTAssertGreaterThanOrEqual(Clock.ms(crash.timestamp), before)
+        XCTAssertLessThanOrEqual(Clock.ms(crash.timestamp), Clock.nowMs())
+    }
+
+    /// IOS-8: two `initialize` calls at once each started a full client.
+    func testConcurrentStartsShareOneClient() throws {
+        let lock = NSLock()
+        var results: [ObjectIdentifier?] = Array(repeating: nil, count: 8)
+        var clients: [TracewayClient] = []
+        DispatchQueue.concurrentPerform(iterations: 8) { i in
+            let client = try? self.start()
+            lock.lock()
+            results[i] = client.map(ObjectIdentifier.init)
+            if let client = client, !clients.contains(where: { $0 === client }) { clients.append(client) }
+            lock.unlock()
+        }
+        defer { for client in clients where client !== TracewayClient.shared { client.shutdown() } }
+        let shared = try XCTUnwrap(TracewayClient.shared)
+        XCTAssertEqual(clients.count, 1, "one client for all eight calls")
+        XCTAssertTrue(results.allSatisfy { $0 == ObjectIdentifier(shared) })
+        shared.flush(timeout: 5)
+        XCTAssertEqual(logs.events("session.start").count, 1)
+    }
+
+    /// IOS-10: `flush()` waited without a limit by default.
+    func testFlushWaitsAtMostTenSecondsByDefault() throws {
+        let silent = HangingTransport()
+        let source = FakeReplaySource()
+        let client = try start(TracewayOptions(screenCapture: true), replay: source, transport: silent)
+        XCTAssertTrue(eventually { source.isRunning })
+        struct Boom: Error {}
+        Traceway.captureException(Boom())
+        // Its clip goes out and never gets an answer.
+        XCTAssertTrue(eventually { !silent.requests(to: "/api/recordings").isEmpty })
+        let returned = DispatchSemaphore(value: 0)
+        let started = Date()
+        DispatchQueue.global().async {
+            client.flush()
+            returned.signal()
+        }
+        XCTAssertEqual(returned.wait(timeout: .now() + 15), .success, "flush() returned")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 9)
+    }
+
+    /// IOS-10: an `initialize` while the last client was still shutting
+    /// down returned that client, and the SDK was off once it finished.
+    func testStartingWhileTheLastClientShutsDownStartsANewOne() throws {
+        let slow = FakeHTTP { request in
+            if request.url.path == "/api/recordings" { Thread.sleep(forTimeInterval: 1) }
+            return HTTPResult(statusCode: 200)
+        }
+        let source = FakeReplaySource()
+        let old = try start(TracewayOptions(screenCapture: true, recordAllSessions: true), replay: source,
+                            transport: slow)
+        XCTAssertTrue(eventually { source.isRunning })
+        Thread.sleep(forTimeInterval: 0.05)
+        // A segment is on its way; the shutdown waits for its upload.
+        old.appPaused {}
+        let recordings = URL(string: "https://traceway.example.com/api/recordings")!
+        XCTAssertTrue(eventually { !slow.requests(to: recordings).isEmpty })
+        let stopped = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            old.shutdown()
+            stopped.signal()
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+        let next = try start(transport: slow)
+        XCTAssertFalse(next === old)
+        XCTAssertEqual(stopped.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(TracewayClient.shared === next)
+        XCTAssertFalse(next.isShutdown)
+    }
+
+    /// IOS-10: concurrent shutdowns join the first one.
+    func testConcurrentShutdownsEndTheSessionOnce() throws {
+        let client = try start()
+        DispatchQueue.concurrentPerform(iterations: 4) { _ in client.shutdown() }
+        XCTAssertTrue(client.isShutdown)
+        XCTAssertNil(TracewayClient.shared)
+        XCTAssertEqual(logs.events("session.end").count, 1)
+    }
+
+    /// IOS-18: a `beforeCapture` that reports through Traceway recursed until
+    /// the stack overflowed. A capture made inside it skips the callback.
+    func testABeforeCaptureThatCapturesDoesNotRecurse() throws {
+        let lock = NSLock()
+        var calls = 0
+        let client = try start(TracewayOptions(beforeCapture: { _ in
+            lock.lock()
+            calls += 1
+            let n = calls
+            lock.unlock()
+            if n < 50 { Traceway.captureMessage("from the callback \(n)") }
+            return true
+        }))
+        Traceway.captureMessage("first")
+        client.flush(timeout: 5)
+        lock.lock()
+        XCTAssertEqual(calls, 1)
+        lock.unlock()
+        XCTAssertEqual(Set(logs.events("traceway.message").compactMap { $0.body?.description }),
+                       ["first", "from the callback 1"])
+        // Later captures run the callback again.
+        Traceway.captureMessage("second")
+        client.flush(timeout: 5)
+        lock.lock()
+        XCTAssertEqual(calls, 2)
+        lock.unlock()
+    }
+
+    /// IOS-19: garbage numeric options are clamped, not multiplied into a trap.
+    func testAbsurdNumericOptionsAreClamped() throws {
+        let client = try start(TracewayOptions(fps: .max, maxBufferFrames: .max))
+        XCTAssertNotNil(client.currentSessionId)
+        let other = try TracewayClient(connectionString: "token@https://traceway.example.com",
+                                       options: TracewayOptions(fps: .min, maxBufferFrames: .min, exportDelayMs: .max))
+        XCTAssertFalse(other.isShutdown)
+    }
+
+    /// IOS-20: a span the app ends at an impossible time used to trap the
+    /// client's queue when the router read its time.
+    func testAnAppSuppliedTimeOutsideTheClockDoesNotTrap() throws {
+        let client = try start()
+        let tracer = try XCTUnwrap(client.openTelemetryTracer)
+        let span = tracer.spanBuilder(spanName: "far")
+            .setStartTime(time: Date(timeIntervalSince1970: -.infinity))
+            .startSpan()
+        span.end(time: Date(timeIntervalSince1970: .infinity))
+        client.flush(timeout: 5)
+        XCTAssertEqual(Clock.ms(Date(timeIntervalSince1970: .infinity)), .max)
+        XCTAssertEqual(Clock.ms(Date(timeIntervalSince1970: -.infinity)), .min)
+        XCTAssertEqual(Clock.ms(Date(timeIntervalSince1970: .nan)), 0)
+        Traceway.captureMessage("still recording")
+        client.flush(timeout: 5)
+        XCTAssertEqual(logs.events("traceway.message").count, 1)
+    }
+
+    /// IOS-21: a crash from an earlier run is reported under that run's
+    /// resource (its app version), and like every record but the session
+    /// events it carries no `traceway.session.started_at`.
+    func testACrashFromAnEarlierVersionIsReportedUnderThatVersion() throws {
+        let base = scratchDirectory(self)
+        let crashDir = CrashRecordStore.directory(base: base)
+        try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
+        try """
+        TRACEWAY_SIGNAL_V1
+        signal=6
+        time=1700000000
+        appVersion=1.0
+        attr.service.version=1.0
+        attr.os.version=iOS 17.0
+        attr.user.id=u1
+        attr.session.id=11111111-2222-4333-8444-555555555555
+        attr.traceway.session.started_at=1
+        ---FRAMES---
+        0x100123
+        """.write(to: crashDir.appendingPathComponent("crash-21.tw"), atomically: true, encoding: .utf8)
+
+        let client = try start(TracewayOptions(version: "2.0"), stateDirectory: base.appendingPathComponent("traceway_v2"))
+        client.flush(timeout: 5)
+        let crash = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertNil(crash.attributes["traceway.session.started_at"])
+        XCTAssertNil(crash.attributes["service.version"])
+        XCTAssertNil(crash.attributes["os.version"])
+        XCTAssertEqual(crash.resource.attributes["service.version"], .string("1.0"))
+        XCTAssertEqual(crash.resource.attributes["os.version"], .string("iOS 17.0"))
+        XCTAssertEqual(crash.resource.attributes["device.model"], .string("iPhone15,2"))
+        XCTAssertEqual(crash.string("user.id"), "u1")
+        XCTAssertEqual(crash.string("session.id"), "11111111-2222-4333-8444-555555555555")
+        let session = try XCTUnwrap(logs.events("session.start").first)
+        XCTAssertEqual(session.resource.attributes["service.version"], .string("2.0"))
+    }
+
+    /// IOS-14: each fire of a stream action added an override of its own,
+    /// kept for up to a day; the trigger's override is extended instead.
+    func testATriggerThatFiresOnEveryRecordKeepsOneOverride() throws {
+        let client = try start(TracewayOptions(collection: ["triggers": [
+            ["id": "s", "steps": [["match": ["key": "signal", "op": "exists"]]],
+             "actions": [["type": "stream", "durationSeconds": 3600]]],
+        ]]))
+        for i in 0..<2000 { Traceway.log("line \(i)") }
+        client.flush(timeout: 5)
+        XCTAssertEqual(client.onQueueSync { client.control.activeOverrideCount }, 1)
+        // It streams what it covers.
+        XCTAssertEqual(client.onQueueSync { client.control.modeFor("console") }, .stream)
+    }
+
+    /// IOS-12: what is installed once per process (the URLSession
+    /// instrumentation, the global providers) kept the first client's
+    /// tracer and logger, dead after its shutdown.
+    func testOncePerProcessHooksRecordForTheClientRunningNow() throws {
+        let first = try start(TracewayOptions(recordAllSessions: true))
+        let kept = try XCTUnwrap(first.tracer)
+        first.shutdown()
+        let second = try start(TracewayOptions(recordAllSessions: true))
+        kept.spanBuilder(spanName: "lost").startSpan().end()
+        CurrentClientTracer { TracewayClient.shared?.tracer }.spanBuilder(spanName: "network").startSpan().end()
+        CurrentClientTracerProvider().get(instrumentationName: "app", instrumentationVersion: "1")
+            .spanBuilder(spanName: "app span").startSpan().end()
+        CurrentClientLoggerProvider().loggerBuilder(instrumentationScopeName: "app").setInstrumentationVersion("1")
+            .build().logRecordBuilder().setBody(.string("app line")).setSeverity(.warn).emit()
+        struct Boom: Error {}
+        Traceway.captureException(Boom())
+        second.flush(timeout: 5)
+        XCTAssertTrue(eventually { Set(self.spans.spans.map(\.name)).isSuperset(of: ["network", "app span"]) })
+        XCTAssertFalse(spans.spans.contains { $0.name == "lost" }, "a stopped client's tracer records nothing")
+        let line = try XCTUnwrap(logs.consoleLines.first { $0.body == .string("app line") })
+        XCTAssertEqual(line.instrumentationScopeInfo.name, "app")
+        XCTAssertEqual(line.string("session.id"), second.currentSessionId)
+        // With no client running, they record nothing and do not fail.
+        second.shutdown()
+        CurrentClientTracer { TracewayClient.shared?.tracer }.spanBuilder(spanName: "none").startSpan().end()
+        CurrentClientLoggerProvider().get(instrumentationScopeName: "app").logRecordBuilder().emit()
+    }
+}
+
+/// Takes every request and never answers, as a network that hangs.
+final class HangingTransport: HTTPTransport {
+    private let lock = NSLock()
+    private var seen: [URL] = []
+
+    func requests(to path: String) -> [URL] {
+        lock.lock(); defer { lock.unlock() }
+        return seen.filter { $0.path == path }
+    }
+
+    func post(url: URL, headers: [String: String], body: Data, timeout: TimeInterval,
+              completion: @escaping (HTTPResult) -> Void) {
+        lock.lock()
+        seen.append(url)
+        lock.unlock()
     }
 }
 

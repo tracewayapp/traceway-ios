@@ -461,7 +461,7 @@ final class WireframeCapture {
         } else if info.kind == .swiftUIHost && WireframeCapture.readsSwiftUIText {
             let depth = hostTexts.count
             hostTexts.append(swiftUITexts(of: view))
-            group(view, layer, p, s, info, &out) { [unowned self] children, scope in
+            group(view, layer, p, s, info, &out) { children, scope in
                 if let texts = self.hostTexts.last {
                     self.remainingSwiftUITexts(texts, view, scope, &children)
                 }
@@ -823,7 +823,7 @@ final class WireframeCapture {
     private static func cgColor(_ value: Any) -> CGColor? {
         let ref = value as AnyObject
         guard CFGetTypeID(ref) == CGColor.typeID else { return nil }
-        return (ref as! CGColor)
+        return (ref as! CGColor) // CF bridging: CFGetTypeID checked above
     }
 
     // MARK: - Privacy
@@ -938,7 +938,10 @@ final class WireframeCapture {
             paints = true
         }
         var style = baseStyle
-        let raw = label.attributedText?.string ?? label.text ?? ""
+        // At most `maxTextLength` of it: each frame copies, masks and
+        // measures the text on the main thread.
+        let attributedText = WireframeCSS.capped(label.attributedText)
+        let raw = attributedText?.string ?? WireframeCSS.capped(label.text ?? "")
         let value = raw.isEmpty ? nil : shown(raw, p.box, s)
         guard let shownText = value else {
             if paints { out.append(element(id(label), style, [])) }
@@ -950,7 +953,7 @@ final class WireframeCapture {
         let color = WireframeCapture.color(textColor, traits) ?? WireframeCapture.color(UIColor.label, traits)
         style += WireframeCapture.fontCss(font, color: color)
         let content = label.isHighlighted ? nil : runs(
-            label.attributedText, font: font, color: color, traits: traits, owner: label,
+            attributedText, font: font, color: color, traits: traits, owner: label,
             masked: privacy(p.box, s) == .mask
         )
         let rtl = label.effectiveUserInterfaceLayoutDirection == .rightToLeft
@@ -962,7 +965,7 @@ final class WireframeCapture {
         // a little wider and would wrap its last word.
         if label.numberOfLines == 1 || p.height < Double(font.lineHeight) * 1.6 {
             let measured: CGFloat
-            if let attributed = label.attributedText, attributed.length > 0 {
+            if let attributed = attributedText, attributed.length > 0 {
                 measured = attributed.size().width
             } else {
                 measured = (raw as NSString).size(withAttributes: [.font: font]).width
@@ -987,7 +990,7 @@ final class WireframeCapture {
         } else {
             // Lines of a paragraph as far apart as its style sets them.
             var lineHeight = Double(font.lineHeight)
-            if let attributed = label.attributedText, attributed.length > 0,
+            if let attributed = attributedText, attributed.length > 0,
                let paragraph = attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
                 if paragraph.lineHeightMultiple > 0 { lineHeight *= Double(paragraph.lineHeightMultiple) }
                 lineHeight = max(lineHeight, Double(paragraph.minimumLineHeight))
@@ -1099,12 +1102,12 @@ final class WireframeCapture {
 
         var children: [VNode] = []
         let font: UIFont = field.font ?? UIFont.systemFont(ofSize: 17)
-        let raw = field.text ?? ""
+        let raw = WireframeCSS.capped(field.text ?? "")
         let value: String
         let color: WireframeColor?
         if raw.isEmpty {
             let placeholder = field.attributedPlaceholder
-            value = placeholder?.string ?? field.placeholder ?? ""
+            value = WireframeCSS.capped(placeholder?.string ?? field.placeholder ?? "")
             var placeholderColor: UIColor = .placeholderText
             if let placeholder = placeholder, placeholder.length > 0,
                let own = placeholder.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor {
@@ -1163,7 +1166,10 @@ final class WireframeCapture {
         var style = boxCss(s, p, layer, view).0
         if !style.contains("overflow:hidden") { style += "overflow:hidden;" }
         let traits = view.traitCollection
-        let raw = view.attributedText?.string ?? view.text ?? ""
+        // At most `maxTextLength` of it: a log console's megabytes are not
+        // masked, kept and sent at every frame.
+        let attributedText = WireframeCSS.capped(view.attributedText)
+        let raw = attributedText?.string ?? WireframeCSS.capped(view.text ?? "")
         var children: [VNode] = []
         if !raw.isEmpty {
             let masked = view.isEditable && maskAllInputs ? WireframeCSS.mask(raw) : raw
@@ -1185,7 +1191,7 @@ final class WireframeCapture {
                 if align != "left" || rtl { textStyle += "text-align:\(align);" }
                 if rtl { textStyle += "direction:rtl;" }
                 let maskTyped = view.isEditable && maskAllInputs
-                let content = runs(view.attributedText, font: font, color: color, traits: traits, owner: view,
+                let content = runs(attributedText, font: font, color: color, traits: traits, owner: view,
                                    masked: maskTyped || privacy(p.box, s) == .mask)
                 let text: [VNode]
                 switch content {
@@ -1275,7 +1281,7 @@ final class WireframeCapture {
         else { return nil }
         let ref = contents as AnyObject
         guard CFGetTypeID(ref) == CGImage.typeID else { return nil }
-        let image = ref as! CGImage
+        let image = ref as! CGImage // CF bridging: CFGetTypeID checked above
         let scale = max(Double(layer.contentsScale), 1)
         let natural = (width: Double(image.width) / scale, height: Double(image.height) / scale)
         let placement: ImagePlacement

@@ -62,12 +62,13 @@ private func same(_ actual: JSON?, _ expected: JSON?) -> Bool {
     return actual.text == expected.text
 }
 
-private let versionPattern = try! NSRegularExpression(pattern: #"^v?(\d+(?:\.\d+)*)"#)
-private let comparatorPattern = try! NSRegularExpression(pattern: #"^(>=|<=|>|<|==|=|!=)?(.+)$"#)
+// Constant patterns: `try?` only keeps a trap out of the sources.
+private let versionPattern = try? NSRegularExpression(pattern: #"^v?(\d+(?:\.\d+)*)"#)
+private let comparatorPattern = try? NSRegularExpression(pattern: #"^(>=|<=|>|<|==|=|!=)?(.+)$"#)
 
-private func firstGroups(_ regex: NSRegularExpression, _ text: String) -> [String?]? {
+private func firstGroups(_ regex: NSRegularExpression?, _ text: String) -> [String?]? {
     let range = NSRange(text.startIndex..<text.endIndex, in: text)
-    guard let match = regex.firstMatch(in: text, options: [], range: range) else { return nil }
+    guard let match = regex?.firstMatch(in: text, options: [], range: range) else { return nil }
     return (0..<match.numberOfRanges).map { i in
         let r = match.range(at: i)
         guard r.location != NSNotFound, let swiftRange = Range(r, in: text) else { return nil }
@@ -204,11 +205,11 @@ private func evaluate(_ condition: Condition, _ lookup: FieldLookup) -> Bool {
     }
 }
 
-private let routeParameter = try! NSRegularExpression(pattern: #"^\{[A-Za-z_][A-Za-z0-9_]*\}$"#)
+private let routeParameter = try? NSRegularExpression(pattern: #"^\{[A-Za-z_][A-Za-z0-9_]*\}$"#)
 
 private func isRouteParameter(_ part: String) -> Bool {
     let range = NSRange(part.startIndex..<part.endIndex, in: part)
-    return routeParameter.firstMatch(in: part, options: [], range: range) != nil
+    return routeParameter?.firstMatch(in: part, options: [], range: range) != nil
 }
 
 private func decoded(_ segment: String) -> String {
@@ -226,7 +227,16 @@ private let unreserved: Set<UInt8> = Set(
 )
 
 private func isHex(_ c: UInt8) -> Bool {
-    (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+    hexValue(c) != nil
+}
+
+private func hexValue(_ c: UInt8) -> UInt8? {
+    switch c {
+    case 48...57: return c - 48
+    case 65...70: return c - 55
+    case 97...102: return c - 87
+    default: return nil
+    }
 }
 
 private func encodePath(_ path: String) -> String {
@@ -235,10 +245,10 @@ private func encodePath(_ path: String) -> String {
     var i = 0
     while i < bytes.count {
         let b = bytes[i]
-        if b == UInt8(ascii: "%"), i + 2 < bytes.count, isHex(bytes[i + 1]), isHex(bytes[i + 2]) {
+        if b == UInt8(ascii: "%"), i + 2 < bytes.count, let high = hexValue(bytes[i + 1]), let low = hexValue(bytes[i + 2]) {
             // An escape of an unreserved character is decoded, any other one
             // has its hex digits uppercased, as Dart normalizes them.
-            let value = UInt8(String(UnicodeScalar(bytes[i + 1])) + String(UnicodeScalar(bytes[i + 2])), radix: 16)!
+            let value = high << 4 | low
             if unreserved.contains(value) {
                 out.unicodeScalars.append(UnicodeScalar(value))
             } else {

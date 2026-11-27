@@ -146,7 +146,7 @@ final class TelemetryRouter {
         if !captures.isEmpty { attributes[Attr.captureIds] = .string(JSON(captures).encoded()) }
         let baselineRate = control.settings.baselineSampleRate
         attributes["traceway.collection.source"] = .string(
-            session != nil && Ids.unitHash(session!) < baselineRate ? "baseline" : "diagnostic"
+            (session.map { Ids.unitHash($0) < baselineRate } ?? false) ? "baseline" : "diagnostic"
         )
         attributes["traceway.collection.baseline_rate"] = .double(baselineRate)
         span.replacingAttributes(attributes)
@@ -235,8 +235,8 @@ final class TelemetryRouter {
         if !accept() || (sampleRate < 1 && random() >= sampleRate) { return .filtered }
         if mode == .off { return .off }
         let session = hooks?.sessionId
-        let baselineSampled = baselineSignals.contains(signal) && session != nil
-            && Ids.unitHash(session!) < control.settings.baselineSampleRate
+        let baselineSampled = baselineSignals.contains(signal)
+            && (session.map { Ids.unitHash($0) < control.settings.baselineSampleRate } ?? false)
         if mode == .stream || baselineSampled { return .stream }
         buffer.push(BufferEntry(timeMs: timeMs, signal: signal, bytes: estimateBytes(item), item: item))
         return .buffer

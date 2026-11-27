@@ -109,4 +109,20 @@ final class IOSSymbolicationTests: XCTestCase {
         XCTAssertFalse(record.stackTrace.contains("os: ios"))
         XCTAssertTrue(record.stackTrace.hasPrefix("Fatal Signal SIGABRT (6)"))
     }
+
+    /// IOS-7: values read back from disk were converted unchecked.
+    func testACorruptCrashFileParsesWithoutTrapping() throws {
+        let record = try XCTUnwrap(CrashRecordStore.parse(
+            text: "TRACEWAY_SIGNAL_V1\nsignal=4294967296\ntime=99999999999999999\n---FRAMES---\n"
+        ))
+        XCTAssertEqual(record.header, "Fatal Signal SIG4294967296 (4294967296)")
+        XCTAssertLessThanOrEqual(record.recordedAtMs, Clock.nowMs())
+        let negative = try XCTUnwrap(CrashRecordStore.parse(
+            text: "TRACEWAY_SIGNAL_V1\nsignal=-9223372036854775808\ntime=-9223372036854775808\n---FRAMES---\n"
+        ))
+        XCTAssertGreaterThan(negative.recordedAtMs, 0)
+        let fine = try XCTUnwrap(CrashRecordStore.parse(text: "TRACEWAY_SIGNAL_V1\nsignal=11\ntime=1700000000\n---FRAMES---\n"))
+        XCTAssertEqual(fine.header, "Fatal Signal SIGSEGV (11)")
+        XCTAssertEqual(fine.recordedAtMs, 1_700_000_000_000)
+    }
 }

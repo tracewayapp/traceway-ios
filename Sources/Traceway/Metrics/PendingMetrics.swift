@@ -63,11 +63,13 @@ final class PendingMetrics {
     /// more attempt, never a third.
     func take(_ store: StateStore, skip: Set<String>) -> [PendingPayload] {
         let list = read(store)
-        let taken = list.filter { !skip.contains($0["id"]!.string!) }
-        if !taken.isEmpty { write(store, list.filter { skip.contains($0["id"]!.string!) }) }
+        let taken = list.filter { !skip.contains($0["id"]?.string ?? "") }
+        if !taken.isEmpty { write(store, list.filter { skip.contains($0["id"]?.string ?? "") }) }
         return taken.compactMap { entry in
-            guard let body = Data(base64Encoded: entry["p"]!.string!) else { return nil }
-            return PendingPayload(id: entry["id"]!.string!, timeMs: Int64(entry["t"]?.int ?? 0), body: body)
+            guard let id = entry["id"]?.string, let payload = entry["p"]?.string,
+                  let body = Data(base64Encoded: payload)
+            else { return nil }
+            return PendingPayload(id: id, timeMs: Int64(entry["t"]?.int ?? 0), body: body)
         }
     }
 }

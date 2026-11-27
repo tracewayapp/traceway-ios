@@ -47,8 +47,8 @@ final class RingBuffer<T> {
         var kept: [BufferEntry<T>] = []
         for entry in entries {
             if entry.timeMs >= sinceMs
-                && (untilMs == nil || entry.timeMs <= untilMs!)
-                && (signals == nil || signals!.contains(entry.signal))
+                && (untilMs.map { entry.timeMs <= $0 } ?? true)
+                && (signals?.contains(entry.signal) ?? true)
             {
                 taken.append(entry)
                 totalBytes -= entry.bytes

@@ -576,6 +576,22 @@ final class OpampClientTests: XCTestCase {
         ])
     }
 
+    /// IOS-2: `Retry-After` from a proxy or captive portal was multiplied
+    /// into milliseconds unchecked and trapped the client's queue.
+    func testAnAbsurdRetryAfterIsHeldToADayInsteadOfTrapping() {
+        let huge = HTTPResult(statusCode: 503, headers: ["retry-after": "99999999999999999"])
+        XCTAssertEqual(huge.retryAfterMs, 86_400_000)
+        XCTAssertEqual(HTTPResult(statusCode: 503, headers: ["retry-after": " 5 "]).retryAfterMs, 5000)
+        XCTAssertNil(HTTPResult(statusCode: 503, headers: ["retry-after": "-5"]).retryAfterMs)
+
+        let server = FakeOpampServer { _, _ in huge }
+        let client = makeClient(server)
+        startAndWait(client)
+        pollAndWait(client)
+        XCTAssertEqual(server.requests.count, 1)
+        XCTAssertTrue(queue.sync { client.isRunning })
+    }
+
     func testTakesTheRetryDelayFromTheErrorResponseWhenThereIsNoHeader() {
         // Without the error response's 1.2 s the client would wait 30 s.
         let server = FakeOpampServer { _, index in

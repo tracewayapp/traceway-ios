@@ -191,8 +191,7 @@ func encodeServerToAgent(
     if let config = remoteConfig {
         w.message(3) { rc in
             rc.message(1) { map in
-                for key in config.configMap.keys.sorted() {
-                    let object = config.configMap[key]!
+                for (key, object) in config.configMap.sorted(by: { $0.key < $1.key }) {
                     map.message(1) { entry in
                         entry.string(1, key)
                         entry.message(2, always: true) { o in

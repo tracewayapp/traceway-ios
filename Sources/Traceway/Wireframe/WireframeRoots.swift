@@ -17,7 +17,9 @@ enum WireframeRoots {
             ?? scenes.first(where: { $0.activationState == .foregroundInactive }) {
             windows = scene.windows
         }
-        if windows.isEmpty, let legacy = UIApplication.shared.value(forKey: "windows") as? [UIWindow] {
+        // KVC raises for a key that is gone: asked only while it answers.
+        if windows.isEmpty, UIApplication.shared.responds(to: NSSelectorFromString("windows")),
+           let legacy = UIApplication.shared.value(forKey: "windows") as? [UIWindow] {
             windows = legacy
         }
         let shown = windows.enumerated().filter { _, window in

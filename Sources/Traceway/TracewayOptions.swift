@@ -92,6 +92,10 @@ public struct TracewayOptions {
     /// on to test hang reporting from Xcode.
     public var reportHangsInDebug: Bool
 
+    /// The most frames the replay buffer holds, whatever `maxBufferFrames`
+    /// asks for.
+    static let maxBufferFramesLimit = 10_000
+
     public init(
         sampleRate: Double = 1.0,
         debug: Bool = false,

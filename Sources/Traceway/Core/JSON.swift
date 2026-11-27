@@ -119,13 +119,13 @@ enum JSON: Equatable {
         case .object(let members):
             out += "{"
             var first = true
-            let keys = sortedKeys ? members.keys.sorted() : Array(members.keys)
-            for key in keys {
+            let pairs = sortedKeys ? members.sorted { $0.key < $1.key } : Array(members)
+            for (key, value) in pairs {
                 if !first { out += "," }
                 first = false
                 JSON.writeString(key, into: &out)
                 out += ":"
-                members[key]!.write(into: &out, sortedKeys: sortedKeys)
+                value.write(into: &out, sortedKeys: sortedKeys)
             }
             out += "}"
         }
@@ -238,4 +238,13 @@ extension JSON {
         case .array, .object: return encoded(sortedKeys: true)
         }
     }
+}
+
+/// The app's own `[String: Any]` values (`collection`, action data) as JSON
+/// text. `JSONSerialization.data(withJSONObject:)` raises an Objective-C
+/// exception, which no `catch` stops, for anything that is not JSON (a
+/// `Date`, a custom type, NaN): the value is checked first, and is nil then.
+func foundationJSONData(_ object: Any, options: JSONSerialization.WritingOptions = []) -> Data? {
+    guard JSONSerialization.isValidJSONObject(object) else { return nil }
+    return try? JSONSerialization.data(withJSONObject: object, options: options)
 }

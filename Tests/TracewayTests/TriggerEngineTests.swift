@@ -370,4 +370,42 @@ final class TriggerEngineTests: XCTestCase {
         XCTAssertEqual(steps[1]["anchors"]?.array?.count, 8)
         XCTAssertEqual(steps[1]["anchors"]?.array?.last, [9, 0])
     }
+
+    // MARK: crash safety
+
+    /// IOS-1: `withinSeconds` came from the server with no upper bound and
+    /// was turned into milliseconds unchecked: a step under way trapped on
+    /// the next record, and again at every start that restored it.
+    func testAHugeWithinSecondsIsHeldToADayAndNeverTraps() throws {
+        let document = try parseSettingsDocument("""
+        {"triggers":[{"id":"t","steps":[{"match":{"key":"event.name","op":"exists"}},\
+        {"match":{"key":"event.name","op":"exists"},"withinSeconds":1e16}],\
+        "actions":[{"type":"emit","eventName":"x"}]}]}
+        """)
+        let trigger = try XCTUnwrap(applyOverlay(defaultSettings(), document).triggers.first { $0.id == "t" })
+        XCTAssertEqual(trigger.steps[1].withinSeconds, 86_400)
+        let engine = TriggerEngine()
+        engine.setTriggers([trigger])
+        XCTAssertTrue(engine.observe(event(1000, "a")).isEmpty)
+        XCTAssertEqual(engine.observe(event(2000, "b")).count, 1)
+        _ = engine.observe(event(3000, "a"))
+        let restored = TriggerEngine()
+        restored.setTriggers([trigger])
+        restored.restoreProgress(engine.snapshotProgress(), nowMs: 4000)
+        XCTAssertEqual(restored.observe(event(5000, "b")).count, 1)
+
+        // A step made in code, past the parser, saturates instead.
+        var huge = trigger
+        huge.steps[1].withinSeconds = 1e300
+        huge.steps[1].count = 2
+        huge.steps[1].periodSeconds = .infinity
+        let direct = TriggerEngine()
+        direct.setTriggers([huge])
+        for t in [Int64.min + 1, -5, 0, 10] { _ = direct.observe(event(t, "a")) }
+        direct.restoreProgress([[
+            "id": "t", "v": 2, "signature": .string(huge.signature),
+            "steps": [[:], ["anchors": [[-1e300, 0], [0, 0]], "hits": [-1e300, 0]]],
+        ]], nowMs: 20)
+        XCTAssertEqual(direct.observe(event(30, "b")).count, 1)
+    }
 }

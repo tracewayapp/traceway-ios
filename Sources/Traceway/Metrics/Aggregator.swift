@@ -61,8 +61,8 @@ let screenDimension = "screen"
 private func metricCellKey(_ name: String, _ dims: MetricDims) -> String {
     guard !dims.isEmpty else { return name }
     var out = name
-    for key in dims.keys.sorted() {
-        out += "\u{1f}\(key)=\(dims[key]!)"
+    for (key, value) in dims.sorted(by: { $0.key < $1.key }) {
+        out += "\u{1f}\(key)=\(value)"
     }
     return out
 }

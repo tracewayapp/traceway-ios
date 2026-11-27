@@ -76,7 +76,7 @@ final class WireframeRecorder: ReplaySource {
     var imageBudget: CollectionBudget?
 
     init(maxFrames: Int = 150, fps: Int = 4, debug: Bool = false, now: @escaping () -> Int64 = Clock.nowMs) {
-        self.maxFrames = max(2, maxFrames)
+        self.maxFrames = min(max(2, maxFrames), TracewayOptions.maxBufferFramesLimit)
         self.fps = min(max(fps, 1), 15)
         self.debug = debug
         self.now = now
@@ -244,8 +244,8 @@ final class WireframeRecorder: ReplaySource {
         }
         return frames.contains { f in
             f.screen != nil
-                && (sinceMs == nil || f.timestampMs >= sinceMs!)
-                && (untilMs == nil || f.timestampMs < untilMs!)
+                && (sinceMs.map { f.timestampMs >= $0 } ?? true)
+                && (untilMs.map { f.timestampMs < $0 } ?? true)
         }
     }
 
@@ -258,10 +258,10 @@ final class WireframeRecorder: ReplaySource {
         let end = untilMs ?? now()
         // An empty or inverted window holds nothing to replay.
         if let since = sinceMs, since >= end { return nil }
-        var index = sinceMs == nil ? -1 : WireframeRecorder.frameIndex(frames, at: sinceMs!)
+        var index = sinceMs.map { WireframeRecorder.frameIndex(frames, at: $0) } ?? -1
         let start: Int64
-        if index >= 0, frames[index].screen != nil {
-            start = sinceMs!
+        if let since = sinceMs, index >= 0, frames[index].screen != nil {
+            start = since
         } else {
             index = -1
             for (i, f) in frames.enumerated() {
@@ -489,7 +489,7 @@ final class WireframeRecorder: ReplaySource {
         guard let value = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue else { return }
         let frame = value.cgRectValue
         let screen = capture?.screenWindow?.screen.bounds
-        keyboardFrame = frame.isEmpty || (screen != nil && frame.minY >= screen!.maxY) ? nil : frame
+        keyboardFrame = frame.isEmpty || (screen.map { frame.minY >= $0.maxY } ?? false) ? nil : frame
     }
 
     /// Captures a frame now, off the timer. Main thread only.

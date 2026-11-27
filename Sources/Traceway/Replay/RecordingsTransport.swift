@@ -182,7 +182,7 @@ final class RecordingsTransport {
             failed(batch.segments.count)
             return nil
         }
-        return result.retryAfterMs.map { Int($0) } ?? retryDelaysMs[batch.attempts - 1]
+        return result.retryAfterMs.map { Int(clamping: $0) } ?? retryDelaysMs[batch.attempts - 1]
     }
 
     private func failed(_ count: Int) {

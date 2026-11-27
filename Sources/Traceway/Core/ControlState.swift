@@ -66,6 +66,16 @@ final class ControlState {
         _ = activeOverrides()
     }
 
+    /// Sets `owner`'s override, keeping its later end when it has one.
+    func extendOverride(_ owner: String, _ override: StreamOverride) {
+        var next = override
+        if let current = overrides[owner]?.first, current.untilMs > next.untilMs { next.untilMs = current.untilMs }
+        setOverrides(owner, [next])
+    }
+
+    /// The overrides in effect now.
+    var activeOverrideCount: Int { activeOverrides().count }
+
     /// When the next override ends, so the caller can re-apply replay then.
     var nextOverrideExpiryMs: Int64? {
         activeOverrides().map(\.untilMs).min()

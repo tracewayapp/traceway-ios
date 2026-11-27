@@ -177,7 +177,8 @@ final class WireframeGlyphs {
     /// multicolor, hierarchical, or `.alwaysOriginal`) is kept in them;
     /// otherwise only its shape is, shown in the view's tint.
     func lookup(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode, color: Bool) -> Glyph? {
-        let key = "\(Int((size.width * 10).rounded()))x\(Int((size.height * 10).rounded()))|\(contentMode.rawValue)|\(color)"
+        let key = "\(Int(saturating: Double(size.width * 10).rounded()))x\(Int(saturating: Double(size.height * 10).rounded()))"
+            + "|\(contentMode.rawValue)|\(color)"
         let sizes: Sizes
         if let existing = byImage.object(forKey: image) {
             sizes = existing
@@ -232,8 +233,8 @@ final class WireframeGlyphs {
     }
 
     private func draw(_ image: UIImage, size: CGSize, contentMode: UIView.ContentMode, color: Bool, cls: String) -> String? {
-        let w = Int((size.width * pixelRatio).rounded(.up))
-        let h = Int((size.height * pixelRatio).rounded(.up))
+        let w = Int(saturating: Double(size.width * pixelRatio).rounded(.up))
+        let h = Int(saturating: Double(size.height * pixelRatio).rounded(.up))
         guard w > 0, h > 0, w <= 512, h <= 512 else { return nil }
         let place = WireframeGlyphs.placement(contentMode).rect(
             image: (Double(image.size.width), Double(image.size.height)),

@@ -148,6 +148,54 @@ triggers, taps, wireframe session replay and app performance metrics.
   and the recorder hands the controller a `SessionRecordingPayload` (it was
   `RecordingClip`). [Docs/Wireframe.md](Docs/Wireframe.md) describes the
   pipeline.
+- **Crash safety** (CONTRACT §13): the SDK never takes the app down. One
+  `guarded` helper contains what throws in the app's control flow (hooks,
+  observers, the app's callbacks), and the sources keep no traps: no `try!`,
+  force unwraps or unchecked conversions of numbers from the server, files or
+  the app, and values are checked before Foundation calls that raise.
+  `CrashSafetyTests` scans the sources for them and calls every public API
+  before `initialize`, after `shutdown`, twice, at once and with garbage, with
+  faults in the network, the settings, triggers and callbacks.
+- A remote rule's `withinSeconds` is held to a day like every other duration;
+  an absurd one trapped on the next record and at every start after.
+- An absurd `Retry-After` (OpAMP, recordings) is held to a day instead of
+  trapping.
+- A corrupt crash file is removed before it is read and its values are
+  checked: it caused a crash at every launch.
+- `TracewayOptions.collection` with values that are not JSON (a `Date`, NaN)
+  is ignored instead of raising an Objective-C exception at launch.
+- Two `initialize` calls at once share one client (each started one on the
+  same files); `initialize` while a `shutdown` runs starts a new client
+  instead of returning the stopping one; concurrent `shutdown`s join the
+  first; `shutdown` waits at most 10 seconds.
+- `flush()` waits at most 10 seconds by default, as on Android (it waited
+  without a limit).
+- `initialize` off the main thread no longer deadlocks while the main thread
+  waits for it: the screen size is not read with `main.sync`.
+- The background task of the flush on backgrounding always ends, also when
+  the SDK shut down in between; iOS kills an app whose task outlives its time.
+- The swizzled `sendEvent:`, `viewDidLoad`, `viewWillAppear:` and
+  `viewDidAppear:` call the implementation they replace with its own selector,
+  so other libraries' hooks that rely on `_cmd` keep working.
+- Crash handlers are installed once per process and keep the handlers
+  installed before them: an uncaught `NSException` still reaches the previous
+  handler after a restart of the SDK, a fatal signal reaches it with its own
+  `siginfo` and context, the stack walk cannot fault on a smashed stack, the
+  main thread gets its own signal stack, and crash metadata updates reuse two
+  buffers instead of leaking one each.
+- URLSession spans and the global OpenTelemetry providers record for the
+  client started after a `shutdown`.
+- A trigger that streams on every record extends its stream instead of
+  adding one per record.
+- The wireframe keeps at most 2,000 characters of text per node, and at most
+  four pictures wait to be encoded.
+- A `beforeCapture` that reports to Traceway itself no longer recurses: a
+  capture made inside it skips the callback.
+- A crash from an earlier run is reported under that run's app and OS
+  version, and without `traceway.session.started_at`.
+- Timestamps the app sets that no clock reaches, and absurd view sizes, no
+  longer trap; `maxBufferFrames` is held to 10,000 and `exportDelayMs` to a
+  minute.
 
 ## 0.1.0
 

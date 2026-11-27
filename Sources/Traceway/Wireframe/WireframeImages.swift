@@ -109,6 +109,10 @@ final class WireframeImages {
     }
 
     static let maxPictures = 64
+    /// Encodes waiting or under way. Each holds its full-size bitmap until
+    /// it runs, which the app may have let go already: a picture beyond
+    /// this is a placeholder for now and is encoded once there is room.
+    static let maxPendingEncodes = 4
     /// How long a picture's rule stays on the page after it left the
     /// screen, so a picture that comes back does not send it again.
     static let lingerMs: Int64 = 30_000
@@ -118,6 +122,7 @@ final class WireframeImages {
     private(set) var all: [Picture] = []
     private var next = 0
     private var session: String?
+    private(set) var pendingEncodes = 0
     private let byImage = NSMapTable<UIImage, Sizes>.weakToStrongObjects()
     private let byLayer = NSMapTable<CALayer, LayerPicture>.weakToStrongObjects()
     private let encoder = DispatchQueue(label: "app.traceway.images", qos: .utility)
@@ -155,7 +160,7 @@ final class WireframeImages {
             known.lastShownMs = nowMs
             return known
         }
-        guard let picture = add(nowMs) else { return nil }
+        guard pendingEncodes < WireframeImages.maxPendingEncodes, let picture = add(nowMs) else { return nil }
         sizes.bySize[key] = picture
         encode(image, hasAlpha: image.cgImage.map(WireframeImages.hasAlpha) ?? false,
                source: (Double(image.size.width * image.scale), Double(image.size.height * image.scale)),
@@ -172,7 +177,7 @@ final class WireframeImages {
             known.picture.lastShownMs = nowMs
             return known.picture
         }
-        guard let picture = add(nowMs) else { return nil }
+        guard pendingEncodes < WireframeImages.maxPendingEncodes, let picture = add(nowMs) else { return nil }
         // The layer holds its contents, so their identifier is not reused
         // while the entry stands for them.
         byLayer.setObject(LayerPicture(contents: ObjectIdentifier(contents), size: key, picture: picture), forKey: layer)
@@ -182,7 +187,7 @@ final class WireframeImages {
     }
 
     private static func sizeKey(_ size: CGSize) -> String {
-        "\(Int((size.width * 10).rounded()))x\(Int((size.height * 10).rounded()))"
+        "\(Int(saturating: Double(size.width * 10).rounded()))x\(Int(saturating: Double(size.height * 10).rounded()))"
     }
 
     private static func hasAlpha(_ image: CGImage) -> Bool {
@@ -230,9 +235,11 @@ final class WireframeImages {
         let opaque = WireframeImages.format(opaque: true)
         let clear = WireframeImages.format(opaque: false)
         let cls = picture.cls
+        pendingEncodes += 1
         encoder.async { [weak self] in
             let encoded = WireframeImages.encoded(image, size: size, hasAlpha: hasAlpha, opaque: opaque, clear: clear)
             DispatchQueue.main.async {
+                self?.pendingEncodes -= 1
                 guard let encoded = encoded, !picture.evicted else { return }
                 if let budget = self?.budget, !budget.admitImage(bytes: encoded.data.count) { return }
                 picture.css = WireframeImageEncoding.rule(cls: cls, mime: encoded.mime, data: encoded.data)

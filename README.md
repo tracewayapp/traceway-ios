@@ -711,7 +711,18 @@ After `initialize`, the SDK records:
   for up to two seconds before the app ends.
 - **Fatal signals** (`SIGTRAP`, `SIGILL`, `SIGABRT`, `SIGSEGV`, `SIGBUS`,
   `SIGFPE`): written to disk by an async-signal-safe handler and reported on
-  the **next launch**, with the session they happened in.
+  the **next launch**, with the session they happened in, under the app
+  version that crashed.
+
+The handlers are installed once per process, and the ones installed before
+Traceway's (another crash reporter's) still get every crash, once, after it:
+a fault the hardware raised reaches them with its own `siginfo` and context.
+
+The SDK itself never takes the app down: its sources keep no traps
+(`try!`, force unwraps, unchecked conversions of numbers it is sent), the
+values it hands Foundation are checked first, and what fails inside it (the
+network, the server's settings, a callback of yours) is contained while the
+app's own operation goes on.
 
 Stack traces carry the binary images' UUIDs and offsets; the server
 symbolicates them against the dSYMs you upload with
@@ -753,7 +764,7 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
 
 - **Start**: `Traceway.initialize(connectionString:options:)`, because Swift keeps `Traceway.init(…)` for initializers. The browser and Android call it `init`, Flutter `run`. It returns the `TracewayClient`, or nil when the settings are invalid (logged, not thrown); a nil connection string starts standalone. `Traceway.start` is a deprecated alias.
 - **Masks** belong to views: the `UIView.tracewayMask` property and the SwiftUI modifier `.tracewayMask(_:)`. The marker that needs no code is the `accessibilityIdentifier` (`traceway-mask`, `traceway-blank`), where the browser uses CSS classes, Android `android:tag` / `testTag` and Flutter a `ValueKey`; it works for UIKit views only. `TracewayMaskMode.blank(color:)` takes a `UIColor`.
-- **Seconds**: `flush(timeout:)` waits at most `timeout` seconds (`TimeInterval`, the Swift idiom), where the browser, Android and Flutter take milliseconds.
+- **Seconds**: `flush(timeout:)` waits at most `timeout` seconds (`TimeInterval`, the Swift idiom; 10 by default, as on Android), where the browser, Android and Flutter take milliseconds.
 - **Properties**: `Traceway.instanceId` and `Traceway.currentSessionId` are static properties (`getInstanceId()` and `currentSessionId()` in the browser, `getInstanceId()` on Android and Flutter).
 - **Errors carry no stack of their own**: `captureException(_:attributes:)` records the stack of the caller; an `NSException` is reported with its own when uncaught.
 - **Navigation**: view controllers are reported without code; SwiftUI navigation and routers use `.tracewayScreen(_:)` or `recordNavigation(_:action:from:route:)` (arguments by label).
@@ -773,7 +784,8 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`,
   `maxLocalFiles`, `localFileMaxAgeHours`.
 - **API**: `Traceway.initialize(connectionString:options:)` starts the SDK;
-  `Traceway.start` still works and is deprecated. `flush(timeout:)` is unchanged.
+  `Traceway.start` still works and is deprecated. `flush(timeout:)` now waits
+  at most 10 seconds by default.
   `capture(_:)`, `capture(error:)` and `capture(message:)` still work and are
   deprecated in favor of `captureException(_:attributes:)` and
   `captureMessage(_:attributes:)`; `sessionId` in favor of

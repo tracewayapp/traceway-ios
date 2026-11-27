@@ -32,11 +32,11 @@ private func keyValue(_ key: String, _ value: MetricAttribute) -> ProtoKeyValue 
 
 /// In key order, so the same batch always encodes to the same bytes.
 private func keyValues(_ attributes: [String: MetricAttribute]) -> [ProtoKeyValue] {
-    attributes.keys.sorted().map { keyValue($0, attributes[$0]!) }
+    attributes.sorted { $0.key < $1.key }.map { keyValue($0.key, $0.value) }
 }
 
 private func keyValues(_ dims: MetricDims) -> [ProtoKeyValue] {
-    dims.keys.sorted().map { keyValue($0, .string(dims[$0]!)) }
+    dims.sorted { $0.key < $1.key }.map { keyValue($0.key, .string($0.value)) }
 }
 
 /// Renders a batch as an OTLP `ExportMetricsServiceRequest` in protobuf,

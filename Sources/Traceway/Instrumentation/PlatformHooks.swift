@@ -34,9 +34,7 @@ extension TracewayClient {
         PlatformHooks.install(self)
         #endif
         #if canImport(URLSessionInstrumentation)
-        if options.captureNetwork, let tracer = onQueueSync({ tracer }) {
-            NetworkInstrumentation.install(tracer: tracer)
-        }
+        if options.captureNetwork { NetworkInstrumentation.install() }
         #endif
     }
 
@@ -57,10 +55,13 @@ final class PlatformHooks {
     private static var swizzled = false
     private static var displaySwizzled = false
 
+    /// Where background tasks begin and end; tests stand in for UIKit.
+    static var backgroundTasks: BackgroundTasks = ApplicationBackgroundTasks()
+
     private weak var client: TracewayClient?
     private let clientId: ObjectIdentifier
     private var observers: [NSObjectProtocol] = []
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundTask: BackgroundTask?
     let recorder: WireframeRecorder?
     let touches = TouchTracker()
     /// Frames, lifecycle and the main thread for the app performance metrics.
@@ -130,13 +131,13 @@ final class PlatformHooks {
         let center = NotificationCenter.default
         observers.append(center.addObserver(
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.didEnterBackground() })
+        ) { [weak self] _ in guarded("didEnterBackground") { self?.didEnterBackground() } })
         observers.append(center.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.client?.appResumed() })
+        ) { [weak self] _ in guarded("willEnterForeground") { self?.client?.appResumed() } })
         observers.append(center.addObserver(
             forName: UIApplication.willTerminateNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.client?.flush(timeout: 2) })
+        ) { [weak self] _ in guarded("willTerminate") { self?.client?.flush(timeout: 2) } })
     }
 
     private func removeObservers() {
@@ -145,22 +146,21 @@ final class PlatformHooks {
     }
 
     /// The app may be killed in the background: what is ready leaves under
-    /// a background task, and the buffer is saved.
+    /// a background task, and the buffer is saved. The task is held by the
+    /// flush's completion and by its expiration handler, not by the hooks:
+    /// it ends even when the hooks are gone first (a shutdown, or a newer
+    /// client), since iOS kills an app whose task is still open when its
+    /// time runs out.
     private func didEnterBackground() {
         guard let client = client else { return }
-        let application = UIApplication.shared
-        if backgroundTask == .invalid {
-            backgroundTask = application.beginBackgroundTask(withName: "Traceway flush") { [weak self] in
-                self?.endBackgroundTask()
-            }
+        let task: BackgroundTask
+        if let open = backgroundTask, open.isOpen {
+            task = open
+        } else {
+            task = BackgroundTask(PlatformHooks.backgroundTasks, name: "Traceway flush")
+            backgroundTask = task
         }
-        client.appPaused { DispatchQueue.main.async { [weak self] in self?.endBackgroundTask() } }
-    }
-
-    private func endBackgroundTask() {
-        guard backgroundTask != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(backgroundTask)
-        backgroundTask = .invalid
+        client.appPaused { DispatchQueue.main.async { task.end() } }
     }
 
     // MARK: - Navigation
@@ -286,19 +286,93 @@ final class TouchTracker {
     }
 }
 
-extension UIApplication {
-    static func tracewaySwizzleSendEvent() {
-        guard let original = class_getInstanceMethod(UIApplication.self, #selector(UIApplication.sendEvent(_:))),
-              let replacement = class_getInstanceMethod(UIApplication.self, #selector(UIApplication.traceway_sendEvent(_:)))
-        else { return }
-        method_exchangeImplementations(original, replacement)
+/// `UIApplication`'s background tasks.
+protocol BackgroundTasks: AnyObject {
+    func begin(name: String, expiration: @escaping () -> Void) -> UIBackgroundTaskIdentifier
+    func end(_ task: UIBackgroundTaskIdentifier)
+}
+
+final class ApplicationBackgroundTasks: BackgroundTasks {
+    func begin(name: String, expiration: @escaping () -> Void) -> UIBackgroundTaskIdentifier {
+        UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: expiration)
     }
 
-    @objc dynamic func traceway_sendEvent(_ event: UIEvent) {
-        // Before the event is delivered, so the tap names what was under the
-        // finger, not what the tap brings up.
-        if let hooks = PlatformHooks.active { hooks.touches.handle(event, hooks: hooks) }
-        traceway_sendEvent(event)
+    func end(_ task: UIBackgroundTaskIdentifier) {
+        UIApplication.shared.endBackgroundTask(task)
+    }
+}
+
+/// One background task, ended exactly once: by whichever comes first of
+/// the work finishing and the system's expiration. Main thread only.
+final class BackgroundTask {
+    private let tasks: BackgroundTasks
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    init(_ tasks: BackgroundTasks, name: String) {
+        self.tasks = tasks
+        // The handler holds the task until it ends; then UIKit lets it go.
+        id = tasks.begin(name: name) { self.end() }
+    }
+
+    var isOpen: Bool { id != .invalid }
+
+    func end() {
+        guard id != .invalid else { return }
+        let ending = id
+        id = .invalid
+        tasks.end(ending)
+    }
+}
+
+/// Method swizzling that keeps the method it replaces whole: the
+/// replacement runs Traceway's part, then calls the implementation that was
+/// there before, once, with the selector it was called with. A hook
+/// installed before Traceway's that relies on `_cmd` (forwarding to
+/// `forwardInvocation:`, swizzlers keyed by selector) keeps working, which
+/// exchanging implementations with a `traceway_` method broke.
+enum Swizzle {
+    private static let lock = NSLock()
+    private static var done = Set<String>()
+
+    /// Replaces `selector` on `cls` with the block `make` returns for the
+    /// original implementation. Once per class and selector; false when the
+    /// class has no such method or it was replaced already. A method `cls`
+    /// only inherits is added to it, so the superclass keeps its own.
+    @discardableResult
+    static func replace(_ cls: AnyClass, _ selector: Selector, _ make: (IMP) -> Any) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(NSStringFromClass(cls)) \(NSStringFromSelector(selector))"
+        guard !done.contains(key), let method = class_getInstanceMethod(cls, selector) else { return false }
+        done.insert(key)
+        let original = method_getImplementation(method)
+        let replacement = imp_implementationWithBlock(make(original))
+        if !class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)) {
+            method_setImplementation(method, replacement)
+        }
+        return true
+    }
+}
+
+private typealias VoidIMP = @convention(c) (AnyObject, Selector) -> Void
+private typealias BoolIMP = @convention(c) (AnyObject, Selector, Bool) -> Void
+private typealias EventIMP = @convention(c) (AnyObject, Selector, UIEvent) -> Void
+
+extension UIApplication {
+    static func tracewaySwizzleSendEvent(on cls: UIApplication.Type = UIApplication.self) {
+        let selector = #selector(UIApplication.sendEvent(_:))
+        Swizzle.replace(cls, selector) { original in
+            let call = unsafeBitCast(original, to: EventIMP.self)
+            let block: @convention(block) (AnyObject, UIEvent) -> Void = { application, event in
+                // Before the event is delivered, so the tap names what was
+                // under the finger, not what the tap brings up.
+                guarded("sendEvent") {
+                    if let hooks = PlatformHooks.active { hooks.touches.handle(event, hooks: hooks) }
+                }
+                call(application, selector, event)
+            }
+            return block
+        }
     }
 }
 
@@ -315,38 +389,49 @@ extension UIViewController {
         }
     }
 
-    static func tracewaySwizzleDisplayStart() {
-        for (original, replacement) in [
-            (#selector(UIViewController.viewDidLoad), #selector(UIViewController.traceway_viewDidLoad)),
-            (#selector(UIViewController.viewWillAppear(_:)), #selector(UIViewController.traceway_viewWillAppear(_:))),
-        ] {
-            guard let a = class_getInstanceMethod(UIViewController.self, original),
-                  let b = class_getInstanceMethod(UIViewController.self, replacement)
-            else { continue }
-            method_exchangeImplementations(a, b)
+    static func tracewaySwizzleDisplayStart(on cls: UIViewController.Type = UIViewController.self) {
+        let didLoad = #selector(UIViewController.viewDidLoad)
+        Swizzle.replace(cls, didLoad) { original in
+            let call = unsafeBitCast(original, to: VoidIMP.self)
+            let block: @convention(block) (AnyObject) -> Void = { controller in
+                guarded("viewDidLoad") {
+                    if let controller = controller as? UIViewController {
+                        PlatformHooks.active?.displayStarting(controller, load: true)
+                    }
+                }
+                call(controller, didLoad)
+            }
+            return block
+        }
+        let willAppear = #selector(UIViewController.viewWillAppear(_:))
+        Swizzle.replace(cls, willAppear) { original in
+            let call = unsafeBitCast(original, to: BoolIMP.self)
+            let block: @convention(block) (AnyObject, Bool) -> Void = { controller, animated in
+                guarded("viewWillAppear") {
+                    if let controller = controller as? UIViewController {
+                        PlatformHooks.active?.displayStarting(controller, load: false)
+                    }
+                }
+                call(controller, willAppear, animated)
+            }
+            return block
         }
     }
 
-    @objc dynamic func traceway_viewDidLoad() {
-        PlatformHooks.active?.displayStarting(self, load: true)
-        traceway_viewDidLoad()
-    }
-
-    @objc dynamic func traceway_viewWillAppear(_ animated: Bool) {
-        PlatformHooks.active?.displayStarting(self, load: false)
-        traceway_viewWillAppear(animated)
-    }
-
-    static func tracewaySwizzleViewDidAppear() {
-        guard let original = class_getInstanceMethod(UIViewController.self, #selector(UIViewController.viewDidAppear(_:))),
-              let replacement = class_getInstanceMethod(UIViewController.self, #selector(UIViewController.traceway_viewDidAppear(_:)))
-        else { return }
-        method_exchangeImplementations(original, replacement)
-    }
-
-    @objc dynamic func traceway_viewDidAppear(_ animated: Bool) {
-        traceway_viewDidAppear(animated)
-        PlatformHooks.active?.viewDidAppear(self)
+    static func tracewaySwizzleViewDidAppear(on cls: UIViewController.Type = UIViewController.self) {
+        let selector = #selector(UIViewController.viewDidAppear(_:))
+        Swizzle.replace(cls, selector) { original in
+            let call = unsafeBitCast(original, to: BoolIMP.self)
+            let block: @convention(block) (AnyObject, Bool) -> Void = { controller, animated in
+                call(controller, selector, animated)
+                guarded("viewDidAppear") {
+                    if let controller = controller as? UIViewController {
+                        PlatformHooks.active?.viewDidAppear(controller)
+                    }
+                }
+            }
+            return block
+        }
     }
 }
 
@@ -366,13 +451,18 @@ public extension View {
 #if canImport(URLSessionInstrumentation)
 /// URLSession requests as client spans, by the official opentelemetry-swift
 /// instrumentation with the stable HTTP semantic conventions. Installed once
-/// per process; requests are recorded while a client runs with
-/// `captureNetwork`, never the SDK's own.
+/// per process, with a tracer that is the running client's at each request:
+/// requests are recorded while a client runs with `captureNetwork`, also
+/// one started after a shutdown, never the SDK's own.
 enum NetworkInstrumentation {
     private static var instrumentation: URLSessionInstrumentation?
+    private static let lock = NSLock()
 
-    static func install(tracer: Tracer) {
+    static func install() {
+        lock.lock()
+        defer { lock.unlock() }
         guard instrumentation == nil else { return }
+        let tracer = CurrentClientTracer { TracewayClient.shared?.tracer }
         let configuration = URLSessionInstrumentationConfiguration(
             shouldInstrument: { request in
                 guard let client = TracewayClient.shared, client.options.captureNetwork,

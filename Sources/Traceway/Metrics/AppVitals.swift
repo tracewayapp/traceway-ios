@@ -270,8 +270,9 @@ final class AppVitals {
     private let epochMs: () -> Int64
     private let frameClock: () -> Int64
     private let lock = NSLock()
-    private var tally: FrameTally!
-    private var watchdog: HangWatchdog!
+    private let tally: FrameTally
+    /// Set at the end of `init`: its callbacks hold `self` weakly.
+    private var watchdog: HangWatchdog?
 
     // Guarded by `lock`.
     private var host: VitalsHost?
@@ -351,7 +352,7 @@ final class AppVitals {
         lock.unlock()
         newHost?.install(self)
         if coldStart { awaitFirstFrame(newHost) }
-        if isForeground { watchdog.start() }
+        if isForeground { watchdog?.start() }
     }
 
     func stop() {
@@ -363,7 +364,7 @@ final class AppVitals {
         started = false
         let h = host
         lock.unlock()
-        watchdog.stop()
+        watchdog?.stop()
         h?.uninstall()
         tally.flush()
     }
@@ -405,7 +406,7 @@ final class AppVitals {
         let stopWatchdog = !foregroundKnown
         if stopWatchdog { foreground = false }
         lock.unlock()
-        if stopWatchdog { watchdog.stop() }
+        if stopWatchdog { watchdog?.stop() }
     }
 
     /// A scene connected: in the background, the return it prepares
@@ -444,10 +445,10 @@ final class AppVitals {
         let isStarted = started
         lock.unlock()
         if isForeground {
-            if isStarted { watchdog.start() }
+            if isStarted { watchdog?.start() }
             if request { h?.requestDraw() }
         } else {
-            watchdog.stop()
+            watchdog?.stop()
             tally.flush()
             h?.cancelDraw()
         }

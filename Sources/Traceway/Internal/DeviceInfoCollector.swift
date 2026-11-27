@@ -112,11 +112,19 @@ enum DeviceInfoCollector {
             let formFactor = UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
             return ("\(width)x\(height)", String(format: "%.1f", scale), formFactor)
         }
-        if Thread.isMainThread {
-            return read()
-        } else {
-            return DispatchQueue.main.sync(execute: read)
+        if Thread.isMainThread { return read() }
+        // `UIScreen` is read on the main thread, but never with `main.sync`:
+        // an app that waits on main for `initialize` (a dispatch group, a
+        // semaphore) would deadlock at launch. Without an answer soon the
+        // screen is left out.
+        let result = Locked<(String?, String?, String?)>((nil, nil, nil))
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            result.value = read()
+            done.signal()
         }
+        _ = done.wait(timeout: .now() + 0.5)
+        return result.value
         #else
         return (nil, nil, nil)
         #endif

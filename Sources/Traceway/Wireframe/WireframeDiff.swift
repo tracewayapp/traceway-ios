@@ -87,7 +87,7 @@ private final class WireframeDiff {
             removes.append(["parentId": JSON(before.id), "id": JSON(child.id)])
         }
         for child in newChildren where inPlace.contains(child.id) {
-            node(oldChildren[oldIndex[child.id]!], child)
+            if let index = oldIndex[child.id] { node(oldChildren[index], child) }
         }
         var i = newChildren.count - 1
         while i >= 0 {

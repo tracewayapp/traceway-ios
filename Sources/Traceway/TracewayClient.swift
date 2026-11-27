@@ -47,6 +47,9 @@ public final class TracewayClient {
     private static let queueKey = DispatchSpecificKey<UInt8>()
     private static let sharedLock = NSLock()
     private static var _shared: TracewayClient?
+    /// Held for a whole start: two `initialize` calls at once share one
+    /// client instead of each starting one on the same files.
+    private static let startLock = NSLock()
 
     /// The running client, or nil before `Traceway.initialize`.
     public static var shared: TracewayClient? {
@@ -97,8 +100,9 @@ public final class TracewayClient {
     private(set) var router: TelemetryRouter?
     private var logSink: BatchLogRecordProcessor?
     private var spanSink: SpanBatcher?
-    private var loggerProvider: LoggerProviderSdk?
-    private var tracerProvider: TracerProviderSdk?
+    /// Set once while the client starts, before it is shared.
+    private(set) var loggerProvider: LoggerProviderSdk?
+    private(set) var tracerProvider: TracerProviderSdk?
     private var logger: OpenTelemetryApi.Logger?
     private(set) var tracer: Tracer?
     private var opamp: OpampClient?
@@ -109,6 +113,10 @@ public final class TracewayClient {
     private var started = false
     private let shutdownLock = NSLock()
     private var shutdownState = false
+    /// From the moment `shutdown` is called: a start then makes a new client.
+    private var stoppingState = false
+    /// Left when the shutdown is over; later `shutdown` calls wait on it.
+    private let stopped = DispatchGroup()
     /// Read from the main thread too (taps, navigation), so it is locked.
     private(set) var isShutdown: Bool {
         get {
@@ -120,6 +128,10 @@ public final class TracewayClient {
             shutdownState = newValue
             shutdownLock.unlock()
         }
+    }
+    var isStopping: Bool {
+        shutdownLock.lock(); defer { shutdownLock.unlock() }
+        return stoppingState
     }
     private var emitDepth = 0
     private var errorTimes: [Int64] = []
@@ -193,7 +205,9 @@ public final class TracewayClient {
         defaults.signals["messages"]?.sampleRate = errorRate
         if let collection = options.collection {
             do {
-                let data = try JSONSerialization.data(withJSONObject: collection)
+                guard let data = foundationJSONData(collection) else {
+                    throw SettingsError(message: "it holds values that are not JSON")
+                }
                 defaults = applyOverlay(defaults, try parseSettingsDocument(data))
             } catch {
                 NSLog("[Traceway] ignoring TracewayOptions.collection: %@", "\(error)")
@@ -226,7 +240,7 @@ public final class TracewayClient {
         recordings = RecordingsTransport(url: endpoints?.recordings, token: token ?? "", transport: transport)
         // A streamed segment must leave before the frame ring wraps.
         let fps = min(max(options.fps, 1), 15)
-        let ringMs = max(1, options.maxBufferFrames) * 1000 / fps
+        let ringMs = min(max(1, options.maxBufferFrames), TracewayOptions.maxBufferFramesLimit) * 1000 / fps
         var sessionsRef: (() -> SessionManager?)?
         replay = ReplayController(
             transport: recordings,
@@ -288,12 +302,15 @@ public final class TracewayClient {
         overrides: TracewayTestOverrides? = nil
     ) throws -> TracewayClient {
         let sdkStartMs = AppVitals.monotonicMs()
-        sharedLock.lock()
-        if let existing = _shared, !existing.isShutdown {
-            sharedLock.unlock()
-            return existing
+        startLock.lock()
+        defer { startLock.unlock() }
+        if let existing = shared {
+            if !existing.isShutdown, !existing.isStopping { return existing }
+            // `shutdown` was called and has not finished: the new client
+            // waits for it briefly, then takes over its files.
+            existing.awaitStopped(timeout: 2)
+            existing.supersede()
         }
-        sharedLock.unlock()
         Log.debugEnabled = options.debug
         let client = try TracewayClient(connectionString: connectionString, options: options, overrides: overrides)
         if overrides == nil {
@@ -447,8 +464,11 @@ public final class TracewayClient {
 
     var serviceVersion: String {
         if !options.version.isEmpty { return options.version }
-        let bundle = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return bundle?.isEmpty == false ? bundle! : "unknown"
+        if let bundle = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           !bundle.isEmpty {
+            return bundle
+        }
+        return "unknown"
     }
 
     private func buildResource(_ device: [String: String]) {
@@ -512,7 +532,7 @@ public final class TracewayClient {
             )
         }
         let spanExporter = overrides?.spanExporter ?? makeSpanExporter(routes.traces, outbox: live, transport: transport)
-        let delayMs = max(50, options.exportDelayMs)
+        let delayMs = min(max(50, options.exportDelayMs), 60_000)
         let logSink = BatchLogRecordProcessor(
             logRecordExporter: logExporter,
             scheduleDelay: Double(delayMs) / 1000
@@ -563,17 +583,11 @@ public final class TracewayClient {
             .setInstrumentationVersion(TracewaySDK.version)
             .build()
         tracer = tracerProvider.get(instrumentationName: TracewaySDK.name, instrumentationVersion: TracewaySDK.version)
-        // An app without OpenTelemetry of its own gets these providers as the
-        // global ones, so its spans and logs join the session; an app with
-        // its own keeps them.
-        if overrides == nil {
-            if OpenTelemetry.instance.loggerProvider is DefaultLoggerProvider {
-                OpenTelemetry.registerLoggerProvider(loggerProvider: loggerProvider)
-            }
-            if OpenTelemetry.instance.tracerProvider is DefaultTracerProvider {
-                OpenTelemetry.registerTracerProvider(tracerProvider: tracerProvider)
-            }
-        }
+        // An app without OpenTelemetry of its own gets the SDK's providers as
+        // the global ones, so its spans and logs join the session; an app
+        // with its own keeps them. Registered once per process, they reach
+        // whichever client runs, also one started after a shutdown.
+        if overrides == nil { CurrentClientProviders.registerGlobally() }
     }
 
     /// Queues of receivers no longer configured: nothing would send them.
@@ -592,21 +606,29 @@ public final class TracewayClient {
     private func reportEarlierRuns(_ stateDir: URL?) {
         let base = supportDirectory()
         for crash in CrashReporter.takePendingCrashes(baseDir: base) {
+            // The crashed run is described by its own resource (its app and
+            // OS version), as when it would have sent the crash itself; the
+            // rest of what it knew are the record's attributes. Only session
+            // events carry the session's start.
+            var resource = resourceAttributes
             var attributes: [String: AttributeValue] = [:]
-            for (key, value) in crash.attributes ?? [:] {
-                if key == Attr.sessionStartedAt, let ms = Int(value) {
-                    attributes[key] = .int(ms)
+            for (key, value) in crash.attributes ?? [:] where key != Attr.sessionStartedAt {
+                if resourceAttributes[key] != nil {
+                    resource[key] = value
                 } else {
                     attributes[key] = .string(value)
                 }
+            }
+            if crash.attributes?["service.version"] == nil, let version = crash.appVersion, !version.isEmpty {
+                resource["service.version"] = version
             }
             attributes["exception.type"] = .string(crash.header)
             attributes["exception.stacktrace"] = .string(crash.stackTrace)
             attributes["exception.escaped"] = .bool(true)
             attributes["traceway.crash"] = .bool(true)
             attributes[Attr.exceptionId] = .string(Ids.uuidv4())
-            emit(eventName: Events.exception, severity: .fatal, attributes: attributes,
-                 time: Clock.date(ms: crash.recordedAtMs))
+            emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: attributes,
+                           resource: resource, time: Clock.date(ms: crash.recordedAtMs))
             if options.captureMetrics { metrics.crash() }
         }
         for report in LegacyReports.take(baseDir: base) {
@@ -755,16 +777,20 @@ public final class TracewayClient {
         return (options.ignoreErrors ?? TracewayOptions.defaultIgnoreErrors).contains { $0.matches(line) }
     }
 
+    private static let inBeforeCapture = "app.traceway.beforeCapture"
+
     /// Whether `beforeCapture` lets the issue through. One that throws
-    /// keeps it: a bug in the callback must not hide the app's errors.
+    /// keeps it: a bug in the callback must not hide the app's errors. An
+    /// issue the callback captures itself (directly, or through code that
+    /// reports to Traceway) is kept without asking it again, which would
+    /// recurse until the stack overflowed.
     private func reports(_ captured: TracewayCapturedError) -> Bool {
         guard let before = options.beforeCapture else { return true }
-        do {
-            return try before(captured)
-        } catch {
-            Log.warn("beforeCapture threw, the record is kept: \(error)")
-            return true
-        }
+        let thread = Thread.current.threadDictionary
+        if thread[TracewayClient.inBeforeCapture] != nil { return true }
+        thread[TracewayClient.inBeforeCapture] = true
+        defer { thread.removeObject(forKey: TracewayClient.inBeforeCapture) }
+        return guarded("beforeCapture", fallback: true) { try before(captured) }
     }
 
     private static func strings(_ attributes: [String: AttributeValue]) -> [String: String] {
@@ -799,8 +825,7 @@ public final class TracewayClient {
             "traceway.action.name": .string(name),
         ]
         if let data = data, !data.isEmpty {
-            if JSONSerialization.isValidJSONObject(data),
-               let encoded = try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]) {
+            if let encoded = foundationJSONData(data, options: [.sortedKeys]) {
                 attrs["traceway.action.data"] = .string(String(decoding: encoded, as: UTF8.self))
             } else {
                 attrs["traceway.action.data"] = .string("\(data)")
@@ -1017,9 +1042,10 @@ public final class TracewayClient {
     // MARK: - Flushing
 
     /// Sends everything that is ready now: queued records, replay clips and
-    /// telemetry that failed earlier, waiting at most `timeout` seconds
-    /// (nil waits until done). Telemetry held in the ring buffer stays there.
-    public func flush(timeout: TimeInterval? = nil) {
+    /// telemetry that failed earlier, waiting at most `timeout` seconds (10
+    /// by default, as on Android; nil waits until done). Telemetry held in
+    /// the ring buffer stays there.
+    public func flush(timeout: TimeInterval? = 10) {
         if isOnQueue {
             flushAll {}
             return
@@ -1081,12 +1107,43 @@ public final class TracewayClient {
         }
     }
 
-    /// Flushes and stops the SDK. A new `Traceway.initialize` starts it again.
+    /// Flushes and stops the SDK, waiting up to 10 seconds. A new
+    /// `Traceway.initialize` starts it again, also while this one finishes.
+    /// Calls while a shutdown is under way wait for that one.
     public func shutdown() {
-        let done = DispatchSemaphore(value: 0)
+        shutdownLock.lock()
+        let first = !stoppingState
+        if first {
+            stoppingState = true
+            stopped.enter()
+        }
+        shutdownLock.unlock()
+        if first { stop() }
+        if !isOnQueue { _ = stopped.wait(timeout: .now() + 10) }
+    }
+
+    /// Waits up to `timeout` seconds for a shutdown under way.
+    private func awaitStopped(timeout: TimeInterval) {
+        guard !isOnQueue else { return }
+        _ = stopped.wait(timeout: .now() + timeout)
+    }
+
+    /// A newer client takes over this one's files while this one is still
+    /// shutting down: from now on it records nothing and writes none of
+    /// them (its state, its queued batches, its buffer), so the two never
+    /// overwrite or send the same thing.
+    private func supersede() {
+        isShutdown = true
+        store.seal()
+        outbox?.dispose()
+        tracewayOutbox?.dispose()
+    }
+
+    private func stop() {
+        let done = stopped
         onQueue {
             guard !self.isShutdown else {
-                done.signal()
+                done.leave()
                 return
             }
             if let session = self.sessions?.current {
@@ -1118,11 +1175,10 @@ public final class TracewayClient {
                     TracewayClient.sharedLock.lock()
                     if TracewayClient._shared === self { TracewayClient._shared = nil }
                     TracewayClient.sharedLock.unlock()
-                    done.signal()
+                    done.leave()
                 }
             }
         }
-        if !isOnQueue { _ = done.wait(timeout: .now() + 30) }
     }
 
     /// An error should not wait for the batch delay: the app may be about to
@@ -1197,6 +1253,24 @@ public final class TracewayClient {
         builder.emit()
     }
 
+    /// A record of an earlier run (a crash it left on disk), under that
+    /// run's resource. On the client's queue.
+    private func emitEarlierRun(eventName: String, severity: Severity, attributes: [String: AttributeValue],
+                                resource: [String: String], time: Date) {
+        guard !isShutdown, let router = router else { return }
+        var values: [String: AttributeValue] = [:]
+        for (key, value) in resource { values[key] = .string(value) }
+        router.routeLog(ReadableLogRecord(
+            resource: Resource().merging(other: Resource(attributes: values)),
+            instrumentationScopeInfo: InstrumentationScopeInfo(name: TracewaySDK.name, version: TracewaySDK.version),
+            timestamp: time,
+            observedTimestamp: Date(),
+            severity: severity,
+            attributes: attributes,
+            eventName: eventName
+        ))
+    }
+
     private func emitSessionEnd(_ session: SessionInfo, endedAtMs: Int64) {
         guard reportedSessions.remove(session.id) != nil else { return }
         emit(eventName: Events.sessionEnd, severity: .info, attributes: sessionAttributes(session),
@@ -1214,7 +1288,7 @@ public final class TracewayClient {
             "traceway.context.evicted": .int(buffer.evictedCount),
             "traceway.error.suppressed_total": .int(suppressedErrorsTotal),
         ]
-        let images = sessionImages?.id == session.id ? sessionImages!.policy : control.settings.replayImages
+        let images = sessionImages.flatMap { $0.id == session.id ? $0.policy : nil } ?? control.settings.replayImages
         attrs["traceway.replay.images"] = .string(images.rawValue)
         for (key, value) in replay.budget.snapshot(session.id) { attrs[key] = .int(value) }
         return attrs
@@ -1288,7 +1362,7 @@ public final class TracewayClient {
 
     /// The signal handler writes what is known now into a crash record.
     private func updateCrashMetadata(_ session: SessionInfo? = nil) {
-        guard started || session != nil else { return }
+        guard started || session != nil, CrashReporter.recordsSignals else { return }
         var metadata = resourceAttributes
         for (key, value) in globalAttributes { metadata[key] = value }
         if let session = session ?? sessions?.current {
@@ -1426,8 +1500,8 @@ public final class TracewayClient {
 
     private func runTrigger(_ fired: FiredTrigger) {
         let exceptionId = fired.cause.lookup("attributes.\(Attr.exceptionId)")?.string
-        for action in fired.trigger.actions {
-            runAction(action, exceptionId: exceptionId, triggerId: fired.trigger.id)
+        for (index, action) in fired.trigger.actions.enumerated() {
+            runAction(action, exceptionId: exceptionId, triggerId: fired.trigger.id, actionIndex: index)
         }
         let wantsReplay = fired.trigger.actions.contains { $0.replay || $0.type == "startReplay" }
         var attrs: [String: AttributeValue] = ["traceway.trigger.id": .string(fired.trigger.id)]
@@ -1446,8 +1520,13 @@ public final class TracewayClient {
         return Set(signals)
     }
 
-    private func runAction(_ action: TriggerAction, exceptionId: String? = nil, triggerId: String? = nil) {
+    private func runAction(_ action: TriggerAction, exceptionId: String? = nil, triggerId: String? = nil,
+                           actionIndex: Int = 0) {
         let now = Clock.nowMs()
+        // A trigger that fires again extends the stream it started instead
+        // of adding another one: a rule that matches frequent records would
+        // otherwise pile up overrides for a day.
+        let owner = triggerId.map { "trigger:\($0):\(actionIndex)" }
         switch action.type {
         case "flush":
             let lookbackMs = Int64((action.lookbackSeconds ?? 0) * 1000)
@@ -1460,9 +1539,10 @@ public final class TracewayClient {
             if persisted != nil { persistBuffer() }
         case "stream":
             streamFor(action.signals ?? ["*"], replay: action.replay,
-                      untilMs: now + Int64((action.durationSeconds ?? 0) * 1000))
+                      untilMs: now + Int64((action.durationSeconds ?? 0) * 1000), owner: owner, extend: true)
         case "startReplay":
-            streamFor([], replay: true, untilMs: now + Int64((action.durationSeconds ?? 0) * 1000))
+            streamFor([], replay: true, untilMs: now + Int64((action.durationSeconds ?? 0) * 1000),
+                      owner: owner, extend: true)
         case "emit":
             guard emitDepth < maxEmitDepth, let name = action.eventName else { break }
             var attrs: [String: AttributeValue] = [:]
@@ -1484,9 +1564,11 @@ public final class TracewayClient {
     }
 
     private func streamFor(_ signals: [String], replay wantsReplay: Bool, untilMs: Int64,
-                           capture: Bool = false, owner: String? = nil) {
+                           capture: Bool = false, owner: String? = nil, extend: Bool = false) {
         let override = StreamOverride(signals: signals, untilMs: untilMs, replay: wantsReplay, includeOff: capture)
-        if let owner = owner {
+        if let owner = owner, extend {
+            control.extendOverride(owner, override)
+        } else if let owner = owner {
             control.setOverrides(owner, [override])
         } else {
             control.addOverride(override)
@@ -1521,7 +1603,7 @@ public final class TracewayClient {
         replay.apply(
             control.replayMode,
             maxAgeMs: Int64(settings.bufferMaxAgeSeconds * 1000),
-            sessionSampled: session != nil && Ids.unitHash(session!) < settings.replaySessionSampleRate
+            sessionSampled: session.map { Ids.unitHash($0) < settings.replaySessionSampleRate } ?? false
         )
     }
 
@@ -1546,15 +1628,22 @@ public final class TracewayClient {
         }
     }
 
+    /// The trigger and end of a capture `readLocalCaptures` returned.
+    private static func localCapture(_ capture: [String: JSON]) -> (triggerId: String, untilMs: Int64)? {
+        guard let triggerId = capture["triggerId"]?.string, let until = capture["untilMs"]?.int else { return nil }
+        return (triggerId, Int64(until))
+    }
+
     /// Local captures outlive the app run that started them, like the
     /// browser SDK's outlive a page: a restart keeps streaming until they end.
     private func restoreLocalCaptures() {
         for capture in readLocalCaptures() {
+            guard let local = TracewayClient.localCapture(capture) else { continue }
             let signals = capture["signals"]?.array?.compactMap { $0.string } ?? ["*"]
-            control.setOverrides("local:\(capture["triggerId"]!.string!)", [
+            control.setOverrides("local:\(local.triggerId)", [
                 StreamOverride(
                     signals: signals,
-                    untilMs: Int64(capture["untilMs"]!.int!),
+                    untilMs: local.untilMs,
                     replay: capture["replay"]?.bool == true,
                     includeOff: true
                 ),
@@ -1620,10 +1709,10 @@ public final class TracewayClient {
         guard capturesConfirmed else { return }
         let stored = store.get("captures")?.array ?? []
         var done: [[String: JSON]] = stored.compactMap { item in
-            guard let capture = item.object, capture["id"]?.string != nil,
-                  let until = capture["untilMs"]?.int, Int64(until) > nowMs
+            guard let capture = item.object, let id = capture["id"], id.string != nil,
+                  let untilMs = capture["untilMs"], let until = untilMs.int, Int64(until) > nowMs
             else { return nil }
-            return ["id": capture["id"]!, "untilMs": capture["untilMs"]!]
+            return ["id": id, "untilMs": untilMs]
         }
         var changed = done.count != stored.count
         for capture in settings.captures where capture.until > now {

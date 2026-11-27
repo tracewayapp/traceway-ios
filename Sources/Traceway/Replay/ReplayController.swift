@@ -76,7 +76,7 @@ final class ReplayController {
             let nowMs = now()
             // Right after a lookback flush (a capture), streaming continues
             // where the flushed clip ended; otherwise it starts now.
-            if sessionCursor == nil || nowMs - sessionCursor! > 1000 { sessionCursor = nowMs }
+            if let cursor = sessionCursor, nowMs - cursor <= 1000 {} else { sessionCursor = nowMs }
         }
         sync()
     }

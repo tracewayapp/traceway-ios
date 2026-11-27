@@ -124,10 +124,13 @@ struct TelemetryRoutes {
             if let endpoint = endpoint {
                 return OtlpDestination(url: try checkedURL(endpoint.url), headers: headers, external: true)
             }
-            var text = try checkedURL(base!).absoluteString
+            guard let base = base else {
+                throw ConfigurationError(description: "TracewayTelemetry has no destination for \(kind)")
+            }
+            var text = try checkedURL(base).absoluteString
             while text.hasSuffix("/") { text.removeLast() }
             guard let url = URL(string: "\(text)/v1/\(kind)") else {
-                throw ConfigurationError(description: "TracewayTelemetry url is invalid: \(base!)")
+                throw ConfigurationError(description: "TracewayTelemetry url is invalid: \(base)")
             }
             return OtlpDestination(url: url, headers: headers, external: true)
         }

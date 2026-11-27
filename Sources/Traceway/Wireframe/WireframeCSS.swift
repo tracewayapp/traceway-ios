@@ -171,6 +171,33 @@ enum WireframeCSS {
     static func mask(_ text: String) -> String {
         String(text.map { $0.isWhitespace ? $0 : "*" })
     }
+
+    /// The most text a node keeps, in UTF-16 units. A log console or a chat
+    /// transcript can hold megabytes; each frame copies, masks and measures
+    /// what it shows on the main thread, and every frame of the ring keeps
+    /// its own copy, so the rest is left out.
+    static let maxTextLength = 2000
+
+    /// `text` cut to `maxTextLength`, at a character boundary.
+    static func capped(_ text: String) -> String {
+        guard text.utf16.count > maxTextLength else { return text }
+        var out = ""
+        var units = 0
+        for character in text {
+            units += character.utf16.count
+            if units > maxTextLength { break }
+            out.append(character)
+        }
+        return out
+    }
+
+    /// `text` cut the same way, its attributes kept.
+    static func capped(_ text: NSAttributedString?) -> NSAttributedString? {
+        guard let text = text, text.length > maxTextLength else { return text }
+        let whole = text.string as NSString
+        let end = whole.rangeOfComposedCharacterSequence(at: maxTextLength).location
+        return text.attributedSubstring(from: NSRange(location: 0, length: end))
+    }
 }
 
 /// A 2D affine transform: x' = a·x + c·y + tx, y' = b·x + d·y + ty, the
@@ -247,8 +274,8 @@ struct WireframeAffine: Equatable {
     func boundingBox(width: Double, height: Double) -> WireframeRect {
         let p = [apply(x: 0, y: 0), apply(x: width, y: 0), apply(x: 0, y: height), apply(x: width, y: height)]
         let xs = p.map { $0.x }, ys = p.map { $0.y }
-        let minX = xs.min()!, minY = ys.min()!
-        return WireframeRect(x: minX, y: minY, width: xs.max()! - minX, height: ys.max()! - minY)
+        let minX = xs.min() ?? 0, minY = ys.min() ?? 0
+        return WireframeRect(x: minX, y: minY, width: (xs.max() ?? 0) - minX, height: (ys.max() ?? 0) - minY)
     }
 }
 

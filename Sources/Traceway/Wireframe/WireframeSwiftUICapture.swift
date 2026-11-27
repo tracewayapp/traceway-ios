@@ -138,7 +138,7 @@ extension WireframeCapture {
         else { return nil }
         let ref = contents as AnyObject
         guard CFGetTypeID(ref) == CGImage.typeID else { return nil }
-        let image = ref as! CGImage
+        let image = ref as! CGImage // CF bridging: CFGetTypeID checked above
         guard image.alphaInfo != .none, image.alphaInfo != .noneSkipLast, image.alphaInfo != .noneSkipFirst,
               let glyph = glyphs?.lookup(image, size: CGSize(width: p.width, height: p.height))
         else { return nil }

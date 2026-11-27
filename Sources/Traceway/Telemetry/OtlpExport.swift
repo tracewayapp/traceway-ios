@@ -50,9 +50,9 @@ final class Outbox {
         self.destinations = destinations
         self.transport = transport
         var parts: [String] = []
-        for kind in destinations.keys.sorted() {
+        for (kind, destination) in destinations.sorted(by: { $0.key < $1.key }) {
             parts.append(kind)
-            parts.append(destinations[kind]!.key)
+            parts.append(destination.key)
         }
         destinationKey = Ids.fingerprint64(JSON(parts).encoded())
     }
@@ -291,7 +291,7 @@ final class OutboxHTTPClient: HTTPClient, @unchecked Sendable {
     ) {
         transport.post(url: url, headers: headers, body: body, timeout: 15) { [self] result in
             if result.isSuccess {
-                completion(.success(Self.response(url, result.statusCode)))
+                completion(Self.response(url, result.statusCode))
                 return
             }
             guard result.isTransientFailure else {
@@ -308,15 +308,17 @@ final class OutboxHTTPClient: HTTPClient, @unchecked Sendable {
             }
             if outbox?.add(kind: kind, body: body, gzipped: gzipped) == true {
                 Log.debug("\(kind) export queued for later (HTTP \(result.statusCode))")
-                completion(.success(Self.response(url, 202)))
+                completion(Self.response(url, 202))
             } else {
                 completion(.failure(ConfigurationError(description: "HTTP \(result.statusCode)")))
             }
         }
     }
 
-    private static func response(_ url: URL, _ status: Int) -> HTTPURLResponse {
-        HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: [:])!
+    private static func response(_ url: URL, _ status: Int) -> Result<HTTPURLResponse, Error> {
+        guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: [:])
+        else { return .failure(ConfigurationError(description: "no response for \(url)")) }
+        return .success(response)
     }
 }
 

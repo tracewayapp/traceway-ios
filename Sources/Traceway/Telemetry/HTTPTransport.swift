@@ -20,11 +20,15 @@ struct HTTPResult {
         statusCode == 0 || statusCode == 408 || statusCode == 429 || statusCode >= 500
     }
 
-    /// `Retry-After` in milliseconds, when the server sent seconds.
+    /// The longest `Retry-After` honoured: a day.
+    static let maxRetryAfterMs: Int64 = 86_400_000
+
+    /// `Retry-After` in milliseconds, when the server sent seconds; at most
+    /// a day, whatever a proxy or captive portal answers.
     var retryAfterMs: Int64? {
         guard let raw = headers["retry-after"], let seconds = Int64(raw.trimmingCharacters(in: .whitespaces)),
               seconds > 0 else { return nil }
-        return seconds * 1000
+        return min(seconds, HTTPResult.maxRetryAfterMs / 1000) * 1000
     }
 }
 

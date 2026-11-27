@@ -153,7 +153,7 @@ final class MetricsRecorder {
         let clock = scheduler
         aggregator = MetricAggregator(now: { clock.now() })
         pending = PendingMetrics(now: { clock.now() }, scope: storageScope)
-        for key in (dimensions ?? [:]).keys.sorted() { setDimension(key, dimensions![key]) }
+        for (key, value) in (dimensions ?? [:]).sorted(by: { $0.key < $1.key }) { setDimension(key, value) }
     }
 
     private func locked<T>(_ work: () -> T) -> T {
@@ -559,8 +559,8 @@ final class MetricsRecorder {
     static func customDims(_ dims: [String: Any]?) -> MetricDims {
         guard let dims = dims, !dims.isEmpty else { return [:] }
         var out: MetricDims = [:]
-        for key in dims.keys.sorted().prefix(maxCustomDimensions) {
-            out[clip(key)] = clip("\(dims[key]!)")
+        for (key, value) in dims.sorted(by: { $0.key < $1.key }).prefix(maxCustomDimensions) {
+            out[clip(key)] = clip("\(value)")
         }
         return out
     }

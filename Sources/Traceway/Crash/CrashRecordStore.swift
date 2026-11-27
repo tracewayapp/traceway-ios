@@ -12,6 +12,8 @@ struct CrashRecord {
     var recordedAtMs: Int64
     /// What the SDK knew when the app crashed: device, session, attributes.
     var attributes: [String: String]?
+    /// The app version of the run that crashed.
+    var appVersion: String? = nil
 }
 
 enum CrashRecordStore {
@@ -58,10 +60,13 @@ enum CrashRecordStore {
 
         var result: [CrashRecord] = []
         for file in files where file.pathExtension == "tw" {
-            if let record = parse(file: file) {
+            // Removed before it is read: a file that cannot be reported must
+            // not come back at every start.
+            let text = try? String(contentsOf: file, encoding: .utf8)
+            try? fileManager.removeItem(at: file)
+            if let text = text, let record = parse(text: text) {
                 result.append(record)
             }
-            try? fileManager.removeItem(at: file)
         }
         return result
     }
@@ -81,6 +86,7 @@ enum CrashRecordStore {
         var signo = 0
         var timeSec: Int64 = 0
         var arch = ""
+        var appVersion: String?
         var attributes: [String: String] = [:]
         var imageLines: [Substring] = []
         var frames: [String] = []
@@ -104,6 +110,8 @@ enum CrashRecordStore {
                     timeSec = Int64(line.dropFirst("time=".count)) ?? 0
                 } else if line.hasPrefix("arch=") {
                     arch = String(line.dropFirst("arch=".count))
+                } else if line.hasPrefix("appVersion=") {
+                    appVersion = String(line.dropFirst("appVersion=".count))
                 } else if line.hasPrefix("attr.") {
                     let rest = line.dropFirst("attr.".count)
                     if let eq = rest.firstIndex(of: "=") {
@@ -115,7 +123,7 @@ enum CrashRecordStore {
             }
         }
 
-        let header = "Fatal Signal \(signalName(Int32(signo))) (\(signo))"
+        let header = "Fatal Signal \(Int32(exactly: signo).map(signalName) ?? "SIG\(signo)") (\(signo))"
         let stackTrace: String
         if imageLines.isEmpty {
 
@@ -128,9 +136,19 @@ enum CrashRecordStore {
         return CrashRecord(
             header: header,
             stackTrace: stackTrace,
-            recordedAtMs: timeSec > 0 ? timeSec * 1000 : ISO8601.nowMillis(),
-            attributes: attributes.isEmpty ? nil : attributes
+            recordedAtMs: recordedAt(timeSec),
+            attributes: attributes.isEmpty ? nil : attributes,
+            appVersion: appVersion
         )
+    }
+
+    /// When the crash happened, from the seconds the handler wrote; now when
+    /// the file holds no time, or one no clock could have written.
+    private static func recordedAt(_ seconds: Int64) -> Int64 {
+        let now = ISO8601.nowMillis()
+        let (ms, overflow) = seconds.multipliedReportingOverflow(by: 1000)
+        guard seconds > 0, !overflow, ms <= Int64.saturatingSum(now, 86_400_000) else { return now }
+        return ms
     }
 
     static func renderWireTrace(header: String, arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {

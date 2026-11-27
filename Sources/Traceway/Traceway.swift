@@ -183,13 +183,14 @@ public enum Traceway {
 
     // MARK: - Delivery
 
-    /// Sends what is ready now, waiting at most `timeout` seconds (nil waits
-    /// until done). Breadcrumbs held in the ring buffer stay there.
-    public static func flush(timeout: TimeInterval? = nil) {
+    /// Sends what is ready now, waiting at most `timeout` seconds (10 by
+    /// default, as on Android; nil waits until done). Breadcrumbs held in the
+    /// ring buffer stay there.
+    public static func flush(timeout: TimeInterval? = 10) {
         TracewayClient.shared?.flush(timeout: timeout)
     }
 
-    /// Flushes and stops the SDK.
+    /// Flushes and stops the SDK, waiting up to 10 seconds.
     public static func shutdown() {
         TracewayClient.shared?.shutdown()
     }

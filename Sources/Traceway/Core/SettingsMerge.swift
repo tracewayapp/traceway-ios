@@ -160,8 +160,9 @@ private func parseSteps(_ value: JSON?) -> [TriggerStep]? {
     var steps: [TriggerStep] = []
     for raw in list {
         guard let object = raw.object, let match = parseMatcher(object["match"]) else { return nil }
-        var within: Double?
-        if let w = object["withinSeconds"]?.number, w > 0 { within = w }
+        // Held to a day like every other duration: the engine turns it into
+        // milliseconds.
+        let within = positive(object["withinSeconds"], maxBufferAgeSeconds)
         var count: Int?
         var period: Double?
         if let rawCount = object["count"]?.number, rawCount == rawCount.rounded(), rawCount > 1 {
@@ -323,7 +324,7 @@ func clampToCeilings(_ settings: Settings, _ ceilings: Ceilings) -> Settings {
 
 // MARK: - Dates
 
-private let dateTimePattern = try! NSRegularExpression(
+private let dateTimePattern = try? NSRegularExpression(
     pattern: #"^([+-]?\d{4,6})-?(\d\d)-?(\d\d)(?:[ T](\d\d)(?::?(\d\d)(?::?(\d\d)(?:[.,](\d+))?)?)?( ?[zZ]| ?([-+])(\d\d)(?::?(\d\d))?)?)?$"#
 )
 
@@ -333,7 +334,7 @@ private let dateTimePattern = try! NSRegularExpression(
 /// local.
 func parseRFC3339(_ text: String) -> Date? {
     let range = NSRange(text.startIndex..<text.endIndex, in: text)
-    guard let match = dateTimePattern.firstMatch(in: text, options: [], range: range) else { return nil }
+    guard let match = dateTimePattern?.firstMatch(in: text, options: [], range: range) else { return nil }
     func group(_ i: Int) -> String? {
         let r = match.range(at: i)
         guard r.location != NSNotFound, let swiftRange = Range(r, in: text) else { return nil }
@@ -355,7 +356,7 @@ func parseRFC3339(_ text: String) -> Date? {
     components.second = int(6)
     var calendar = Calendar(identifier: .gregorian)
     let zoned = group(8) != nil
-    calendar.timeZone = zoned ? TimeZone(identifier: "UTC")! : TimeZone.current
+    calendar.timeZone = zoned ? (TimeZone(secondsFromGMT: 0) ?? TimeZone.current) : TimeZone.current
     guard var date = calendar.date(from: components) else { return nil }
     date = date.addingTimeInterval(Double(micros) / 1_000_000)
     if let sign = group(9) {

@@ -117,11 +117,13 @@ enum Ids {
 /// timestamp uses.
 enum Clock {
     static func nowMs() -> Int64 {
-        Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        ms(Date())
     }
 
+    /// Saturating: the app can hand the SDK any date (`span.end(time:)`,
+    /// a log record's timestamp), even an infinite one.
     static func ms(_ date: Date) -> Int64 {
-        Int64((date.timeIntervalSince1970 * 1000).rounded(.down))
+        Int64(saturating: (date.timeIntervalSince1970 * 1000).rounded(.down))
     }
 
     static func date(ms: Int64) -> Date {
