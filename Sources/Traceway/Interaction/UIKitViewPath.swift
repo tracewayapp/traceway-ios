@@ -80,7 +80,8 @@ private func nonEmpty(_ text: String?) -> String? {
 func viewInfo(_ view: UIView) -> ViewNodeInfo {
     var ids: [String] = []
     var values: [String: String] = [:]
-    if let identifier = nonEmpty(view.accessibilityIdentifier) {
+    // A mask marker (`traceway-mask`, `traceway-blank`) is not a name.
+    if let identifier = nonEmpty(view.accessibilityIdentifier), !isTracewayMaskMarker(identifier) {
         ids.append(identifier)
         values["identifier"] = identifier
     }
@@ -123,7 +124,7 @@ private func labelBelow(_ view: UIView) -> String? {
         let subviews = current.subviews
         guard subviews.count == 1 else { return nil }
         current = subviews[0]
-        if current.tracewayPrivacyMask != nil { return nil }
+        if current.maskInEffect != nil { return nil }
         if let label = nonEmpty(current.accessibilityLabel) { return label }
     }
     return nil
@@ -143,7 +144,7 @@ private func ownText(_ view: UIView) -> String? {
 /// The text `view` shows: a label's own, a button's title, else that of the
 /// labels under it, at most three, joined by a space. Text fields and text
 /// views are never read (their content may be anything the user typed), nor
-/// hidden views, nor privacy masks unless `includeMasked`.
+/// hidden views, nor masked ones unless `includeMasked`.
 func shownText(_ view: UIView, includeMasked: Bool) -> String? {
     if view is UITextField || view is UITextView { return nil }
     if let own = ownText(view), let cleaned = cleanShownText(own) { return cleaned }
@@ -155,7 +156,7 @@ func shownText(_ view: UIView, includeMasked: Bool) -> String? {
         if visited > 400 { return }
         if current.isHidden || current.alpha < 0.01 { return }
         if current is UITextField || current is UITextView { return }
-        if !includeMasked && current.tracewayPrivacyMask != nil { return }
+        if !includeMasked && current.maskInEffect != nil { return }
         if let own = ownText(current) {
             if let cleaned = cleanShownText(own) {
                 parts.append(cleaned)
@@ -174,13 +175,13 @@ func shownText(_ view: UIView, includeMasked: Bool) -> String? {
     return parts.isEmpty ? nil : parts.joined(separator: " ")
 }
 
-/// Whether the view at `index` or one of its ancestors is privacy-masked or
-/// a secure text field.
+/// Whether the view at `index` or one of its ancestors is masked (a
+/// traceway mask or its identifier marker) or a secure text field.
 func isMasked(_ path: UIViewPath, from index: Int) -> Bool {
     var i = max(0, index)
     while i < path.count {
         let view = path.views[i]
-        if view.tracewayPrivacyMask != nil { return true }
+        if view.maskInEffect != nil { return true }
         if let field = view as? UITextField, field.isSecureTextEntry { return true }
         i += 1
     }

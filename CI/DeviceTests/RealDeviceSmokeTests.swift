@@ -19,11 +19,11 @@ final class RealDeviceSmokeTests: XCTestCase {
 
         let dsn = resolvedDSN() ?? "ci-token@http://127.0.0.1:9/api/report"
 
-        let client = Traceway.start(
+        let client = Traceway.initialize(
             connectionString: dsn,
             options: TracewayOptions(debug: true, version: "ci-device", screenCapture: true)
         )
-        XCTAssertNotNil(client, "Traceway.start should succeed on-device")
+        XCTAssertNotNil(client, "Traceway.initialize should succeed on-device")
         XCTAssertNotNil(TracewayClient.shared)
         XCTAssertEqual(client?.instanceId.count, 36)
         XCTAssertNotNil(client?.currentSessionId)

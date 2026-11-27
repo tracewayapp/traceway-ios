@@ -16,7 +16,7 @@ extension GalleryScenes {
         page.loadViewIfNeeded()
         let blank = UIView()
         blank.backgroundColor = .secondarySystemBackground
-        blank.tracewayPrivacyMask = .blank()
+        blank.tracewayMask = .blank()
         let card = label("Card 4242 4242 4242 4242", size: 17)
         card.frame = CGRect(x: 12, y: 14, width: 300, height: 22)
         card.tag = 2301
@@ -25,7 +25,8 @@ extension GalleryScenes {
         let blurred = UIView()
         blurred.backgroundColor = .systemGray6
         blurred.layer.cornerRadius = 10
-        blurred.tracewayPrivacyMask = .blur
+        // The marker that needs no code: masked like `.blur`.
+        blurred.accessibilityIdentifier = "traceway-mask"
         let balance = label("Balance $12,345.67", size: 17)
         balance.frame = CGRect(x: 12, y: 14, width: 250, height: 22)
         balance.tag = 2302
@@ -81,7 +82,7 @@ extension GalleryScenes {
                     Toggle("Notifications", isOn: $model.on)
                     Button("Count \(model.count)") { model.count += 1 }
                         .buttonStyle(.borderedProminent)
-                    Text("Masked in SwiftUI 555-0101").tracewayPrivacyMask()
+                    Text("Masked in SwiftUI 555-0101").tracewayMask()
                     ForEach(1..<16) { i in
                         HStack {
                             Text("List row \(i)")

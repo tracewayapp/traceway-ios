@@ -8,7 +8,7 @@ struct TracewayExampleApp: App {
         guard !isRunningTests else { return }
 
         // `python3 Examples/mock_server.py` stands in for a Traceway server.
-        Traceway.start(
+        Traceway.initialize(
             connectionString: "demo-token@http://localhost:8080",
             options: TracewayOptions(
                 debug: true,

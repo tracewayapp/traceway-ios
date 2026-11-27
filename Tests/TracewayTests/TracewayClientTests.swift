@@ -75,8 +75,8 @@ final class TracewayClientTests: XCTestCase {
     }
 
     func testAnInvalidConnectionStringDoesNotStart() {
-        XCTAssertNil(Traceway.start(connectionString: "no-at-sign"))
-        XCTAssertNil(Traceway.start(connectionString: "token@ftp://example.com"))
+        XCTAssertNil(Traceway.initialize(connectionString: "no-at-sign"))
+        XCTAssertNil(Traceway.initialize(connectionString: "token@ftp://example.com"))
         XCTAssertNil(TracewayClient.shared)
     }
 

@@ -219,7 +219,7 @@ final class GalleryDriver {
 
     // MARK: - Settings
 
-    /// Applies a local `collection` document the way `Traceway.start` does
+    /// Applies a local `collection` document the way `Traceway.initialize` does
     /// (`TracewayOptions.collection` over the defaults, held at the ceilings
     /// of an app that captures its screen) and hands the recorder the
     /// replay settings it gives.
@@ -363,7 +363,7 @@ final class GalleryDriver {
             let layer = view.layer.presentation() ?? view.layer
             guard !view.isHidden, view.alpha > 0.01, !layer.isHidden, layer.opacity > 0.01 else { return }
             let rect = frame(of: view.layer)
-            let unmasked = measured && view.tracewayPrivacyMask == nil
+            let unmasked = measured && view.maskInEffect == nil
             var clip = clip
             if view.clipsToBounds || layer.masksToBounds { clip = clip.intersection(rect) }
             if let field = view as? UITextField {

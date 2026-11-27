@@ -400,7 +400,7 @@ final class WireframeCapture {
             s.shapeRadius = (p.box, configured)
         }
 
-        if let mode = view.tracewayPrivacyMask {
+        if let mode = view.maskInEffect {
             switch mode {
             case .blank(let color):
                 // A box of its color; nothing inside is recorded.
@@ -423,7 +423,7 @@ final class WireframeCapture {
         case .swiftUIDrawing:
             swiftUIDrawing(view, layer, p, s, &out)
             // SwiftUI holds the UIKit views of overlays and backgrounds (a
-            // UIViewRepresentable, a privacy mask's marker) in such a view.
+            // UIViewRepresentable, a traceway mask's marker) in such a view.
             let inner = s.entering(p, view.layer)
             for subview in view.subviews {
                 guard budget > 0 else { break }
@@ -846,7 +846,7 @@ final class WireframeCapture {
         }
     }
 
-    /// The masks SwiftUI's `tracewayPrivacyMask` modifier put over content
+    /// The masks SwiftUI's `tracewayMask` modifier put over content
     /// that has no views of its own.
     private func collectMasks(in root: UIView, screen: UIWindow) {
         var stack: [UIView] = [root]
@@ -854,7 +854,7 @@ final class WireframeCapture {
         while let view = stack.popLast(), count < 6000 {
             count += 1
             if view.isHidden { continue }
-            if view is TracewayMaskMarkerView, let mode = view.tracewayPrivacyMask {
+            if view is TracewayMaskMarkerView, let mode = view.maskInEffect {
                 let r = screen.convert(view.bounds, from: view)
                 let rect = WireframeRect(
                     x: Double(r.minX), y: Double(r.minY), width: Double(r.width), height: Double(r.height)
@@ -865,7 +865,7 @@ final class WireframeCapture {
                 }
                 continue
             }
-            if case .blank? = view.tracewayPrivacyMask { continue }
+            if case .blank? = view.maskInEffect { continue }
             stack.append(contentsOf: view.subviews)
         }
     }
@@ -1251,7 +1251,7 @@ final class WireframeCapture {
     }
 
     /// The picture class and placement of a photo an image view shows, when
-    /// this capture may show pictures, no privacy mask covers it and its
+    /// this capture may show pictures, no traceway mask covers it and its
     /// picture is encoded; nil keeps the placeholder. Asking starts the
     /// encoding of a picture seen for the first time.
     private func photo(

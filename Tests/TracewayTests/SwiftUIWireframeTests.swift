@@ -144,10 +144,10 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
 
     func test46MasksHideWhatTheyCover() throws {
         let host = self.host(VStack(spacing: 30) {
-            Text("Card 4242 4242").tracewayPrivacyMask(.blank(color: UIColor(red: 1, green: 0, blue: 0, alpha: 1)))
-            Text("Balance 99.50").tracewayPrivacyMask()
+            Text("Card 4242 4242").tracewayMask(.blank(color: UIColor(red: 1, green: 0, blue: 0, alpha: 1)))
+            Text("Balance 99.50").tracewayMask()
             Rectangle().fill(Color(red: 0, green: 0, blue: 1)).frame(width: 100, height: 40)
-                .tracewayPrivacyMask(.blank(color: UIColor(red: 0, green: 1, blue: 0, alpha: 1)))
+                .tracewayMask(.blank(color: UIColor(red: 0, green: 1, blue: 0, alpha: 1)))
         }.padding(.top, 120).padding(.leading, 40))
         let s = try screen()
         let texts = allTexts(s)
@@ -158,7 +158,7 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
             if view is TracewayMaskMarkerView || depth < 3 {
                 markers.append("\(String(repeating: " ", count: depth))\(NSStringFromClass(Swift.type(of: view))) "
                     + "\(view.convert(view.bounds, to: window)) hidden=\(view.isHidden) alpha=\(view.alpha) "
-                    + "mask=\(view.tracewayPrivacyMask.map { "\($0)" } ?? "-")")
+                    + "mask=\(view.tracewayMask.map { "\($0)" } ?? "-")")
             }
             view.subviews.forEach { walk($0, depth + 1) }
         }

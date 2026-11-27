@@ -71,8 +71,9 @@ triggers, taps, wireframe session replay and app performance metrics.
   SF Symbols and template images as their shapes (palette and multicolor
   symbols in their colors), and iOS 26's Liquid Glass as frosted shapes.
   SwiftUI text shows as its words while an assistive technology runs, else as
-  text-shaped bars. Text fields are masked; `tracewayPrivacyMask` (UIKit) and
-  `.tracewayPrivacyMask()` (SwiftUI) blank or blur views. Clips go to
+  text-shaped bars. Text fields are masked; `tracewayMask` (UIKit),
+  `.tracewayMask()` (SwiftUI) and the `accessibilityIdentifier` markers
+  `traceway-mask` / `traceway-blank` blur or blank views. Clips go to
   `/api/recordings`, linked to their exception; captures stream segments.
 - **Tests**: a wireframe gallery of UIKit and SwiftUI screens recorded on the
   iOS Simulator and compared with the app's own pictures in rrweb-player
@@ -100,9 +101,14 @@ triggers, taps, wireframe session replay and app performance metrics.
     line has no event name any more (it was `browser.console`) and no
     `log.severity` attribute: its severity is the record's, and it carries
     `log.source: api` and the caller's attributes.
-  - `recordNavigation(_:action:from:)` and `setRoute(_:)`: navigation
+  - `Traceway.initialize(connectionString:options:)` starts the SDK (the
+    other SDKs' `init`, which Swift keeps for initializers); `start` is a
+    deprecated alias.
+  - `recordNavigation(_:action:from:route:)` and `setRoute(_:)`: navigation
     records and issues carry `app.screen.route` while a route template is
     set.
+  - Masks are traceway masks: `UIView.tracewayMask` and `.tracewayMask(_:)`;
+    `tracewayPrivacyMask` (both) is a deprecated alias.
   - Exceptions and messages carry the screen they happened on:
     `app.screen.name`, `app.screen.route`, `app.screen.previous`,
     `app.screen.duration_ms` and `viewport` (`<width>x<height>` in points).

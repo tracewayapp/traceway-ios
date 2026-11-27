@@ -14,7 +14,7 @@ It answers the endpoints the SDK talks to and prints what arrives:
                              --save DIR writes each upload there.
 
 Run:   python3 Examples/mock_server.py [--config settings.json] [--save out/]
-Then:  Traceway.start(connectionString: "demo-token@http://localhost:8080")
+Then:  Traceway.initialize(connectionString: "demo-token@http://localhost:8080")
 """
 
 import argparse

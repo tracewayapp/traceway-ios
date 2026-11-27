@@ -338,22 +338,22 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         assertPlaced(try node("kg", in: s), in: s, like: unit)
     }
 
-    func test13PrivacyMasksBlankAndBlur() throws {
+    func test13MasksBlankAndBlur() throws {
         capture.imagePolicy = .always
         let blank = UIView(frame: CGRect(x: 10, y: 10, width: 300, height: 40))
-        blank.tracewayPrivacyMask = .blank(color: .red)
+        blank.tracewayMask = .blank(color: .red)
         blank.addSubview(label("4242 4242", CGRect(x: 0, y: 0, width: 200, height: 20)))
         let blur = UIView(frame: CGRect(x: 10, y: 60, width: 300, height: 40))
-        blur.tracewayPrivacyMask = .blur
+        blur.tracewayMask = .blur
         blur.addSubview(label("Balance 99", CGRect(x: 0, y: 0, width: 200, height: 20)))
         let icon = UIImageView(image: UIImage(systemName: "star.fill"))
         icon.frame = CGRect(x: 220, y: 0, width: 24, height: 24)
         blur.addSubview(icon)
         let blurredPhoto = UIView(frame: CGRect(x: 10, y: 120, width: 200, height: 120))
-        blurredPhoto.tracewayPrivacyMask = .blur
+        blurredPhoto.tracewayMask = .blur
         blurredPhoto.addSubview(imageView(photo(CGSize(width: 40, height: 30)), CGRect(x: 0, y: 0, width: 200, height: 120)))
         let blankedPhoto = UIView(frame: CGRect(x: 10, y: 260, width: 200, height: 120))
-        blankedPhoto.tracewayPrivacyMask = .blank()
+        blankedPhoto.tracewayMask = .blank()
         blankedPhoto.addSubview(imageView(photo(CGSize(width: 40, height: 30), .red), CGRect(x: 0, y: 0, width: 200, height: 120)))
         show(blank, blur, blurredPhoto, blankedPhoto)
         _ = try screen()
@@ -370,11 +370,45 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         XCTAssertTrue(pictureRules(s).isEmpty)
     }
 
+    func test13IdentifierMarkersMaskLikeTheModes() throws {
+        let blurred = UIView(frame: CGRect(x: 10, y: 10, width: 300, height: 40))
+        blurred.accessibilityIdentifier = "traceway-mask"
+        let account = label("Account 1234", CGRect(x: 0, y: 0, width: 200, height: 20))
+        blurred.addSubview(account)
+        let blanked = UIView(frame: CGRect(x: 10, y: 60, width: 300, height: 40))
+        blanked.accessibilityIdentifier = "traceway-blank"
+        blanked.addSubview(label("PIN 9876", CGRect(x: 0, y: 0, width: 200, height: 20)))
+        let named = UIView(frame: CGRect(x: 10, y: 110, width: 300, height: 40))
+        named.accessibilityIdentifier = "checkout"
+        named.addSubview(label("Plain 5555", CGRect(x: 0, y: 0, width: 200, height: 20)))
+        show(blurred, blanked, named)
+        let s = try screen()
+        let texts = allTexts(s)
+        XCTAssertFalse(texts.contains { $0.contains("1234") || $0.contains("9876") }, "\(texts)")
+        assertPlaced(try node("******* ****", in: s), in: s, like: account)
+        let box = try XCTUnwrap(allNodes(s).first { styleMap($0)["background-color"] == "#000000" && $0.children.isEmpty },
+                                "the blank marker's box")
+        assertPlaced(box, in: s, like: blanked)
+        XCTAssertTrue(texts.contains("Plain 5555"), "another identifier masks nothing")
+    }
+
+    @available(*, deprecated)
+    func test13TheOldMaskNameStillMasks() throws {
+        let card = UIView(frame: CGRect(x: 10, y: 10, width: 300, height: 40))
+        card.tracewayPrivacyMask = .blur
+        XCTAssertNotNil(card.tracewayMask)
+        card.addSubview(label("Old 4321", CGRect(x: 0, y: 0, width: 200, height: 20)))
+        show(card)
+        let texts = allTexts(try screen())
+        XCTAssertFalse(texts.contains { $0.contains("4321") })
+        XCTAssertTrue(texts.contains("*** ****"), "\(texts)")
+    }
+
     func test14AMaskedSubtreeHidesItsTextButKeepsItsShape() throws {
         let card = UIView(frame: CGRect(x: 20, y: 40, width: 300, height: 100))
         card.backgroundColor = UIColor(red: 0, green: 0, blue: 1, alpha: 1)
         card.layer.cornerRadius = 12
-        card.tracewayPrivacyMask = .blur
+        card.tracewayMask = .blur
         let name = label("Jane Appleseed", CGRect(x: 16, y: 16, width: 200, height: 24))
         let chip = UIView(frame: CGRect(x: 16, y: 56, width: 120, height: 30))
         chip.backgroundColor = UIColor(red: 0, green: 1, blue: 0, alpha: 1)

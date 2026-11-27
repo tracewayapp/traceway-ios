@@ -34,7 +34,7 @@ private let maxEmitDepth = 4
 private let healthDelayMs = 1000
 private let maxHealthDelayMs = 300_000
 
-/// The Traceway SDK. Start it with `Traceway.start`; `TracewayClient.shared`
+/// The Traceway SDK. Start it with `Traceway.initialize`; `TracewayClient.shared`
 /// is the running instance.
 ///
 /// Every record is an OpenTelemetry log record or span made with the
@@ -48,7 +48,7 @@ public final class TracewayClient {
     private static let sharedLock = NSLock()
     private static var _shared: TracewayClient?
 
-    /// The running client, or nil before `Traceway.start`.
+    /// The running client, or nil before `Traceway.initialize`.
     public static var shared: TracewayClient? {
         sharedLock.lock(); defer { sharedLock.unlock() }
         return _shared
@@ -1083,7 +1083,7 @@ public final class TracewayClient {
         }
     }
 
-    /// Flushes and stops the SDK. A new `Traceway.start` starts it again.
+    /// Flushes and stops the SDK. A new `Traceway.initialize` starts it again.
     public func shutdown() {
         let done = DispatchSemaphore(value: 0)
         onQueue {

@@ -49,7 +49,7 @@ struct ContentView: View {
 
                 Section(header: Text("Replay privacy")) {
                     Text("Card: \(cardNumber)")
-                        .tracewayPrivacyMask(.blank())
+                        .tracewayMask(.blank())
                     TextField("Typed text is masked in replays", text: .constant(""))
                 }
 

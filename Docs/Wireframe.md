@@ -31,7 +31,7 @@ image views show (see [Images](#images)).
 | `Replay/ReplayController.swift` | `ReplayController` | replay mode, clips and segments |
 | `Replay/RecordingsTransport.swift` | `RecordingsTransport`, `RecordingSegment` | upload to `/api/recordings` |
 | `Replay/CollectionBudget.swift` | `CollectionBudget` | per-session bytes, events and image bytes |
-| `Replay/PrivacyMask.swift` | `TracewayMaskMode` | blank and blur masks |
+| `Replay/TracewayMask.swift` | `TracewayMaskMode` | blank and blur masks |
 | `Internal/NetworkState.swift` | `NetworkState` | whether the connection is unmetered |
 
 ## Pipeline
@@ -188,11 +188,14 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
 
 ## Privacy
 
-- `tracewayPrivacyMask = .blank(color:)`: a box of that color; nothing inside
+- `tracewayMask = .blank(color:)`: a box of that color; nothing inside
   is recorded.
 - `.blur`: layout kept, text replaced by `*` (whitespace kept), images as
   placeholders, symbols not drawn.
-- SwiftUI's `.tracewayPrivacyMask()` puts a marker view over its content;
+- An `accessibilityIdentifier` of `traceway-mask` masks a UIKit view like
+  `.blur`, `traceway-blank` like `.blank()` (black); neither is reported as an
+  id in taps.
+- SwiftUI's `.tracewayMask()` puts a marker view over its content;
   text and images inside the marker's rectangle are masked the same way.
 - Text typed into fields and editable text views is masked unless the
   setting `replay.maskAllInputs` is `false`; secure fields are always

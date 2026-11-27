@@ -6,7 +6,7 @@ import OpenTelemetryApi
 /// controlled from the dashboard over OpAMP.
 ///
 /// ```swift
-/// Traceway.start(
+/// Traceway.initialize(
 ///     connectionString: "your-token@https://traceway.example.com",
 ///     options: TracewayOptions(screenCapture: true)
 /// )
@@ -19,8 +19,11 @@ public enum Traceway {
     /// still works. Without one, the SDK runs standalone and sends everything
     /// to `options.telemetry`. Returns nil, and logs why, when the settings
     /// are invalid: the app runs without the SDK.
+    ///
+    /// The other Traceway SDKs call this `init` (Flutter: `run`); Swift keeps
+    /// that name for initializers.
     @discardableResult
-    public static func start(
+    public static func initialize(
         connectionString: String?,
         options: TracewayOptions = TracewayOptions()
     ) -> TracewayClient? {
@@ -32,7 +35,16 @@ public enum Traceway {
         }
     }
 
-    /// The running client, or nil before `start`.
+    @available(*, deprecated, renamed: "initialize(connectionString:options:)")
+    @discardableResult
+    public static func start(
+        connectionString: String?,
+        options: TracewayOptions = TracewayOptions()
+    ) -> TracewayClient? {
+        initialize(connectionString: connectionString, options: options)
+    }
+
+    /// The running client, or nil before `initialize`.
     public static var client: TracewayClient? { TracewayClient.shared }
 
     // MARK: - Errors and messages
@@ -143,7 +155,7 @@ public enum Traceway {
     /// Starts an interaction named `name` (`checkout`, `search`): a span the
     /// requests made in its `run` are children of, and that the exceptions
     /// and logs recorded there point to. Call `end()` when the action is
-    /// over. Before `start` it records nothing.
+    /// over. Before `initialize` it records nothing.
     public static func startInteraction(_ name: String, attributes: [String: Any] = [:]) -> TracewayInteraction {
         TracewayClient.shared?.startInteraction(name, attributes: attributes)
             ?? TracewayInteraction(span: nil, client: nil)
@@ -193,7 +205,7 @@ public enum Traceway {
     /// target it from the dashboard.
     public static var instanceId: String? { TracewayClient.shared?.instanceId }
 
-    /// The current session id (`session.id`), or nil before `start`.
+    /// The current session id (`session.id`), or nil before `initialize`.
     public static var currentSessionId: String? { TracewayClient.shared?.currentSessionId }
 
     @available(*, deprecated, renamed: "currentSessionId")

@@ -80,7 +80,7 @@ import Traceway
 @main
 struct MyApp: App {
     init() {
-        Traceway.start(
+        Traceway.initialize(
             connectionString: "your-token@https://traceway.example.com",
             options: TracewayOptions(screenCapture: true)
         )
@@ -94,7 +94,7 @@ struct MyApp: App {
 
 The connection string is the project token and the server URL, as the
 project's Connection page shows it. The 1.x form ending in `/api/report` works
-too. An invalid one does not take the app down: `start` returns nil, logs why,
+too. An invalid one does not take the app down: `initialize` returns nil, logs why,
 and the app runs without the SDK.
 
 ## Manual capture
@@ -203,7 +203,7 @@ Requests started in its `run` are its child spans, and the exceptions,
 messages and logs recorded there carry its trace and span id. An exception
 captured through it, or `end(failed: true)`, marks it failed. One started
 inside another's `run` is its child; `traceId` and `spanId` name it. Before
-`start` it records nothing and `run` still runs its code.
+`initialize` it records nothing and `run` still runs its code.
 
 For spans of your own, `Traceway.tracer` is the SDK's OpenTelemetry tracer.
 If your app has not set up OpenTelemetry itself, Traceway's providers are also
@@ -275,7 +275,7 @@ the built-in defaults. With `remoteConfig: true` the server's rules apply on
 top of it; with `remoteConfig: false` it is the whole policy.
 
 ```swift
-Traceway.start(
+Traceway.initialize(
     connectionString: "...",
     options: TracewayOptions(
         screenCapture: true,
@@ -409,12 +409,15 @@ SwiftUI navigation and routers report their screens themselves:
 CheckoutView()
     .tracewayScreen("/checkout")
 
-// or anywhere:
-Traceway.recordNavigation("/orders/\(order.id)", action: "push", from: "/orders")
+// or anywhere, with the route template when the router knows it:
+Traceway.recordNavigation("/orders/\(order.id)", action: "push", from: "/orders", route: "/orders/{id}")
 
 // the route template of the current screen, until the next screen:
 Traceway.setRoute("/orders/{id}")
 ```
+
+`route` is the template the path was made from: passing it is the same as
+calling `setRoute(_:)` right after the navigation.
 
 A navigation is a `browser.navigation` record with `url.full`,
 `navigation.action` (`push` or `pop`), `browser.navigation.type`,
@@ -491,22 +494,32 @@ Set it in a rule's Signals tab on the dashboard, or in `collection`
 (`"replay": ["images": "always"]`). `TracewayOptions.replayImages` (`.always`
 by default) is the ceiling: `.off` keeps every image a placeholder whatever
 the rules say. The connection is checked for each frame. Images under a
-privacy mask are never included. Session events carry `traceway.replay.images`
+traceway mask are never included. Session events carry `traceway.replay.images`
 (the policy at session start) and `traceway.replay.image_bytes`.
 
 ### Privacy masks
 
 ```swift
 // UIKit
-cardNumberLabel.tracewayPrivacyMask = .blank()          // a black box, nothing inside recorded
-profileView.tracewayPrivacyMask = .blur                 // layout kept, text as *, images as placeholders
+cardNumberLabel.tracewayMask = .blank()          // a black box, nothing inside recorded
+profileView.tracewayMask = .blur                 // layout kept, text as *, images as placeholders
+
+// UIKit, without code (or in Interface Builder's Identity inspector)
+balanceView.accessibilityIdentifier = "traceway-mask"    // as .blur
+pinView.accessibilityIdentifier = "traceway-blank"       // as .blank()
 
 // SwiftUI
-Text(card.number).tracewayPrivacyMask(.blank(color: .gray))
-ProfileView().tracewayPrivacyMask()                     // .blur
+Text(card.number).tracewayMask(.blank(color: .gray))
+ProfileView().tracewayMask()                     // .blur
 ```
 
-A masked view's text is also left out of recorded taps.
+A masked view's text and label are also left out of recorded taps, and a
+`traceway-mask` or `traceway-blank` identifier is not reported as the view's
+id. These are the markers the other Traceway SDKs read as a CSS class, an
+Android view tag and a Flutter key. SwiftUI's `accessibilityIdentifier` is not
+readable from the view hierarchy, so SwiftUI masks with `.tracewayMask(_:)`.
+`tracewayPrivacyMask` (the property and the modifier) still works and is
+deprecated.
 
 ## Network requests
 
@@ -538,7 +551,7 @@ Android and Flutter SDKs', so the same dashboards and SLOs work for all three.
 
 | Metric | What it measures |
 |--------|------------------|
-| `app.start.duration` (`start_type` `cold` / `warm` / `hot`) | Cold: from the process start (`kinfo_proc`; from `Traceway.start` when iOS prewarmed the process) to the first frame drawn while the app is active, only when the process was launched to show its UI. Warm: the first return of a process launched in the background, or a return that reconnects a scene. Hot: from any other return to the foreground to the next frame |
+| `app.start.duration` (`start_type` `cold` / `warm` / `hot`) | Cold: from the process start (`kinfo_proc`; from `Traceway.initialize` when iOS prewarmed the process) to the first frame drawn while the app is active, only when the process was launched to show its UI. Warm: the first return of a process launched in the background, or a return that reconnects a scene. Hot: from any other return to the foreground to the next frame |
 | `app.screen.ttid` (`screen`) | Time to initial display: from the moment a view controller begins to load (`viewDidLoad`, or `viewWillAppear` for a view loaded before) to the first frame after `viewDidAppear`; from the call for `recordNavigation` and `.tracewayScreen` |
 | `app.screen.ttfd` (`screen`) | Time to full display: from the same start until the app calls `Traceway.reportFullyDisplayed()` |
 | `app.frames.slow`, `app.frames.frozen` (with `.total`, by `screen`) | A `CADisplayLink` in the foreground: slow when a frame took more than one and a half frame durations at the display's rate, frozen at 700 ms or more |
@@ -589,7 +602,7 @@ With `telemetry`, metrics go to the receiver's `/v1/metrics` (or its
 ### Everything on Traceway
 
 ```swift
-Traceway.start(
+Traceway.initialize(
     connectionString: "your-token@https://traceway.example.com",
     options: TracewayOptions(serviceName: "shop-app", environment: "production")
 )
@@ -598,7 +611,7 @@ Traceway.start(
 ### Issues and replays on Traceway, other telemetry elsewhere
 
 ```swift
-Traceway.start(
+Traceway.initialize(
     connectionString: "your-token@https://traceway.example.com",
     options: TracewayOptions(
         collection: ["signals": ["network": ["mode": "stream"]]],
@@ -622,7 +635,7 @@ it: use an ingestion key that can only write.
 ### Standalone, without a Traceway server
 
 ```swift
-Traceway.start(
+Traceway.initialize(
     connectionString: nil,
     options: TracewayOptions(
         telemetry: TracewayTelemetry(url: "https://collector.example.com/otlp")
@@ -672,7 +685,7 @@ mobile SDKs.
 
 ## Crashes and symbolication
 
-After `start`, the SDK records:
+After `initialize`, the SDK records:
 
 - **Uncaught `NSException`s**, on the crashing thread: written to disk and sent
   for up to two seconds before the app ends.
@@ -714,6 +727,20 @@ and `screen.density`.
 | iPadOS | as iOS; a trackpad pointer is replayed as a mouse |
 | macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay, URLSession instrumentation, or start, frame and hang measurements |
 
+### Platform differences
+
+The API has the names of the browser, Android and Flutter SDKs. Where iOS differs, it is for these reasons:
+
+- **Start**: `Traceway.initialize(connectionString:options:)`, because Swift keeps `Traceway.init(…)` for initializers. The browser and Android call it `init`, Flutter `run`. It returns the `TracewayClient`, or nil when the settings are invalid (logged, not thrown); a nil connection string starts standalone. `Traceway.start` is a deprecated alias.
+- **Masks** belong to views: the `UIView.tracewayMask` property and the SwiftUI modifier `.tracewayMask(_:)`. The marker that needs no code is the `accessibilityIdentifier` (`traceway-mask`, `traceway-blank`), where the browser uses CSS classes, Android `android:tag` / `testTag` and Flutter a `ValueKey`; it works for UIKit views only. `TracewayMaskMode.blank(color:)` takes a `UIColor`.
+- **Seconds**: `flush(timeout:)` waits at most `timeout` seconds (`TimeInterval`, the Swift idiom), where the browser, Android and Flutter take milliseconds.
+- **Properties**: `Traceway.instanceId` and `Traceway.currentSessionId` are static properties (`getInstanceId()` and `currentSessionId()` in the browser, `getInstanceId()` on Android and Flutter).
+- **Errors carry no stack of their own**: `captureException(_:attributes:)` records the stack of the caller; an `NSException` is reported with its own when uncaught.
+- **Navigation**: view controllers are reported without code; SwiftUI navigation and routers use `.tracewayScreen(_:)` or `recordNavigation(_:action:from:route:)` (arguments by label).
+- **Requests**: every `URLSession` request is recorded by opentelemetry-swift's `URLSessionInstrumentation`, with no interceptor to add (Android has `TracewayOkHttpInterceptor`).
+- **SwiftUI text** shows as its words in replays only while an assistive technology runs (iOS fills in the accessibility elements then); otherwise each text is a neutral bar where it is drawn.
+- **Replay**: wireframes only (no video), as on Android.
+
 ## Migrating from 1.x
 
 - **Server**: 2.0 sends OTLP to `/api/otel/v1/logs` and `/api/otel/v1/traces`,
@@ -725,7 +752,8 @@ and `screen.density`.
   sent once over OTLP on the first 2.0 start.
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`,
   `maxLocalFiles`, `localFileMaxAgeHours`.
-- **API**: `Traceway.start` and `flush(timeout:)` are unchanged.
+- **API**: `Traceway.initialize(connectionString:options:)` starts the SDK;
+  `Traceway.start` still works and is deprecated. `flush(timeout:)` is unchanged.
   `capture(_:)`, `capture(error:)` and `capture(message:)` still work and are
   deprecated in favor of `captureException(_:attributes:)` and
   `captureMessage(_:attributes:)`; `sessionId` in favor of

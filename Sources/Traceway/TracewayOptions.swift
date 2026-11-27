@@ -1,6 +1,6 @@
 import Foundation
 
-/// Options for `Traceway.start`. The `capture*` options, `screenCapture`,
+/// Options for `Traceway.initialize`. The `capture*` options, `screenCapture`,
 /// `replayImages` and `sessions` are ceilings: remote settings from the
 /// dashboard can lower what is collected but never raise it. `sampleRate`,
 /// `baselineSampleRate` and `recordAllSessions` are defaults a rule can
