@@ -58,11 +58,12 @@ final class CrashSafetyTests: XCTestCase {
     }
 
     /// The client still records and sends: a message reaches the server.
+    /// (`flush` waits at most 2 s on the main thread, so the check waits on.)
     private func assertStillWorks(_ client: TracewayClient, _ marker: String,
                                   file: StaticString = #filePath, line: UInt = #line) {
         Traceway.captureMessage(marker)
         client.flush(timeout: 5)
-        XCTAssertTrue(eventually { self.sent(marker) }, "\(marker) was sent", file: file, line: line)
+        XCTAssertTrue(eventually(timeout: 15) { self.sent(marker) }, "\(marker) was sent", file: file, line: line)
     }
 
     // MARK: - No traps in the sources (§13.4)
@@ -348,7 +349,8 @@ final class CrashSafetyTests: XCTestCase {
         }))
         Traceway.captureMessage("throw from the callback")
         client.flush(timeout: 5)
-        XCTAssertTrue(sent("throw from the callback"), "a callback that throws keeps the record")
+        XCTAssertTrue(eventually(timeout: 15) { self.sent("throw from the callback") },
+                      "a callback that throws keeps the record")
         lock.lock()
         XCTAssertEqual(depth, 1, "a capture inside the callback does not call it again")
         lock.unlock()
@@ -370,7 +372,7 @@ final class CrashSafetyTests: XCTestCase {
         struct Boom: Error {}
         Traceway.captureException(Boom())
         client.flush(timeout: 5)
-        XCTAssertTrue(sent("Boom"))
+        XCTAssertTrue(eventually(timeout: 15) { self.sent("Boom") })
         assertStillWorks(client, "after an empty clip")
     }
 
@@ -573,37 +575,44 @@ final class CrashSafetyTests: XCTestCase {
         print("traceway-alt-stack main base=\(alt.base) size=\(alt.size) MINSIGSTKSZ=\(MINSIGSTKSZ) probe=\(probedStackAddress)")
 
         // A thread that has an alternate stack of its own keeps it; one
-        // without gets Traceway's.
-        let result = Locked<(kept: Bool, given: Bool)>((false, false))
-        let report = Locked("")
+        // without gets Traceway's. (Each in a fresh thread: Darwin does not
+        // take back a thread's alternate stack for a bare `SS_DISABLE`.)
+        let size = 128 * 1024
+        let own = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
+        let kept = onFreshThread { () -> (base: UInt, size: Int, enabled: Bool) in
+            var mine = stack_t()
+            mine.ss_sp = own
+            mine.ss_size = size
+            mine.ss_flags = 0
+            sigaltstack(&mine, nil)
+            SignalHandler.installAltStackForTesting()
+            return SignalHandler.altStackForTesting()
+        }
+        let given = onFreshThread { () -> (base: UInt, size: Int, enabled: Bool) in
+            let before = SignalHandler.altStackForTesting()
+            SignalHandler.installAltStackForTesting()
+            let after = SignalHandler.altStackForTesting()
+            return before.enabled ? (0, 0, false) : after
+        }
+        print("traceway-alt-stack threads kept=\(String(describing: kept)) given=\(String(describing: given))")
+        XCTAssertEqual(kept?.base, UInt(bitPattern: own), "the thread's own alternate stack is kept")
+        XCTAssertEqual(kept?.size, size)
+        XCTAssertEqual(given?.enabled, true, "a thread without one gets Traceway's")
+        XCTAssertGreaterThanOrEqual(given?.size ?? 0, Int(MINSIGSTKSZ))
+        XCTAssertNotEqual(given?.base, UInt(bitPattern: own))
+    }
+
+    /// Runs `body` on a new thread and returns what it returned.
+    private func onFreshThread<T>(_ body: @escaping () -> T) -> T? {
+        let result = Locked<T?>(nil)
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
-            let size = 128 * 1024
-            let mine = malloc(size)
-            var own = stack_t()
-            own.ss_sp = mine
-            own.ss_size = size
-            own.ss_flags = 0
-            sigaltstack(&own, nil)
-            SignalHandler.installAltStackForTesting()
-            let kept = SignalHandler.altStackForTesting()
-            var off = stack_t()
-            off.ss_flags = SS_DISABLE
-            sigaltstack(&off, nil)
-            free(mine)
-            let disabled = SignalHandler.altStackForTesting()
-            SignalHandler.installAltStackForTesting()
-            let given = SignalHandler.altStackForTesting()
-            report.value = "kept=\(kept) disabled=\(disabled) given=\(given)"
-            result.value = (kept.base == UInt(bitPattern: mine) && kept.size == size,
-                            given.enabled && given.size >= Int(MINSIGSTKSZ) && given.size != size)
+            result.value = body()
             done.signal()
         }
         thread.start()
         XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
-        print("traceway-alt-stack thread \(report.value)")
-        XCTAssertTrue(result.value.kept, "the thread's own alternate stack is kept: \(report.value)")
-        XCTAssertTrue(result.value.given, "a thread without one gets Traceway's: \(report.value)")
+        return result.value
     }
 
     /// What a raised `SIGSEGV` carries on this platform (logged for the
@@ -675,7 +684,8 @@ final class CrashSafetyTests: XCTestCase {
         #endif
     }
 
-    /// §14.2 end to end on a real main thread: blocked for 2.5 s, it is
+    /// §14.2 end to end on a real main thread: blocked for 2.5 s (past a
+    /// 1 s threshold, so a busy runner's late timers still see it), it is
     /// one `AppHang` issue whose stack is inside this test's binary.
     func testABlockedMainThreadIsOneAppHangWithItsStack() throws {
         guard Thread.isMainThread else { throw XCTSkip("the test runs off the main thread here") }
@@ -685,7 +695,7 @@ final class CrashSafetyTests: XCTestCase {
         let mine = try XCTUnwrap(images.first { $0.loadAddr == UInt(bitPattern: #dsohandle) }?.name)
         let client = try TracewayClient.start(
             connectionString: "token@https://traceway.example.com",
-            options: TracewayOptions(exportDelayMs: 50, reportHangsInDebug: true, appHangThresholdMs: 1500),
+            options: TracewayOptions(exportDelayMs: 50, reportHangsInDebug: true, appHangThresholdMs: 1000),
             overrides: TracewayTestOverrides(
                 transport: server,
                 deviceAttributes: ["os.name": "ios", "device.model": "iPhone15,2"],
@@ -696,9 +706,12 @@ final class CrashSafetyTests: XCTestCase {
         blockTheMainThread(seconds: 2.5)
         runMainLoop(for: 0.5)
         client.appHangs?.settle()
-        runMainLoop(for: 0.3)
-        client.flush(timeout: 2)
-        XCTAssertTrue(eventually { self.sent("Main thread blocked for") }, "an AppHang was sent")
+        let deadline = Date().addingTimeInterval(15)
+        while !sent("Main thread blocked for") && Date() < deadline {
+            runMainLoop(for: 0.2)
+            client.flush(timeout: 1)
+        }
+        XCTAssertTrue(sent("Main thread blocked for"), "an AppHang was sent")
         let hangs = server.requests(to: "/api/otel/v1/logs").filter { request in
             var body = request.body
             if request.headers["Content-Encoding"] == "gzip", let plain = Gzip.decompress(body) { body = plain }
