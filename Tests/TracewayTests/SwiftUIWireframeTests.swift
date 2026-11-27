@@ -143,7 +143,7 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
     }
 
     func test46MasksHideWhatTheyCover() throws {
-        host(VStack(spacing: 30) {
+        let host = self.host(VStack(spacing: 30) {
             Text("Card 4242 4242").tracewayPrivacyMask(.blank(color: UIColor(red: 1, green: 0, blue: 0, alpha: 1)))
             Text("Balance 99.50").tracewayPrivacyMask()
             Rectangle().fill(Color(red: 0, green: 0, blue: 1)).frame(width: 100, height: 40)
@@ -153,7 +153,19 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
         let texts = allTexts(s)
         XCTAssertFalse(texts.contains { $0.contains("4242") || $0.contains("99.50") }, "\(texts)")
         let nodes = allNodes(s)
-        let red = try XCTUnwrap(nodes.firstIndex { styleMap($0)["background-color"] == "#ff0000" }, "the blank mask's box")
+        var markers: [String] = []
+        func walk(_ view: UIView, _ depth: Int) {
+            if view is TracewayMaskMarkerView || depth < 3 {
+                markers.append("\(String(repeating: " ", count: depth))\(NSStringFromClass(Swift.type(of: view))) "
+                    + "\(view.convert(view.bounds, to: window)) hidden=\(view.isHidden) alpha=\(view.alpha) "
+                    + "mask=\(view.tracewayPrivacyMask.map { "\($0)" } ?? "-")")
+            }
+            view.subviews.forEach { walk($0, depth + 1) }
+        }
+        walk(host.view, 0)
+        let fills = nodes.compactMap { styleMap($0)["background-color"] }
+        let red = try XCTUnwrap(nodes.firstIndex { styleMap($0)["background-color"] == "#ff0000" },
+                                "the blank mask's box; fills \(fills); views \(markers.joined(separator: " | "))")
         XCTAssertTrue(nodes[red].children.isEmpty)
         let green = try XCTUnwrap(nodes.firstIndex { styleMap($0)["background-color"] == "#00ff00" })
         if let blue = nodes.firstIndex(where: { styleMap($0)["background-color"] == "#0000ff" }) {
@@ -196,7 +208,7 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
 
     func test48SwiftUIInsideAUIKitHierarchyIsPlacedWithIt() throws {
         let container = UIView(frame: CGRect(x: 40, y: 300, width: 300, height: 200))
-        container.backgroundColor = UIColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1)
+        container.backgroundColor = UIColor(red: 0.8, green: 0.8, blue: 0.8, alpha: 1)
         let swiftUI = UIHostingController(rootView: Rectangle().fill(Color(red: 1, green: 0, blue: 0)).ignoresSafeArea())
         swiftUI.view.frame = CGRect(x: 20, y: 30, width: 200, height: 100)
         container.addSubview(swiftUI.view)
@@ -211,7 +223,7 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
         XCTAssertEqual(Double(box.minY), 330, accuracy: 0.5)
         XCTAssertEqual(Double(box.width), 200, accuracy: 0.5)
         XCTAssertEqual(Double(box.height), 100, accuracy: 0.5)
-        let gray = try XCTUnwrap(allNodes(s).firstIndex { styleMap($0)["background-color"] == "#e6e6e6" })
+        let gray = try XCTUnwrap(allNodes(s).firstIndex { styleMap($0)["background-color"] == "#cccccc" })
         let fill = try XCTUnwrap(allNodes(s).firstIndex { $0 === red })
         XCTAssertLessThan(gray, fill, "the SwiftUI content is inside the UIKit view")
     }

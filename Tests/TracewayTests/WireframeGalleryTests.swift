@@ -311,10 +311,11 @@ final class GalleryDriver {
 
     func fail(_ message: String) { failures.append("\(scenario): \(message)") }
 
-    /// The visible labels (and text layers) whose text no other visible
-    /// label shows, with their frames on screen. Left out: text under a
-    /// privacy mask, in fields, in controls the wireframe draws from their
-    /// state (a segmented control's titles), secrets, and `leavingOut`.
+    /// The visible labels (and text layers, and the placeholders of empty
+    /// fields) whose text no other visible label shows, with their frames on
+    /// screen. Left out: text under a privacy mask, typed text, text views,
+    /// controls the wireframe draws from their state (a segmented control's
+    /// titles), SwiftUI, secrets, and `leavingOut`.
     private func labelledBoxes(leavingOut: Set<String>) -> [GalleryBox] {
         let root = window.layer.presentation() ?? window.layer
         var found: [GalleryBox] = []
@@ -336,12 +337,26 @@ final class GalleryDriver {
             let layer = view.layer.presentation() ?? view.layer
             guard !view.isHidden, view.alpha > 0.01, !layer.isHidden, layer.opacity > 0.01 else { return }
             let rect = frame(of: view.layer)
-            let measured = measured && view.tracewayPrivacyMask == nil
-                && !(view is UITextField || view is UITextView || view is UISegmentedControl || view is UIStepper
-                    || view is UISwitch || view is UIPageControl || view is UISlider)
-                && !NSStringFromClass(Swift.type(of: view)).contains("Hosting")
+            let unmasked = measured && view.tracewayPrivacyMask == nil
             var clip = clip
             if view.clipsToBounds || layer.masksToBounds { clip = clip.intersection(rect) }
+            if let field = view as? UITextField {
+                // An empty field shows its placeholder where it draws text;
+                // what is typed is masked. Its side views are views of the app.
+                let placeholder = field.attributedPlaceholder?.string ?? field.placeholder ?? ""
+                if (field.text ?? "").isEmpty, !placeholder.isEmpty {
+                    let local = field.isEditing ? field.editingRect(forBounds: field.bounds) : field.textRect(forBounds: field.bounds)
+                    consider(placeholder, field.convert(local, to: window), clip: clip, measured: unmasked)
+                }
+                for side in [field.leftView, field.rightView] {
+                    if let side = side, side.superview === field { walk(side, clip: clip, measured: unmasked) }
+                }
+                return
+            }
+            let measured = unmasked
+                && !(view is UITextView || view is UISegmentedControl || view is UIStepper
+                    || view is UISwitch || view is UIPageControl || view is UISlider)
+                && !NSStringFromClass(Swift.type(of: view)).contains("Hosting")
             if let label = view as? UILabel {
                 consider(label.attributedText?.string ?? label.text ?? "", rect, clip: clip, measured: measured)
             }

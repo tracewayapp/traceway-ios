@@ -81,9 +81,11 @@ It writes to `WIREFRAME_GALLERY_OUT` (`TEST_RUNNER_WIREFRAME_GALLERY_OUT` for
   comparisons, such as a spinner or the keyboard), `minMutations` and `boxes`:
   `{text, x, y, w, h}` for every visible label whose text is unique on the
   screen, its frame converted to the window (a transformed label's
-  axis-aligned bounds). Labels under a privacy mask, in fields and in controls
-  the wireframe draws from their state (segmented controls, steppers) are left
-  out, and so is a checkpoint taken mid-animation;
+  axis-aligned bounds), and for an empty text field its placeholder where the
+  field draws text. Text under a privacy mask, typed text, text views, SwiftUI
+  text and the titles of controls the wireframe draws from their state
+  (segmented controls, steppers) are left out, and so is a checkpoint taken
+  mid-animation;
 - `app/<checkpoint>.png`: the window drawn by UIKit (`drawHierarchy`);
 - `tree/<checkpoint>.txt`: the window's layer tree, for diagnosing a
   conversion.

@@ -394,6 +394,10 @@ final class WireframeCapture {
         if info.isLens { s.lens = true }
         if layer.cornerRadius > 0 {
             s.shapeRadius = (p.box, min(Double(layer.cornerRadius), min(p.width, p.height) / 2))
+        } else if let configured = configuredRadius(view, p), configured > 0 {
+            // A popover or sheet rounds through its corner configuration and
+            // clips its content with a mask of the same box.
+            s.shapeRadius = (p.box, configured)
         }
 
         if let mode = view.tracewayPrivacyMask {
@@ -903,10 +907,13 @@ final class WireframeCapture {
         }
     }
 
-    private static func justify(_ align: String) -> String {
+    /// Where a one-line flex text sits for `align`. Right to left, the flex
+    /// line starts at the right edge, so right is its start and left its end.
+    private static func justify(_ align: String, rtl: Bool) -> String {
         switch align {
         case "center": return "justify-content:center;"
-        case "right": return "justify-content:flex-end;"
+        case "right": return rtl ? "" : "justify-content:flex-end;"
+        case "left": return rtl ? "justify-content:flex-end;" : ""
         default: return ""
         }
     }
@@ -961,31 +968,58 @@ final class WireframeCapture {
             if truncating && !label.adjustsFontSizeToFitWidth && Double(measured) > p.width + 0.5 {
                 // UIKit cut this line: the browser cuts it too.
                 style += "line-height:\(WireframeCSS.px(p.height));"
-                if align != "left" { style += "text-align:\(align);" }
+                if align != "left" || rtl { style += "text-align:\(align);" }
                 cls = "t n e"
             } else {
                 // The browser's font is not the app's: a line it draws wider
                 // spills out the way it is aligned instead of being cut.
                 style += "line-height:\(WireframeCSS.px(Double(font.lineHeight)));align-items:center;"
-                    + WireframeCapture.justify(align)
+                    + WireframeCapture.justify(align, rtl: rtl)
                 cls = "t n"
             }
         } else {
-            style += "line-height:\(WireframeCSS.px(Double(font.lineHeight)));display:flex;align-items:center;"
-                + WireframeCapture.justify(align)
-            if align != "left" { style += "text-align:\(align);" }
+            // Lines of a paragraph as far apart as its style sets them.
+            var lineHeight = Double(font.lineHeight)
+            if let attributed = label.attributedText, attributed.length > 0,
+               let paragraph = attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
+                if paragraph.lineHeightMultiple > 0 { lineHeight *= Double(paragraph.lineHeightMultiple) }
+                lineHeight = max(lineHeight, Double(paragraph.minimumLineHeight))
+                if paragraph.maximumLineHeight > 0 { lineHeight = min(lineHeight, Double(paragraph.maximumLineHeight)) }
+                lineHeight += Double(paragraph.lineSpacing)
+            }
+            style += "line-height:\(WireframeCSS.px(lineHeight));display:flex;align-items:center;"
+                + WireframeCapture.justify(align, rtl: rtl)
+            if align != "left" || rtl { style += "text-align:\(align);" }
             if label.numberOfLines > 0 && !style.contains("overflow:hidden") { style += "overflow:hidden;" }
             cls = "t"
         }
-        out.append(element(id(label), style, content ?? [textNode(id(label, 1), shownText)], cls: cls))
+        let children: [VNode]
+        switch content {
+        case .spans(let spans)?:
+            children = spans
+        case .uniform(let css)?:
+            style += css
+            children = [textNode(id(label, 1), shownText)]
+        case nil:
+            children = [textNode(id(label, 1), shownText)]
+        }
+        out.append(element(id(label), style, children, cls: cls))
     }
 
-    /// The runs of `attributed` as spans when some differ from the font and
-    /// color of the text around them; nil when the text is all one style.
+    /// Rich text: `spans` for runs that differ from the font and color of
+    /// the text around them, or `uniform` when the whole text is one such
+    /// run (its style goes on the text's own node, which keeps its box).
+    enum Runs {
+        case spans([VNode])
+        case uniform(String)
+    }
+
+    /// The runs of `attributed`; nil when the text is all in the font and
+    /// color around it.
     private func runs(
         _ attributed: NSAttributedString?, font: UIFont, color: WireframeColor?,
         traits: UITraitCollection, owner: AnyObject, masked: Bool
-    ) -> [VNode]? {
+    ) -> Runs? {
         guard let attributed = attributed, attributed.length > 0 else { return nil }
         var parts: [(String, String)] = []
         var styled = false
@@ -1016,11 +1050,13 @@ final class WireframeCapture {
             parts.append((masked ? WireframeCSS.mask(piece) : piece, css))
         }
         guard styled else { return nil }
+        let shown = parts.filter { !$0.0.isEmpty }
+        if shown.count == 1 { return .uniform(shown[0].1) }
         var nodes: [VNode] = []
         for (i, part) in parts.enumerated() where !part.0.isEmpty {
             nodes.append(element(id(owner, 10 + 2 * i), part.1, [textNode(id(owner, 11 + 2 * i), part.0)], tag: "span"))
         }
-        return nodes
+        return .spans(nodes)
     }
 
     private func fieldBorder(_ field: UITextField, dark: Bool, paints: Bool) -> (fill: String, radius: String, shadows: [String]) {
@@ -1082,8 +1118,16 @@ final class WireframeCapture {
         let textBox = p.node.translated(Double(rect.minX) - p.boundsX, Double(rect.minY) - p.boundsY)
             .boundingBox(width: Double(rect.width), height: Double(rect.height))
         if !value.isEmpty, let visible = shown(value, textBox, s), rect.width > 0, rect.height > 0 {
-            let rtl = field.effectiveUserInterfaceLayoutDirection == .rightToLeft
-            let align = WireframeCapture.align(field.textAlignment, rtl: rtl)
+            // UIKit draws the placeholder with a label of its own, which
+            // works out its direction by itself: it is placed as that label is.
+            var placeholderLabel: UILabel?
+            if raw.isEmpty {
+                placeholderLabel = field.subviews.compactMap { $0 as? UILabel }
+                    .first { ($0.attributedText?.string ?? $0.text ?? "") == value }
+            }
+            let direction = placeholderLabel?.effectiveUserInterfaceLayoutDirection ?? field.effectiveUserInterfaceLayoutDirection
+            let rtl = direction == .rightToLeft
+            let align = WireframeCapture.align(placeholderLabel?.textAlignment ?? field.textAlignment, rtl: rtl)
             let place = WireframeCSS.rect(
                 left: Double(rect.minX) - p.boundsX, top: Double(rect.minY) - p.boundsY,
                 width: Double(rect.width), height: Double(rect.height)
@@ -1131,12 +1175,22 @@ final class WireframeCapture {
                 var textStyle = "left:\(x);top:\(y);width:\(WireframeCSS.px(width));"
                 textStyle += WireframeCapture.fontCss(font, color: color)
                 textStyle += "line-height:\(lineHeight);"
-                if align != "left" { textStyle += "text-align:\(align);" }
+                if align != "left" || rtl { textStyle += "text-align:\(align);" }
                 if rtl { textStyle += "direction:rtl;" }
                 let maskTyped = view.isEditable && maskAllInputs
                 let content = runs(view.attributedText, font: font, color: color, traits: traits, owner: view,
                                    masked: maskTyped || privacy(p.box, s) == .mask)
-                children.append(element(id(view, 1), textStyle, content ?? [textNode(id(view, 2), visible)], cls: "t"))
+                let text: [VNode]
+                switch content {
+                case .spans(let spans)?:
+                    text = spans
+                case .uniform(let css)?:
+                    textStyle += css
+                    text = [textNode(id(view, 2), visible)]
+                case nil:
+                    text = [textNode(id(view, 2), visible)]
+                }
+                children.append(element(id(view, 1), textStyle, text, cls: "t"))
             }
         }
         out.append(element(id(view), style, children))
@@ -1175,10 +1229,11 @@ final class WireframeCapture {
             } else {
                 out.append(element(id(view), style, children, cls: "ic"))
             }
-        } else if WireframeCapture.isStretchable(shownImage) && !children.isEmpty {
-            // A stretched background, such as a control's: its pixels are
-            // not read, and a placeholder over the content would hide it.
-            out.append(element(id(view), style, children))
+        } else if WireframeCapture.isStretchable(shownImage) {
+            // A stretched background, border or shadow (a control's, a
+            // popover's): artwork, not a picture. Its pixels are not read,
+            // and a placeholder would hide what is around it.
+            if paints || !children.isEmpty { out.append(element(id(view), style, children)) }
         } else if let picture = photo(shownImage, contentMode: view.contentMode, p, s) {
             out.append(element(id(view), style + picture.placement, children, cls: "im " + picture.cls))
         } else {
@@ -1352,7 +1407,9 @@ final class WireframeCapture {
         let thumb = WireframeCapture.color(toggle.thumbTintColor, traits) ?? .white
         let knob = max(0, h - 4)
         let knobWidth = w / h > 2 ? min(knob * 1.5, w / 2) : knob
-        let kx = on ? w - knobWidth - (h - knob) / 2 : (h - knob) / 2
+        var kx = on ? w - knobWidth - (h - knob) / 2 : (h - knob) / 2
+        // Right to left, a switch is mirrored: on is to the left.
+        if toggle.effectiveUserInterfaceLayoutDirection == .rightToLeft { kx = w - knobWidth - kx }
         var style = geometry(s, p)
         if !toggle.isEnabled { style += "opacity:.5;" }
         let opacity = Double(layer.opacity)
@@ -1410,7 +1467,9 @@ final class WireframeCapture {
         let value = min(max(Double(view.progress), 0), 1)
         let radius = "border-radius:\(WireframeCSS.px(p.height / 2));"
         let percent = WireframeCSS.num1(value * 100)
-        let barStyle = "width:\(percent)%;height:100%;" + radius + WireframeCSS.fill(fill)
+        // Right to left, a bar fills from the right edge.
+        let side = view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? "left:auto;right:0;" : ""
+        let barStyle = side + "width:\(percent)%;height:100%;" + radius + WireframeCSS.fill(fill)
         let trackStyle = geometry(s, p) + WireframeCSS.fill(track) + radius + "overflow:hidden;"
         out.append(element(id(view), trackStyle, [element(id(view, 1), barStyle, [])]))
     }

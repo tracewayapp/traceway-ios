@@ -48,7 +48,10 @@ extension GalleryScenes {
         let bottom = table.contentOffset
         table.contentOffset = CGPoint(x: 0, y: bottom.y - 900)
         d.scroll(table, to: bottom, seconds: 0.8)
-        d.checkpoint("bottom", shows: ["Row 3.18", "Row 3.20"], hides: ["Row 1.01"])
+        // The rows on the way sized themselves: the end moved.
+        table.layoutIfNeeded()
+        table.scrollToRow(at: last, at: .bottom, animated: true)
+        d.checkpoint("bottom", shows: ["Row 3.18", "Row 3.20"], hides: ["Row 1.01"], settle: 0.8)
         d.scroll(table, to: CGPoint(x: 0, y: -table.adjustedContentInset.top), seconds: 0.8)
         d.checkpoint("top", shows: ["Row 1.01"], hides: ["Row 3.18"])
     })

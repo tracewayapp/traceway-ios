@@ -204,7 +204,13 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         add(" marked", [.backgroundColor: UIColor(red: 1, green: 1, blue: 0, alpha: 1)])
         add(" big", [.font: UIFont.systemFont(ofSize: 24)])
         rich.attributedText = text
-        show(rich)
+        // One run in its own style: the style is the label's, on its own box.
+        let uniform = UILabel(frame: CGRect(x: 10, y: 50, width: 370, height: 24))
+        uniform.attributedText = NSAttributedString(string: "All purple", attributes: [
+            .font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor(red: 0.5, green: 0, blue: 1, alpha: 1),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        show(rich, uniform)
         let s = try screen()
         let red = try node("red", in: s)
         XCTAssertEqual(red.tag, "span")
@@ -214,6 +220,11 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         XCTAssertEqual(styleMap(try node(" marked", in: s))["background-color"], "#ffff00")
         XCTAssertEqual(styleMap(try node(" big", in: s))["font-size"], "24px")
         XCTAssertEqual(allTexts(s).filter { ["Plain ", "red", " underlined", " struck", " marked", " big"].contains($0) }.count, 6)
+        let purple = try node("All purple", in: s)
+        XCTAssertEqual(purple.tag, "div")
+        XCTAssertEqual(styleMap(purple)["color"], "#8000ff")
+        XCTAssertEqual(styleMap(purple)["text-decoration"], "underline")
+        assertPlaced(purple, in: s, like: uniform)
     }
 
     func test10RightToLeftTextAndLayoutDirection() throws {
@@ -229,13 +240,25 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         stack.axis = .horizontal
         stack.distribution = .fillEqually
         stack.frame = CGRect(x: 0, y: 60, width: 390, height: 30)
-        container.addSubview(natural)
-        container.addSubview(stack)
+        let left = label("Left in a mirrored layout", CGRect(x: 0, y: 100, width: 390, height: 30))
+        left.textAlignment = .left
+        left.semanticContentAttribute = .forceRightToLeft
+        let toggle = UISwitch()
+        toggle.isOn = true
+        toggle.semanticContentAttribute = .forceRightToLeft
+        toggle.frame.origin = CGPoint(x: 10, y: 140)
+        for view in [natural, stack, left, toggle] { container.addSubview(view) }
         show(container)
         let s = try screen()
         let text = try node("שלום עולם", in: s)
         XCTAssertEqual(styleMap(text)["direction"], "rtl")
-        XCTAssertEqual(styleMap(text)["justify-content"], "flex-end", "natural alignment is the right edge")
+        // Right to left a line starts at the right edge: natural alignment
+        // is its start, left alignment its end.
+        XCTAssertNil(styleMap(text)["justify-content"], "natural alignment is the right edge")
+        XCTAssertEqual(styleMap(try node("Left in a mirrored layout", in: s))["justify-content"], "flex-end")
+        // A mirrored switch that is on has its knob on the left.
+        let knob = try XCTUnwrap(allNodes(s).first { styleMap($0)["box-shadow"] == "0 2px 6px rgba(0,0,0,.2)" })
+        XCTAssertLessThan(styleNumber(knob, "left") ?? 99, 5)
         // A mirrored stack puts its first view on the right; so does the replay.
         XCTAssertGreaterThan(nativeFrame(first).minX, nativeFrame(second).minX)
         assertPlaced(try node("First", in: s), in: s, like: first)
@@ -876,7 +899,7 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         root.view.addSubview(label("Page under", CGRect(x: 20, y: 120, width: 300, height: 24)))
         show(root)
         let sheet = UIViewController()
-        sheet.view.backgroundColor = UIColor(red: 0.9, green: 0.9, blue: 1, alpha: 1)
+        sheet.view.backgroundColor = UIColor(red: 0.8, green: 0.8, blue: 1, alpha: 1)
         let text = label("In the sheet", CGRect(x: 20, y: 30, width: 300, height: 24))
         sheet.view.addSubview(text)
         sheet.sheetPresentationController?.detents = [.medium()]
@@ -889,7 +912,7 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         // At its medium detent the sheet holds the lower half, where its text is.
         XCTAssertGreaterThan(nativeFrame(text).minY, window.bounds.height * 0.35)
         assertPlaced(try node("In the sheet", in: s), in: s, like: text, accuracy: 1)
-        XCTAssertTrue(allNodes(s).contains { styleMap($0)["background-color"] == "#e6e6ff" }, "the sheet's own color")
+        XCTAssertTrue(allNodes(s).contains { styleMap($0)["background-color"] == "#ccccff" }, "the sheet's own color")
         sheet.dismiss(animated: false)
     }
 
