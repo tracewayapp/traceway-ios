@@ -1,8 +1,9 @@
 // Image comparison for the wireframe gallery (the same as the Flutter SDK's
-// wireframe suite), run inside Chromium by
-// replay.mjs: window.twCompare(...) compares the replay of a checkpoint with
-// the picture the app took of itself (fidelity) and with the accepted
-// baseline rendering (changes).
+// wireframe suite), run inside Chromium by replay.mjs and dashboard.mjs:
+// window.twCompare(...) compares the replay of a checkpoint with the picture
+// the app took of itself (fidelity) and with the accepted baseline rendering
+// (changes); window.twProbe(...) reads a replayed page's texts and the boxes
+// of the elements that hold given texts.
 //
 // Fidelity is three numbers, each 1 for identical images:
 // - ssim: structural similarity of the brightness at half size, the usual
@@ -228,27 +229,77 @@
     return { changed: changed / (w * h), strict: strict / (w * h), png: png(out, w, h) };
   }
 
-  window.twCompare = async ({ app, replay, baseline, ignore, appIgnore }) => {
-    const [a, r] = await Promise.all([load(app), load(replay)]);
+  /**
+   * The text nodes of a replayed document's screen node (#tw) in document order (not the glyph and image
+   * <style> nodes in it), and for every box
+   * ({text, x, y, w, h}) the element whose own text (its child text nodes, whitespace collapsed) is that text,
+   * or else the innermost element whose whole text is: its getBoundingClientRect, which inside the replay
+   * iframe is in the recording's logical px. Of several, the one nearest the box. Each box gets its deltas
+   * (replay − native) and whether they are within [tolerance] {position, size}. `layout` lists every element of
+   * the screen as [tag, class, x, y, w, h, own text], to tell two renderings of the same moment apart.
+   */
+  window.twProbe = (doc, boxes, tolerance = { position: 1.5, size: 2 }) => {
+    const screen = doc.getElementById('tw');
+    const texts = [];
+    if (screen) {
+      const walker = doc.createTreeWalker(screen, 4);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.parentNode.nodeName !== 'STYLE') texts.push(n.nodeValue);
+      }
+    }
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const elements = screen ? [screen, ...screen.querySelectorAll('*')] : [];
+    const own = (el) => norm([...el.childNodes].filter((c) => c.nodeType === 3).map((c) => c.nodeValue).join(''));
+    const geometry = (boxes || []).map((box) => {
+      const want = norm(box.text);
+      let how = 'own';
+      let matches = elements.filter((el) => own(el) === want);
+      if (!matches.length) {
+        how = 'text';
+        matches = elements.filter((el) => norm(el.textContent) === want);
+        matches = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+      }
+      let best = null;
+      for (const el of matches) {
+        const r = el.getBoundingClientRect();
+        const got = [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 100) / 100);
+        const off = Math.abs(got[0] - box.x) + Math.abs(got[1] - box.y) + Math.abs(got[2] - box.w) + Math.abs(got[3] - box.h);
+        if (!best || off < best.off) best = { got, off };
+      }
+      const found = { text: box.text, want: [box.x, box.y, box.w, box.h], got: best ? best.got : null, how, candidates: matches.length };
+      if (!best) return { ...found, ok: false };
+      const [dx, dy, dw, dh] = best.got.map((v, i) => Math.round((v - found.want[i]) * 100) / 100);
+      const ok = Math.abs(dx) <= tolerance.position && Math.abs(dy) <= tolerance.position &&
+        Math.abs(dw) <= tolerance.size && Math.abs(dh) <= tolerance.size;
+      return { ...found, dx, dy, dw, dh, ok };
+    });
+    const layout = elements.map((el) => {
+      const r = el.getBoundingClientRect();
+      return [el.tagName.toLowerCase(), el.getAttribute('class') || '', ...[r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10), own(el)];
+    });
+    return { screens: doc.querySelectorAll('#tw').length, texts, geometry, layout };
+  };
+
+  window.twCompare = async ({ app, replay, baseline, ignore, appIgnore, scaleBaseline }) => {
+    const [a, r] = await Promise.all([app ? load(app) : null, load(replay)]);
     const b = baseline ? await load(baseline).catch(() => null) : null;
     const w = r.width, h = r.height;
-    const A = rgba(a, w, h), R = rgba(r, w, h);
-    const fa = A.slice(), fr = R.slice();
-    mask(fa, w, h, [...ignore, ...appIgnore]);
-    mask(fr, w, h, [...ignore, ...appIgnore]);
-    const ga = gray(fa, w, h, 2), gr = gray(fr, w, h, 2);
-    const result = {
-      size: [a.width, a.height, w, h],
-      fidelity: {
+    const R = rgba(r, w, h);
+    const result = { size: a ? [a.width, a.height, w, h] : [w, h, w, h], fidelity: null, delta: null, golden: null };
+    if (a) {
+      const fa = rgba(a, w, h), fr = R.slice();
+      mask(fa, w, h, [...ignore, ...appIgnore]);
+      mask(fr, w, h, [...ignore, ...appIgnore]);
+      const ga = gray(fa, w, h, 2), gr = gray(fr, w, h, 2);
+      result.fidelity = {
         ssim: +ssim(ga, gr).toFixed(4),
         edges: +edgeF1(ga, gr).toFixed(4),
         color: +color(fa, fr, w, h).toFixed(4),
-      },
-      delta: delta(fa, fr, w, h),
-      golden: null,
-    };
+      };
+      result.delta = delta(fa, fr, w, h);
+    }
     if (b) {
-      if (b.width !== w || b.height !== h) {
+      if (!scaleBaseline && (b.width !== w || b.height !== h)) {
         result.golden = { changed: 1, strict: 1, sizeMismatch: [b.width, b.height] };
       } else {
         const B = rgba(b, w, h), gr2 = R.slice();

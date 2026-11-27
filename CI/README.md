@@ -39,24 +39,87 @@ checkpoint must show and hide, and that no secret appears anywhere. It writes
 `WIREFRAME_GALLERY_OUT` (`TEST_RUNNER_WIREFRAME_GALLERY_OUT` for
 `xcodebuild`; `.build/wireframe-gallery` by default).
 
+### Checking a gallery
+
+`CI/wireframe/` (`run.py`, `replay.mjs`, `compare.js`, `dashboard.mjs`) is the
+gallery checker shared with the Android SDK, whose `tools/wireframe/` holds
+byte-identical copies. It reads the gallery format of both SDKs: `run.json`
+(`platform`, `device`, `os`, `width`, `height`, `density`, `secrets`, and
+`checkpoints` with `shows`, `hides`, `ignore`, `minMutations` and `boxes`; a
+run without `platform` counts as iOS), `events.json`, `app/<checkpoint>.png`.
+
 ```sh
-# Render a CI run's gallery in rrweb-player and compare every checkpoint with
-# the app's picture (SSIM, edges, color), like the Flutter SDK's suite:
-python3 CI/wireframe/run.py --gh-run <run id>
-# or a gallery on disk:
-python3 CI/wireframe/run.py --dir .build/wireframe-gallery
+python3 CI/wireframe/run.py --gh-run <run id>                 # a CI run's wireframe-gallery artifact (needs gh)
+python3 CI/wireframe/run.py --dir .build/wireframe-gallery     # a gallery on disk
+python3 CI/wireframe/run.py --dir … --only 'table*,alerts'     # some checkpoints or scenarios
 ```
 
-It needs Node with Playwright (`--playwright`), Chromium (`--chromium`) and
-rrweb-player (`--rrweb-player`, by default the dashboard's copy in
-`../traceway/frontend/node_modules`). Open `report.html` in `--out`.
-`--update-baseline` accepts a run into `CI/wireframe/baseline/<platform>-<size>/`:
-the replay renderings and their fidelity numbers, against which later runs must
-not lose more than `--tolerance` (0.03) of a metric or change more than 0.2% of
-the pixels. Renderings depend on the fonts and the Chromium build of the machine
-that runs `run.py`; the committed `ios-440x956` baseline (the iPhone 17 Pro Max
-simulator) was rendered on Linux with Chromium. A simulator of another size has
-no baseline and is only held to the fidelity floors.
+Per run it checks the event structure, every mutation through a strict model of
+rrweb's replayer, each checkpoint's `shows`/`hides`/`minMutations` and that no
+secret appears, and then renders every checkpoint in rrweb-player at 1:1
+(`replay.mjs`) to check:
+
+- **visual**: the rendering against the app's picture (SSIM, edge alignment and
+  colour, floors `--floor-ssim 0.5`, `--floor-edges 0.3`, `--floor-color 0.6`)
+  and against the baseline rendering (a metric may not fall by more than
+  `--tolerance` 0.03; at most `--max-change` 0.2% of the pixels may change);
+- **geometry**: each `boxes` entry `{text, x, y, w, h}` (the native frame in
+  window points) against the `getBoundingClientRect` of the replayed element
+  whose own text is `text`, within 1.5 pt of position and 2 pt of size
+  (`--geometry-position`, `--geometry-size`). The deltas are in `report.html`
+  and `visual.json`. Until the gallery writes `boxes`, `--boxes-from-tree`
+  takes the frames of the visible, uniquely labelled `UILabel`s of
+  `tree/<checkpoint>.txt`;
+- **size**: the bytes each scenario recorded, at most 1.5 × the baseline + 20 KB.
+
+It needs Node with Playwright (`--playwright`, default
+`~/Work/workspace/js-client/node_modules/playwright`), Chromium (`--chromium`)
+and rrweb-player (`--rrweb-player`, by default the dashboard's copy in
+`../traceway/frontend/node_modules`). Open `report.html` in `--out`
+(`~/.cache/tw-wireframe/ios` by default).
+`--update-baseline` accepts a run into `CI/wireframe/baseline/<platform>-<width>x<height>/`:
+the replay renderings and their fidelity numbers. Renderings depend on the fonts
+and the Chromium build of the machine that runs `run.py`; the committed
+`ios-440x956` baseline (the iPhone 17 Pro Max simulator) was rendered on Linux
+with Chromium. A simulator of another size has no baseline and is only held to
+the fidelity floors.
+
+### The gallery in the dashboard
+
+`--dashboard` plays the run in the real dashboard. Given a running Traceway
+(`--traceway`, the backend; `--dashboard`, the dashboard origin, the same when the
+backend serves its embedded dashboard) with the seeded `iOS App` project of
+`traceway/examples/devtesting-embedded` (`--project`, `--token`, `--email`,
+`--password` override it), `dashboard.mjs`:
+
+1. moves the events in time so the run ends a few seconds ago, opens a session
+   with an OTLP/HTTP JSON `session.start` log (scope `traceway-ios`
+   `2.0.0-beta.1`, `session.id`, `traceway.session.started_at`), uploads the
+   events with `POST /api/recordings` (gzip, one segment per Meta + full snapshot,
+   increasing `segmentIndex`) and ends the session with `session.end`;
+2. waits until the session reports its recording, logs into the dashboard and
+   opens the session page;
+3. seeks the page's player to each checkpoint by clicking that checkpoint's row
+   in the session's Actions tab (each segment carries a custom action
+   `wireframe-gallery/<checkpoint>` at the checkpoint's time; clicking an action
+   seeks the player to it), screenshots the replay iframe at the device scale that
+   undoes the player's scale, and reads the iframe's texts and boxes.
+
+Each checkpoint then has to show no rrweb missing-node errors, its `shows` and
+none of its `hides`, its `boxes` within the geometry tolerance, the same texts
+and the same element layout (every element's box within 0.5 px) as the
+standalone rrweb-player rendering, and a picture that agrees with it
+(SSIM ≥ `--dashboard-floor` 0.9, at most `--dashboard-max-change` 5% of the
+pixels different; the dashboard scales the replay, so text is drawn at another
+size). The results are columns of the same `report.html`.
+
+```sh
+# devtesting-embedded on spare ports in a fresh directory, and the dashboard from traceway/frontend:
+mkdir -p ~/tw-e2e && (cd ../traceway/examples/devtesting-embedded && go build -o ~/tw-e2e/devtesting .)
+(cd ~/tw-e2e && DEVTESTING_APP_PORT=18180 DEVTESTING_TRACEWAY_PORT=18182 ./devtesting) &
+(cd ../traceway/frontend && TRACEWAY_API_PROXY=http://127.0.0.1:18182 npx vite dev --port 15183) &
+python3 CI/wireframe/run.py --gh-run <run id> --dashboard http://127.0.0.1:15183 --traceway http://127.0.0.1:18182
+```
 
 ## End to end against Traceway
 

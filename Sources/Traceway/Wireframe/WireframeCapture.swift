@@ -381,7 +381,10 @@ final class WireframeCapture {
         if wrapper != .identity { scope.transform = scope.transform.then(wrapper) }
         if WireframeCapture.cutsOut(layer) { return }
         guard let p = place(layer, scope) else { return }
-        let info = ClassInfo.of(view)
+        var info = ClassInfo.of(view)
+        // A view backed by a video, Metal or OpenGL layer (`layerClass`)
+        // shows what that layer draws.
+        if info.kind == .plain, case .native = ClassInfo.of(view.layer).kind { info = ClassInfo.of(view.layer) }
         if info.kind == .skip { return }
         if info.kind == .glassShape {
             out.append(glass(id(view), layer, p, scope, dark: view.traitCollection.userInterfaceStyle == .dark))
@@ -550,7 +553,7 @@ final class WireframeCapture {
                 guard let subview = sibling.delegate as? UIView, subview.superview === view else { return false }
                 return ClassInfo.of(subview).isGlassGroup
             }
-            let rest = siblings.filter { sibling in !glassFirst.contains { $0 === sibling } }
+            let rest = WireframeCapture.paintOrder(siblings.filter { sibling in !glassFirst.contains { $0 === sibling } })
             for sibling in glassFirst + rest {
                 guard budget > 0 else { return }
                 if sibling === view.layer {
@@ -564,9 +567,18 @@ final class WireframeCapture {
         visitOwnSublayers(of: view, s, &out)
     }
 
+    /// Sublayers in the order Core Animation paints them: by `zPosition`,
+    /// and in array order (subview order) among equals.
+    static func paintOrder(_ sublayers: [CALayer]) -> [CALayer] {
+        guard sublayers.contains(where: { $0.zPosition != 0 }) else { return sublayers }
+        return sublayers.enumerated().sorted { a, b in
+            a.element.zPosition != b.element.zPosition ? a.element.zPosition < b.element.zPosition : a.offset < b.offset
+        }.map { $0.element }
+    }
+
     private func visitOwnSublayers(of view: UIView, _ s: Scope, _ out: inout [VNode]) {
         guard let sublayers = view.layer.sublayers else { return }
-        for sublayer in sublayers {
+        for sublayer in WireframeCapture.paintOrder(sublayers) {
             guard budget > 0 else { return }
             if let subview = sublayer.delegate as? UIView {
                 if subview.superview === view { visit(subview, s, &out) }
@@ -633,7 +645,7 @@ final class WireframeCapture {
 
     private func visitSublayers(of layer: CALayer, _ s: Scope, _ out: inout [VNode]) {
         guard let sublayers = layer.sublayers else { return }
-        for sublayer in sublayers {
+        for sublayer in WireframeCapture.paintOrder(sublayers) {
             guard budget > 0 else { return }
             if sublayer.delegate is UIView { continue }
             visitLayer(sublayer, s, &out)

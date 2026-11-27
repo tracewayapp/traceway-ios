@@ -197,7 +197,11 @@ struct WireframeAffine: Equatable {
             && abs(c) < WireframeAffine.epsilon && abs(d - 1) < WireframeAffine.epsilon
     }
 
-    var isDegenerate: Bool { abs(a * d - b * c) < 1e-9 || !a.isFinite || !d.isFinite || !tx.isFinite || !ty.isFinite }
+    /// Collapses to nothing or holds a value that is not a number: what it
+    /// maps cannot be placed.
+    var isDegenerate: Bool {
+        !(a.isFinite && b.isFinite && c.isFinite && d.isFinite && tx.isFinite && ty.isFinite) || abs(a * d - b * c) < 1e-9
+    }
 
     func translated(_ x: Double, _ y: Double) -> WireframeAffine {
         WireframeAffine(a: a, b: b, c: c, d: d, tx: tx + a * x + c * y, ty: ty + b * x + d * y)

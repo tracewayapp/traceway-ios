@@ -87,6 +87,11 @@ jobs:
           echo "name=${NAME:-iPhone 16}" >> "$GITHUB_OUTPUT"
           echo "Using simulator: ${NAME:-iPhone 16}"
 
+      # The gallery's `keyboard` scenario records the system keyboard, which
+      # the Simulator only shows while no hardware keyboard is connected.
+      - name: Use the software keyboard
+        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+
       - name: Run XCTest
         env:
           # Passed to the test process as WIREFRAME_GALLERY_OUT: where the

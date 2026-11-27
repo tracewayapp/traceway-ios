@@ -3,27 +3,31 @@ import UIKit
 import XCTest
 @testable import Traceway
 
-/// The wireframe replay gallery: every kind of UIKit and SwiftUI view the
-/// recorder converts, recorded by a real `WireframeRecorder` on its timer
-/// while the scenarios take their screens through their states, like the
-/// Flutter SDK's wireframe suite.
+/// The wireframe replay gallery: the 28 scenarios every Traceway mobile SDK
+/// records (CONTRACT §5.2, the same names on Android), real UIKit and
+/// SwiftUI screens recorded by a real `WireframeRecorder` on its timer while
+/// the scenarios tap, type, scroll, present and navigate.
 ///
-/// At every checkpoint the screen is captured and the window draws its own
-/// picture. The test then checks the recording the way rrweb's replayer
-/// needs it (a Meta and a full snapshot first, time order, every mutation
-/// applies to the page as it is), that each checkpoint's replayed page shows
-/// the texts it expects and none it hides, and that no secret appears
-/// anywhere in the recording.
+/// At every checkpoint the screen is captured, the window draws its own
+/// picture, and the native frames of the labelled views are measured. The
+/// test then checks the recording the way rrweb's replayer needs it (a Meta
+/// and a full snapshot first, time order, every mutation applies to the page
+/// as it is), that each checkpoint's replayed page shows the texts it
+/// expects and none it hides, that pictures are inlined only where the
+/// images policy allows them, and that no secret appears anywhere in the
+/// recording.
 ///
-/// It writes `events.json`, `run.json` and `app/<checkpoint>.png` to
-/// `WIREFRAME_GALLERY_OUT` (default `.build/wireframe-gallery` in the
-/// package), the files `CI/wireframe/run.py` renders in rrweb-player and
-/// compares with what the app drew.
+/// It writes `events.json`, `run.json`, `app/<checkpoint>.png` and
+/// `tree/<checkpoint>.txt` to `WIREFRAME_GALLERY_OUT` (default
+/// `.build/wireframe-gallery` in the package), the files `CI/wireframe/run.py`
+/// renders in rrweb-player and compares with what the app drew, box by box.
+/// `WIREFRAME_GALLERY_ONLY` (comma-separated scenario names) runs some.
 final class WireframeGalleryTests: XCTestCase {
     func testGallery() throws {
         let only = ProcessInfo.processInfo.environment["WIREFRAME_GALLERY_ONLY"]
             .map { Set($0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }) }
         let scenarios = GalleryScenes.all.filter { only == nil || only!.contains($0.id) }
+        XCTAssertEqual(Set(GalleryScenes.all.map(\.id)).count, GalleryScenes.all.count, "scenario names are unique")
         let driver = try GalleryDriver(outDir: GalleryDriver.outputDirectory())
         defer { driver.finish() }
         for scenario in scenarios {
@@ -53,6 +57,11 @@ final class WireframeGalleryTests: XCTestCase {
             for hidden in cp.hides where texts.contains(hidden) {
                 XCTFail("\(cp.name): the replay shows \"\(hidden)\", which it must hide")
             }
+            if let wanted = cp.pictures {
+                let shown = mirror.screen.pictureCount()
+                if wanted && shown == 0 { XCTFail("\(cp.name): no picture is inlined under replay.images = always") }
+                if !wanted && shown > 0 { XCTFail("\(cp.name): \(shown) pictures are inlined under replay.images = off") }
+            }
         }
 
         // 3. No secret anywhere in what would be uploaded.
@@ -68,8 +77,24 @@ final class WireframeGalleryTests: XCTestCase {
 struct GalleryScenario {
     let id: String
     let title: String
+    /// The local `collection` settings the scenario records under: pictures
+    /// stay placeholders unless a scenario asks for them.
+    var collection: [String: Any] = ["replay": ["images": "off"]]
     let build: () -> UIViewController
     let script: (GalleryDriver, UIViewController) -> Void
+}
+
+/// Where a labelled view is on screen at a checkpoint: its frame in window
+/// points (a transformed view's axis-aligned bounds), which the checker
+/// compares with the replayed element whose own text is `text`.
+struct GalleryBox {
+    let text: String
+    let frame: CGRect
+
+    var json: JSON {
+        func r(_ v: CGFloat) -> JSON { JSON((Double(v) * 100).rounded() / 100) }
+        return ["text": .string(text), "x": r(frame.minX), "y": r(frame.minY), "w": r(frame.width), "h": r(frame.height)]
+    }
 }
 
 struct GalleryCheckpoint {
@@ -82,6 +107,10 @@ struct GalleryCheckpoint {
     /// such as a spinner that never stops.
     let ignore: [[Double]]
     let minMutations: Int
+    let boxes: [GalleryBox]
+    /// Whether the replay must inline pictures (true), must not (false), or
+    /// either (nil). Checked in the test only.
+    let pictures: Bool?
 
     var json: JSON {
         [
@@ -92,6 +121,7 @@ struct GalleryCheckpoint {
             "hides": .array(hides.map { .string($0) }),
             "ignore": .array(ignore.map { .array($0.map { JSON($0) }) }),
             "minMutations": JSON(minMutations),
+            "boxes": .array(boxes.map(\.json)),
         ]
     }
 }
@@ -110,8 +140,11 @@ final class GalleryDriver {
     private(set) var secrets: [String] = []
     private(set) var failures: [String] = []
     private(set) var starts: [(id: String, at: Int64)] = []
+    /// The keyboard's frame in the window while it is up, as the recorder
+    /// is told it.
+    private(set) var keyboardFrame: CGRect?
     private var names = Set<String>()
-    private var mutationsAtLast = 0
+    private var observers: [NSObjectProtocol] = []
     private let startedAt = Clock.nowMs()
 
     static func outputDirectory() -> URL {
@@ -140,15 +173,31 @@ final class GalleryDriver {
         window.overrideUserInterfaceStyle = .light
         window.backgroundColor = .systemBackground
         window.rootViewController = UIViewController()
-        window.isHidden = false
+        // Key, as an app's window is: a field in it can bring up the keyboard.
+        window.makeKeyAndVisible()
         recorder = WireframeRecorder(maxFrames: 100_000, fps: 4)
         let shown = window
         recorder.windows = { [shown] }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+                                            queue: .main) { [weak self] note in
+            guard let self = self,
+                  let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            else { return }
+            let local = self.window.convert(frame, from: self.window.screen.coordinateSpace)
+            self.keyboardFrame = local.isEmpty || local.minY >= self.window.bounds.maxY ? nil : local
+        })
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil,
+                                            queue: .main) { [weak self] _ in
+            self?.keyboardFrame = nil
+        })
         recorder.start()
     }
 
     func finish() {
         recorder.stop()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        window.endEditing(true)
         window.isHidden = true
         window.rootViewController = nil
     }
@@ -159,10 +208,31 @@ final class GalleryDriver {
         self.scenario = scenario.id
         starts.append((scenario.id, Clock.nowMs()))
         print("GALLERY_SCENARIO \(scenario.id)")
+        window.endEditing(true)
+        useCollection(scenario.collection)
         let controller = scenario.build()
         window.rootViewController = controller
         settle()
         scenario.script(self, controller)
+        window.endEditing(true)
+    }
+
+    // MARK: - Settings
+
+    /// Applies a local `collection` document the way `Traceway.start` does
+    /// (`TracewayOptions.collection` over the defaults, held at the ceilings
+    /// of an app that captures its screen) and hands the recorder the
+    /// replay settings it gives.
+    func useCollection(_ collection: [String: Any]) {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: collection)
+            let defaults = applyOverlay(defaultSettings(), try parseSettingsDocument(data))
+            let control = ControlState(defaults: defaults, ceilings: ceilingsFrom(screenCapture: true))
+            recorder.imagePolicy = control.settings.replayImages
+            recorder.maskAllInputs = control.settings.replayMaskAllInputs
+        } catch {
+            fail("cannot apply the collection settings \(collection): \(error)")
+        }
     }
 
     // MARK: - Time
@@ -176,6 +246,17 @@ final class GalleryDriver {
         }
     }
 
+    /// Waits until `condition` holds, at most `seconds`.
+    @discardableResult
+    func wait(upTo seconds: TimeInterval, until condition: () -> Bool) -> Bool {
+        let until = Date().addingTimeInterval(seconds)
+        while Date() < until {
+            if condition() { return true }
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return condition()
+    }
+
     /// Lays out and lets animations end.
     func settle(_ seconds: TimeInterval = 0.45) {
         window.layoutIfNeeded()
@@ -185,16 +266,21 @@ final class GalleryDriver {
 
     // MARK: - Checkpoints
 
-    /// Captures the screen as it is now and the window's own picture of it.
+    /// Captures the screen as it is now, the window's own picture of it and
+    /// the frames of its labelled views. A checkpoint taken while something
+    /// moves (`measure: false`) has no boxes: it keeps moving until the
+    /// replay is looked at.
     func checkpoint(
         _ name: String = "", shows: [String] = [], hides: [String] = [],
-        ignore: [CGRect] = [], settle settleSeconds: TimeInterval = 0.45, minMutations: Int = 0
+        ignore: [CGRect] = [], settle settleSeconds: TimeInterval = 0.45, minMutations: Int = 0,
+        measure: Bool = true, unmeasured: Set<String> = [], pictures: Bool? = nil
     ) {
         let full = name.isEmpty ? scenario : "\(scenario)-\(name)"
         if !names.insert(full).inserted { failures.append("checkpoint \(full) twice") }
         settle(settleSeconds)
         recorder.captureNow()
         let at = Clock.nowMs()
+        let boxes = measure ? labelledBoxes(leavingOut: unmeasured) : []
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
@@ -212,9 +298,9 @@ final class GalleryDriver {
         checkpoints.append(GalleryCheckpoint(
             name: full, scenario: scenario, at: at, shows: shows, hides: hides,
             ignore: ignore.map { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] },
-            minMutations: minMutations
+            minMutations: minMutations, boxes: boxes, pictures: pictures
         ))
-        print("GALLERY_CHECKPOINT \(full) \(at)")
+        print("GALLERY_CHECKPOINT \(full) \(at) boxes=\(boxes.count)")
         writeTree(full)
         // The next step starts after the moment the replay is looked at.
         wait(Double(GalleryDriver.sampleMs) / 1000 + 0.2)
@@ -224,6 +310,55 @@ final class GalleryDriver {
     func secret(_ text: String) { secrets.append(text) }
 
     func fail(_ message: String) { failures.append("\(scenario): \(message)") }
+
+    /// The visible labels (and text layers) whose text no other visible
+    /// label shows, with their frames on screen. Left out: text under a
+    /// privacy mask, in fields, in controls the wireframe draws from their
+    /// state (a segmented control's titles), secrets, and `leavingOut`.
+    private func labelledBoxes(leavingOut: Set<String>) -> [GalleryBox] {
+        let root = window.layer.presentation() ?? window.layer
+        var found: [GalleryBox] = []
+        var counts: [String: Int] = [:]
+
+        func frame(of model: CALayer) -> CGRect {
+            let layer = model.presentation() ?? model
+            return layer.convert(layer.bounds, to: root)
+        }
+
+        func consider(_ text: String, _ rect: CGRect, clip: CGRect, measured: Bool) {
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  rect.width > 0, rect.height > 0, rect.intersects(clip) else { return }
+            counts[text, default: 0] += 1
+            if measured { found.append(GalleryBox(text: text, frame: rect)) }
+        }
+
+        func walk(_ view: UIView, clip: CGRect, measured: Bool) {
+            let layer = view.layer.presentation() ?? view.layer
+            guard !view.isHidden, view.alpha > 0.01, !layer.isHidden, layer.opacity > 0.01 else { return }
+            let rect = frame(of: view.layer)
+            let measured = measured && view.tracewayPrivacyMask == nil
+                && !(view is UITextField || view is UITextView || view is UISegmentedControl || view is UIStepper
+                    || view is UISwitch || view is UIPageControl || view is UISlider)
+                && !NSStringFromClass(type(of: view)).contains("Hosting")
+            var clip = clip
+            if view.clipsToBounds || layer.masksToBounds { clip = clip.intersection(rect) }
+            if let label = view as? UILabel {
+                consider(label.attributedText?.string ?? label.text ?? "", rect, clip: clip, measured: measured)
+            }
+            for sublayer in view.layer.sublayers ?? [] where sublayer.delegate == nil {
+                guard let text = sublayer as? CATextLayer, !text.isHidden, text.opacity > 0.01 else { continue }
+                let raw = (text.string as? String) ?? (text.string as? NSAttributedString)?.string ?? ""
+                consider(raw, frame(of: text), clip: clip, measured: measured)
+            }
+            for subview in view.subviews { walk(subview, clip: clip, measured: measured) }
+        }
+
+        walk(window, clip: window.bounds, measured: true)
+        return found.filter { box in
+            counts[box.text] == 1 && !leavingOut.contains(box.text)
+                && !secrets.contains { box.text.contains($0) }
+        }
+    }
 
     // MARK: - Gestures
 
@@ -285,8 +420,12 @@ final class GalleryDriver {
     func type(_ text: String, into field: UITextField) {
         tap(field)
         for character in text {
-            field.text = (field.text ?? "") + String(character)
-            field.sendActions(for: .editingChanged)
+            if field.isFirstResponder {
+                field.insertText(String(character))
+            } else {
+                field.text = (field.text ?? "") + String(character)
+                field.sendActions(for: .editingChanged)
+            }
             wait(0.12)
         }
     }
@@ -333,6 +472,7 @@ final class GalleryDriver {
             parts.append(String(format: "frame=(%.1f,%.1f %.1fx%.1f)", frame.minX, frame.minY, frame.width, frame.height))
             if layer.isHidden { parts.append("hidden") }
             if layer.opacity < 1 { parts.append(String(format: "opacity=%.2f", layer.opacity)) }
+            if layer.zPosition != 0 { parts.append(String(format: "z=%.1f", layer.zPosition)) }
             if layer.backgroundColor != nil { parts.append("bg=" + color(layer.backgroundColor)) }
             if layer.cornerRadius > 0 { parts.append(String(format: "radius=%.1f curve=%@", layer.cornerRadius, layer.cornerCurve.rawValue)) }
             if layer.masksToBounds { parts.append("clips") }
@@ -370,12 +510,15 @@ final class GalleryDriver {
 
     func write(events: [JSON]) throws {
         try Data(JSON.array(events).encoded().utf8).write(to: outDir.appendingPathComponent("events.json"))
+        let environment = ProcessInfo.processInfo.environment
         let run: JSON = [
-            "platform": "ios-simulator",
-            "device": .string(UIDevice.current.model),
+            "platform": "ios",
+            "device": .string(environment["SIMULATOR_DEVICE_NAME"] ?? UIDevice.current.model),
+            "model": .string(environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""),
             "os": .string(UIDevice.current.systemVersion),
             "width": JSON(Double(size.width)),
             "height": JSON(Double(size.height)),
+            "density": JSON(Double(window.screen.scale)),
             "startedAt": JSON(startedAt),
             "sampleMs": JSON(GalleryDriver.sampleMs),
             "checkpoints": .array(checkpoints.map { $0.json }),
@@ -384,6 +527,26 @@ final class GalleryDriver {
         ]
         try Data(run.encoded().utf8).write(to: outDir.appendingPathComponent("run.json"))
         print("GALLERY_OUT \(outDir.path)")
+    }
+}
+
+extension DomNode {
+    /// How many inlined pictures the page shows: elements with a picture
+    /// class (`im p<N>`) whose rule is on the page.
+    func pictureCount() -> Int {
+        var rules = Set<String>()
+        var shown: [String] = []
+        func walk(_ node: DomNode) {
+            if node.tag == "style", let css = node.attributes["_cssText"], css.hasPrefix(".im.p"),
+               let end = css.firstIndex(of: "{") {
+                rules.insert(String(css[css.index(css.startIndex, offsetBy: 4)..<end]))
+            }
+            let classes = (node.attributes["class"] ?? "").split(separator: " ").map(String.init)
+            if classes.contains("im") { shown.append(contentsOf: classes.filter { $0.hasPrefix("p") }) }
+            node.children.forEach(walk)
+        }
+        walk(self)
+        return shown.filter { rules.contains($0) }.count
     }
 }
 #endif

@@ -1,14 +1,18 @@
 #if canImport(UIKit)
 import SwiftUI
 import UIKit
-import WebKit
 @testable import Traceway
 
-/// The scenarios of the wireframe gallery, in the order it visits them.
+/// The scenarios of the wireframe gallery, in the order it visits them: the
+/// 28 of CONTRACT §5.2, with the same names as the Android gallery. Every
+/// text of a scenario is unique on its screen, so the checker can find the
+/// replayed element of each measured label by its text.
 enum GalleryScenes {
     static let all: [GalleryScenario] = [
-        layout, text, buttons, controls, forms, images, table, collection,
-        navigation, tabs, alerts, sheet, privacy, swiftUI, native, motion,
+        layout, positioning, transforms, clipping, stacks, constraints,
+        text, richText, buttons, controls, forms, keyboard, images, imagesOff,
+        lists, grids, carousel, navigation, tabs, dialogs, sheets, menus,
+        privacy, declarative, native, motion, rtl, darkMode,
     ]
 
     // MARK: - Helpers
@@ -70,12 +74,61 @@ enum GalleryScenes {
         }
     }
 
+    /// A board: a title over a canvas whose views are placed by their own
+    /// frames (or constraints inside them), for scenarios about geometry.
+    final class Board: UIViewController {
+        let heading: String
+        let canvas = UIView()
+        private let title = UILabel()
+
+        init(_ heading: String) {
+            self.heading = heading
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .systemBackground
+            title.text = heading
+            title.font = .systemFont(ofSize: 28, weight: .bold)
+            view.addSubview(title)
+            view.addSubview(canvas)
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            let top = view.safeAreaInsets.top
+            title.frame = CGRect(x: 20, y: top + 12, width: view.bounds.width - 40, height: 34)
+            canvas.frame = CGRect(x: 0, y: top + 60, width: view.bounds.width, height: view.bounds.height - top - 60)
+        }
+
+        /// Adds `view` to the canvas at `frame`.
+        @discardableResult
+        func place<V: UIView>(_ view: V, _ frame: CGRect) -> V {
+            view.frame = frame
+            canvas.addSubview(view)
+            return view
+        }
+    }
+
     static func label(_ text: String, size: CGFloat = 17, weight: UIFont.Weight = .regular, color: UIColor = .label) -> UILabel {
         let label = UILabel()
         label.text = text
         label.font = .systemFont(ofSize: size, weight: weight)
         label.textColor = color
         return label
+    }
+
+    /// A label with a fill behind its centered text, as a chip.
+    static func chip(_ text: String, _ color: UIColor, height: CGFloat = 36) -> UILabel {
+        let chip = label(text, size: 15, weight: .semibold, color: .white)
+        chip.backgroundColor = color
+        chip.textAlignment = .center
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return chip
     }
 
     static func box(_ color: UIColor, _ text: String? = nil, size: CGSize) -> UIView {
@@ -96,6 +149,20 @@ enum GalleryScenes {
         return view
     }
 
+    /// A box placed by its bounds and center (so a transform turns it about
+    /// its center) with a label filling it.
+    static func tile(_ color: UIColor, _ text: String, size: CGSize, center: CGPoint, fontSize: CGFloat = 13) -> UIView {
+        let view = UIView()
+        view.backgroundColor = color
+        view.bounds = CGRect(origin: .zero, size: size)
+        view.center = center
+        let title = label(text, size: fontSize, weight: .semibold, color: .white)
+        title.textAlignment = .center
+        title.frame = view.bounds
+        view.addSubview(title)
+        return view
+    }
+
     /// A picture the app made itself: a gradient with a sun, like a photo.
     static let photo: UIImage = {
         let size = CGSize(width: 240, height: 150)
@@ -112,13 +179,52 @@ enum GalleryScenes {
         }
     }()
 
-    // MARK: - Layout: boxes, corners, borders, shadows, gradients, transforms
+    /// A second picture: a sunset in warm colors.
+    static let sunset: UIImage = {
+        let size = CGSize(width: 200, height: 200)
+        return UIGraphicsImageRenderer(size: size).image { context in
+            let colors = [UIColor(red: 0.98, green: 0.55, blue: 0.25, alpha: 1).cgColor,
+                          UIColor(red: 0.55, green: 0.2, blue: 0.45, alpha: 1).cgColor]
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
+                context.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+            }
+            UIColor(red: 1, green: 0.92, blue: 0.5, alpha: 1).setFill()
+            UIBezierPath(ovalIn: CGRect(x: 70, y: 110, width: 60, height: 60)).fill()
+            UIColor(red: 0.15, green: 0.12, blue: 0.3, alpha: 1).setFill()
+            UIRectFill(CGRect(x: 0, y: 150, width: size.width, height: 50))
+        }
+    }()
+
+    static func spinnerRect(_ controller: UIViewController) -> CGRect {
+        guard let spinner = find(UIActivityIndicatorView.self, in: controller.view) else { return .zero }
+        return spinner.convert(spinner.bounds, to: nil).insetBy(dx: -4, dy: -4)
+    }
+
+    static func find<T: UIView>(_ type: T.Type, in view: UIView) -> T? {
+        if let match = view as? T { return match }
+        for subview in view.subviews {
+            if let match = find(type, in: subview) { return match }
+        }
+        return nil
+    }
+
+    /// The label showing `text` in `view`, if one does.
+    static func find(label text: String, in view: UIView) -> UILabel? {
+        if let label = view as? UILabel, label.text == text { return label }
+        for subview in view.subviews {
+            if let match = find(label: text, in: subview) { return match }
+        }
+        return nil
+    }
+
+    // MARK: - 1 layout: fills, borders, corners, shadows, gradients, opacity, hidden
 
     static let layout = GalleryScenario(id: "layout", title: "Layout", build: {
         let page = Page("Layout")
         page.loadViewIfNeeded()
         let card = box(.systemBlue, "Card", size: CGSize(width: 150, height: 90))
         card.layer.cornerRadius = 16
+        card.tag = 1301
         let bordered = box(.systemBackground, nil, size: CGSize(width: 150, height: 90))
         bordered.layer.borderWidth = 2
         bordered.layer.borderColor = UIColor.systemRed.cgColor
@@ -137,16 +243,32 @@ enum GalleryScenes {
         let shadowLabel = label("Shadow", size: 15)
         shadowLabel.frame = CGRect(x: 12, y: 24, width: 120, height: 20)
         shadow.addSubview(shadowLabel)
-        let gradient = GradientView()
+        let gradient = GradientView(type: .axial, text: "Gradient")
         gradient.translatesAutoresizingMaskIntoConstraints = false
         gradient.widthAnchor.constraint(equalToConstant: 150).isActive = true
         gradient.heightAnchor.constraint(equalToConstant: 70).isActive = true
         page.row([shadow, gradient])
 
+        let radial = GradientView(type: .radial, text: "Radial")
+        radial.translatesAutoresizingMaskIntoConstraints = false
+        radial.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        radial.heightAnchor.constraint(equalToConstant: 70).isActive = true
+        // One side only: a layer the app adds along the bottom edge.
+        let underlined = box(.systemGray6, nil, size: CGSize(width: 150, height: 50))
+        let edge = CALayer()
+        edge.backgroundColor = UIColor.systemRed.cgColor
+        edge.frame = CGRect(x: 0, y: 47, width: 150, height: 3)
+        underlined.layer.addSublayer(edge)
+        let edgeLabel = label("Bottom border", size: 15)
+        edgeLabel.frame = CGRect(x: 12, y: 14, width: 130, height: 20)
+        underlined.addSubview(edgeLabel)
+        page.row([radial, underlined])
+
         let rotated = box(.systemOrange, "Rotated", size: CGSize(width: 110, height: 44))
         rotated.transform = CGAffineTransform(rotationAngle: .pi / 12)
         let faded = box(.systemPurple, "Faded", size: CGSize(width: 110, height: 44))
         faded.alpha = 0.5
+        faded.tag = 1302
         let corners = box(.systemTeal, "Corners", size: CGSize(width: 110, height: 44))
         corners.layer.cornerRadius = 18
         corners.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMaxYCorner]
@@ -164,31 +286,44 @@ enum GalleryScenes {
         shapes.translatesAutoresizingMaskIntoConstraints = false
         page.add(shapes, height: 70)
 
-        let hidden = label("Hidden text", size: 15)
+        let hidden = label("Revealed later", size: 15)
         hidden.isHidden = true
+        hidden.tag = 1303
         let transparent = label("Transparent text", size: 15)
         transparent.alpha = 0
         page.row([hidden, transparent, label("Visible text", size: 15)])
         return page
-    }, script: { d, _ in
-        d.checkpoint(shows: ["Layout", "Card", "Bordered", "Shadow", "Rotated", "Faded", "Corners", "Gradient",
-                             "Visible text"],
-                     hides: ["Hidden text", "Transparent text"])
+    }, script: { d, controller in
+        d.checkpoint(shows: ["Layout", "Card", "Bordered", "Shadow", "Gradient", "Radial", "Bottom border", "Rotated",
+                             "Faded", "Corners", "Text layer", "Visible text"],
+                     hides: ["Revealed later", "Transparent text"])
+        let view = controller.view!
+        view.viewWithTag(1301)?.backgroundColor = .systemGreen
+        view.viewWithTag(1302)?.alpha = 1
+        view.viewWithTag(1303)?.isHidden = false
+        d.checkpoint("changed", shows: ["Revealed later", "Card", "Faded"], hides: ["Transparent text"])
     })
 
     final class GradientView: UIView {
         override class var layerClass: AnyClass { CAGradientLayer.self }
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
+        init(type: CAGradientLayerType, text: String) {
+            super.init(frame: .zero)
             let layer = self.layer as! CAGradientLayer
-            layer.colors = [UIColor.systemPink.cgColor, UIColor.systemYellow.cgColor]
-            layer.startPoint = CGPoint(x: 0, y: 0.5)
-            layer.endPoint = CGPoint(x: 1, y: 0.5)
+            layer.type = type
+            if type == .radial {
+                layer.colors = [UIColor.systemYellow.cgColor, UIColor.systemRed.cgColor]
+                layer.startPoint = CGPoint(x: 0.5, y: 0.5)
+                layer.endPoint = CGPoint(x: 1, y: 1)
+            } else {
+                layer.colors = [UIColor.systemPink.cgColor, UIColor.systemYellow.cgColor]
+                layer.startPoint = CGPoint(x: 0, y: 0.5)
+                layer.endPoint = CGPoint(x: 1, y: 0.5)
+            }
             layer.cornerRadius = 12
-            let text = GalleryScenes.label("Gradient", size: 15, weight: .semibold, color: .white)
-            text.frame = CGRect(x: 12, y: 24, width: 120, height: 20)
-            addSubview(text)
+            let title = GalleryScenes.label(text, size: 15, weight: .semibold, color: .white)
+            title.frame = CGRect(x: 12, y: 24, width: 90, height: 20)
+            addSubview(title)
         }
 
         required init?(coder: NSCoder) { fatalError("not used") }
@@ -222,667 +357,360 @@ enum GalleryScenes {
         required init?(coder: NSCoder) { fatalError("not used") }
     }
 
-    // MARK: - Text
+    // MARK: - 2 positioning: alignment grid, margins and padding, nesting, z-order
 
-    static let text = GalleryScenario(id: "text", title: "Text", build: {
-        let page = Page("Text")
-        page.loadViewIfNeeded()
-        page.add(label("Large Title", size: 34, weight: .bold))
-        page.add(label("Headline semibold", size: 17, weight: .semibold))
-        page.add(label("Body regular text", size: 17))
-        page.add(label("Footnote in secondary", size: 13, color: .secondaryLabel))
-        let italic = UILabel()
-        italic.text = "Italic serif-less"
-        italic.font = UIFont.italicSystemFont(ofSize: 17)
-        page.add(italic)
-        let mono = UILabel()
-        mono.text = "let code = 42"
-        mono.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
-        page.add(mono)
-        let centered = label("Centered line", size: 17)
-        centered.textAlignment = .center
-        page.add(centered)
-        let right = label("Right aligned", size: 17)
-        right.textAlignment = .right
-        page.add(right)
-        let wrapped = label("A long paragraph that wraps over several lines, the way a description or a message "
-            + "body does in most apps, and keeps going for a while.", size: 15)
-        wrapped.numberOfLines = 0
-        page.add(wrapped)
-        let truncated = label("A single line far too long for its width ends with an ellipsis here", size: 17)
-        truncated.lineBreakMode = .byTruncatingTail
-        page.add(truncated)
-        let rich = UILabel()
-        let attributed = NSMutableAttributedString(string: "Rich ", attributes: [.font: UIFont.systemFont(ofSize: 17)])
-        attributed.append(NSAttributedString(string: "bold", attributes: [.font: UIFont.boldSystemFont(ofSize: 17)]))
-        attributed.append(NSAttributedString(string: " red", attributes: [.foregroundColor: UIColor.systemRed]))
-        attributed.append(NSAttributedString(string: " underlined", attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]))
-        attributed.append(NSAttributedString(string: " struck", attributes: [.strikethroughStyle: NSUnderlineStyle.single.rawValue]))
-        rich.attributedText = attributed
-        page.add(rich)
-        let rtl = label("שלום עולם", size: 17)
-        rtl.semanticContentAttribute = .forceRightToLeft
-        rtl.textAlignment = .natural
-        page.add(rtl)
-        let emoji = label("Emoji 🎉 and ümlauts", size: 17)
-        page.add(emoji)
-        return page
-    }, script: { d, _ in
-        d.checkpoint(shows: ["Large Title", "Headline semibold", "Body regular text", "Footnote in secondary",
-                             "Italic serif-less", "let code = 42", "Centered line", "Right aligned", "bold", " red",
-                             "שלום עולם", "Emoji 🎉 and ümlauts"])
-    })
-
-    // MARK: - Buttons
-
-    static let buttons = GalleryScenario(id: "buttons", title: "Buttons", build: {
-        let page = Page("Buttons")
-        page.loadViewIfNeeded()
-        let system = UIButton(type: .system)
-        system.setTitle("System button", for: .normal)
-        page.add(system)
-        var filled = UIButton.Configuration.filled()
-        filled.title = "Filled"
-        var tinted = UIButton.Configuration.tinted()
-        tinted.title = "Tinted"
-        var gray = UIButton.Configuration.gray()
-        gray.title = "Gray"
-        page.row([UIButton(configuration: filled), UIButton(configuration: tinted), UIButton(configuration: gray)])
-        var bordered = UIButton.Configuration.bordered()
-        bordered.title = "Bordered"
-        bordered.image = UIImage(systemName: "star.fill")
-        bordered.imagePadding = 6
-        var capsule = UIButton.Configuration.borderedProminent()
-        capsule.title = "Prominent capsule"
-        capsule.cornerStyle = .capsule
-        page.row([UIButton(configuration: bordered), UIButton(configuration: capsule)])
-        let destructive = UIButton(type: .system)
-        destructive.setTitle("Delete", for: .normal)
-        destructive.setTitleColor(.systemRed, for: .normal)
-        let disabled = UIButton(type: .system)
-        disabled.setTitle("Disabled", for: .normal)
-        disabled.isEnabled = false
-        let icon = UIButton(type: .system)
-        icon.setImage(UIImage(systemName: "heart.fill"), for: .normal)
-        let info = UIButton(type: .infoLight)
-        let add = UIButton(type: .contactAdd)
-        page.row([destructive, disabled, icon, info, add])
-        let custom = UIButton(type: .custom)
-        custom.setTitle("Custom", for: .normal)
-        custom.setTitleColor(.white, for: .normal)
-        custom.backgroundColor = .systemIndigo
-        custom.layer.cornerRadius = 10
-        custom.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        page.add(custom)
-        if #available(iOS 26.0, *) {
-            var glass = UIButton.Configuration.glass()
-            glass.title = "Glass"
-            var prominent = UIButton.Configuration.prominentGlass()
-            prominent.title = "Prominent glass"
-            page.row([UIButton(configuration: glass), UIButton(configuration: prominent)])
-        }
-        let counter = label("Tapped 0 times", size: 15, color: .secondaryLabel)
-        counter.tag = 1007
-        page.add(counter)
-        return page
-    }, script: { d, controller in
-        d.checkpoint(shows: ["System button", "Filled", "Tinted", "Gray", "Bordered", "Prominent capsule", "Delete",
-                             "Disabled", "Custom", "Tapped 0 times"])
-        let page = controller as! Page
-        guard let counter = page.view.viewWithTag(1007) as? UILabel,
-              let custom = page.stack.arrangedSubviews.compactMap({ $0 as? UIButton })
-              .first(where: { $0.title(for: .normal) == "Custom" }) else { return d.fail("no counter") }
-        d.tap(custom) { counter.text = "Tapped 1 times" }
-        d.checkpoint("tapped", shows: ["Tapped 1 times"], hides: ["Tapped 0 times"])
-    })
-
-    // MARK: - Controls
-
-    static let controls = GalleryScenario(id: "controls", title: "Controls", build: {
-        let page = Page("Controls")
-        page.loadViewIfNeeded()
-        let on = UISwitch()
-        on.isOn = true
-        let off = UISwitch()
-        off.tag = 1001
-        let tinted = UISwitch()
-        tinted.isOn = true
-        tinted.onTintColor = .systemOrange
-        page.row([label("Switches", size: 17), on, off, tinted])
-        let slider = UISlider()
-        slider.value = 0.3
-        slider.tag = 1002
-        page.add(slider)
-        let segmented = UISegmentedControl(items: ["First", "Second", "Third"])
-        segmented.selectedSegmentIndex = 0
-        segmented.tag = 1003
-        page.add(segmented)
-        let stepper = UIStepper()
-        stepper.value = 2
-        stepper.tag = 1004
-        let stepperLabel = label("Value 2", size: 17)
-        stepperLabel.tag = 1005
-        page.row([stepperLabel, stepper])
-        let progress = UIProgressView(progressViewStyle: .default)
-        progress.progress = 0.4
-        progress.tag = 1006
-        page.add(progress)
-        let spinner = UIActivityIndicatorView(style: .medium)
-        spinner.startAnimating()
-        let pages = UIPageControl()
-        pages.numberOfPages = 5
-        pages.currentPage = 1
-        page.row([spinner, pages])
-        let picker = UIDatePicker()
-        picker.datePickerMode = .date
-        picker.preferredDatePickerStyle = .compact
-        picker.date = Date(timeIntervalSince1970: 1_767_225_600)
-        page.row([label("Date", size: 17), picker])
-        return page
-    }, script: { d, controller in
-        d.checkpoint(shows: ["Switches", "First", "Second", "Third", "Value 2", "Date"],
-                     ignore: [spinnerRect(controller)])
-        let page = controller as! Page
-        let off = page.view.viewWithTag(1001) as! UISwitch
-        d.tap(off) { off.setOn(true, animated: true) }
-        let segmented = page.view.viewWithTag(1003) as! UISegmentedControl
-        let third = CGPoint(x: segmented.bounds.width * 5 / 6, y: segmented.bounds.midY)
-        d.tap(at: segmented.convert(third, to: d.window)) { segmented.selectedSegmentIndex = 2 }
-        let stepper = page.view.viewWithTag(1004) as! UIStepper
-        let stepperLabel = page.view.viewWithTag(1005) as! UILabel
-        d.tap(at: stepper.convert(CGPoint(x: stepper.bounds.width * 0.75, y: stepper.bounds.midY), to: d.window)) {
-            stepper.value = 3
-            stepperLabel.text = "Value 3"
-        }
-        let slider = page.view.viewWithTag(1002) as! UISlider
-        let track = slider.trackRect(forBounds: slider.bounds)
-        let from = slider.convert(CGPoint(x: track.minX + track.width * 0.3, y: track.midY), to: d.window)
-        let to = slider.convert(CGPoint(x: track.minX + track.width * 0.8, y: track.midY), to: d.window)
-        d.drag(from: from, to: to, seconds: 0.4) { f in slider.value = Float(0.3 + 0.5 * f) }
-        (page.view.viewWithTag(1006) as! UIProgressView).progress = 0.9
-        d.checkpoint("changed", shows: ["Value 3", "Third"], hides: ["Value 2"], ignore: [spinnerRect(controller)])
-    })
-
-    static func spinnerRect(_ controller: UIViewController) -> CGRect {
-        guard let spinner = find(UIActivityIndicatorView.self, in: controller.view) else { return .zero }
-        return spinner.convert(spinner.bounds, to: nil).insetBy(dx: -4, dy: -4)
-    }
-
-    static func find<T: UIView>(_ type: T.Type, in view: UIView) -> T? {
-        if let match = view as? T { return match }
-        for subview in view.subviews {
-            if let match = find(type, in: subview) { return match }
-        }
-        return nil
-    }
-
-    // MARK: - Forms
-
-    static let forms = GalleryScenario(id: "forms", title: "Forms", build: {
-        let page = Page("Forms")
-        page.loadViewIfNeeded()
-        let name = UITextField()
-        name.placeholder = "Your name"
-        name.borderStyle = .roundedRect
-        name.tag = 1201
-        page.add(name, height: 36)
-        let email = UITextField()
-        email.text = "jane@example.com"
-        email.borderStyle = .roundedRect
-        let at = UIImageView(image: UIImage(systemName: "envelope"))
-        at.tintColor = .secondaryLabel
-        email.leftView = at
-        email.leftViewMode = .always
-        page.add(email, height: 36)
-        let password = UITextField()
-        password.isSecureTextEntry = true
-        password.text = "hunter22"
-        password.borderStyle = .roundedRect
-        page.add(password, height: 36)
-        let line = UITextField()
-        line.placeholder = "Line border"
-        line.borderStyle = .line
-        page.add(line, height: 36)
-        let plain = UITextField()
-        plain.placeholder = "No border"
-        page.add(plain, height: 36)
-        let notes = UITextView()
-        notes.text = "Private notes typed by the user"
-        notes.font = .systemFont(ofSize: 15)
-        notes.layer.borderColor = UIColor.separator.cgColor
-        notes.layer.borderWidth = 1
-        notes.layer.cornerRadius = 8
-        page.add(notes, height: 80)
-        let terms = UITextView()
-        terms.text = "Read-only terms of service are shown as they are."
-        terms.isEditable = false
-        terms.font = .systemFont(ofSize: 15)
-        page.add(terms, height: 50)
-        return page
-    }, script: { d, controller in
-        d.secret("jane@example.com")
-        d.secret("hunter22")
-        d.secret("Private notes typed by the user")
-        d.secret("Ada Lovelace")
-        d.checkpoint(shows: ["Your name", "Line border", "No border", "Read-only terms of service are shown as they are."],
-                     hides: ["jane@example.com", "hunter22"])
-        let name = (controller as! Page).view.viewWithTag(1201) as! UITextField
-        d.type("Ada Lovelace", into: name)
-        d.checkpoint("filled", shows: ["*** ********"], hides: ["Your name", "Ada Lovelace"])
-    })
-
-    // MARK: - Images
-
-    static let images = GalleryScenario(id: "images", title: "Images", build: {
-        let page = Page("Images")
-        page.loadViewIfNeeded()
-        let photo = UIImageView(image: GalleryScenes.photo)
-        photo.contentMode = .scaleAspectFill
-        photo.clipsToBounds = true
-        photo.layer.cornerRadius = 12
-        let badge = label("Badge over a photo", size: 13, weight: .semibold, color: .white)
-        badge.backgroundColor = UIColor.black.withAlphaComponent(0.5)
-        badge.frame = CGRect(x: 10, y: 10, width: 150, height: 22)
-        photo.addSubview(badge)
-        page.add(photo, height: 150)
-        var symbols: [UIView] = []
-        for (name, color) in [("star.fill", UIColor.systemYellow), ("heart.fill", .systemRed), ("bell", .systemBlue),
-                              ("gearshape.fill", .systemGray), ("person.crop.circle", .systemGreen),
-                              ("chevron.right", .tertiaryLabel)] {
-            let view = UIImageView(image: UIImage(systemName: name))
-            view.tintColor = color
-            view.contentMode = .scaleAspectFit
-            view.widthAnchor.constraint(equalToConstant: 32).isActive = true
-            view.heightAnchor.constraint(equalToConstant: 32).isActive = true
-            symbols.append(view)
-        }
-        page.row(symbols, spacing: 16)
-        let big = UIImageView(image: UIImage(systemName: "cloud.sun.rain.fill"))
-        big.tintColor = .systemCyan
-        big.contentMode = .scaleAspectFit
-        big.widthAnchor.constraint(equalToConstant: 80).isActive = true
-        big.heightAnchor.constraint(equalToConstant: 80).isActive = true
-        let multicolor = UIImageView(image: UIImage(systemName: "sun.max.fill")?
-            .withConfiguration(UIImage.SymbolConfiguration(paletteColors: [.systemOrange])))
-        multicolor.contentMode = .scaleAspectFit
-        multicolor.widthAnchor.constraint(equalToConstant: 60).isActive = true
-        multicolor.heightAnchor.constraint(equalToConstant: 60).isActive = true
-        let template = UIImageView(image: GalleryScenes.photo.withRenderingMode(.alwaysTemplate))
-        template.tintColor = .systemPurple
-        template.widthAnchor.constraint(equalToConstant: 96).isActive = true
-        template.heightAnchor.constraint(equalToConstant: 60).isActive = true
-        page.row([big, multicolor, template], spacing: 20)
-        page.add(label("Symbols keep their shape", size: 15, color: .secondaryLabel))
-        return page
-    }, script: { d, _ in
-        d.checkpoint(shows: ["Images", "Badge over a photo", "Symbols keep their shape"])
-    })
-
-    // MARK: - Table
-
-    final class TableController: UITableViewController {
-        override func viewDidLoad() {
-            super.viewDidLoad()
-            tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
-        }
-
-        override func numberOfSections(in tableView: UITableView) -> Int { 3 }
-
-        override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 20 }
-
-        override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-            "Section \(section + 1)"
-        }
-
-        override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
-            var content = cell.defaultContentConfiguration()
-            content.text = String(format: "Row %d.%02d", indexPath.section + 1, indexPath.row + 1)
-            content.secondaryText = indexPath.row % 3 == 0 ? "Detail text" : nil
-            content.image = indexPath.row % 4 == 0 ? UIImage(systemName: "folder") : nil
-            cell.contentConfiguration = content
-            cell.accessoryType = indexPath.row % 2 == 0 ? .disclosureIndicator : .checkmark
-            return cell
-        }
-    }
-
-    static let table = GalleryScenario(id: "table", title: "Table", build: {
-        TableController(style: .insetGrouped)
-    }, script: { d, controller in
-        let table = (controller as! UITableViewController).tableView!
-        d.checkpoint(shows: ["Section 1", "Row 1.01", "Row 1.02", "Detail text"])
-        d.scroll(table, to: CGPoint(x: 0, y: table.contentOffset.y + 600))
-        d.checkpoint("scrolled", shows: ["Row 1.15"], hides: ["Row 1.01"])
-        // Cells size themselves: the content's height is only known once
-        // the last rows were laid out.
-        let last = IndexPath(row: 19, section: 2)
-        table.scrollToRow(at: last, at: .bottom, animated: false)
-        table.layoutIfNeeded()
-        let bottom = table.contentOffset
-        table.contentOffset = CGPoint(x: 0, y: bottom.y - 900)
-        d.scroll(table, to: bottom, seconds: 0.8)
-        d.checkpoint("bottom", shows: ["Row 3.18"], hides: ["Row 1.01"])
-        d.scroll(table, to: CGPoint(x: 0, y: -table.adjustedContentInset.top), seconds: 0.8)
-        d.checkpoint("top", shows: ["Row 1.01"], hides: ["Row 3.18"])
-    })
-
-    // MARK: - Collection
-
-    final class CollectionController: UICollectionViewController {
-        init() {
-            let layout = UICollectionViewCompositionalLayout { section, _ in
-                if section == 0 {
-                    let item = NSCollectionLayoutItem(layoutSize: .init(widthDimension: .absolute(120), heightDimension: .absolute(80)))
-                    let group = NSCollectionLayoutGroup.horizontal(
-                        layoutSize: .init(widthDimension: .absolute(120), heightDimension: .absolute(80)), subitems: [item])
-                    let section = NSCollectionLayoutSection(group: group)
-                    section.orthogonalScrollingBehavior = .continuous
-                    section.interGroupSpacing = 10
-                    section.contentInsets = .init(top: 10, leading: 16, bottom: 10, trailing: 16)
-                    return section
+    static let positioning = GalleryScenario(id: "positioning", title: "Positioning", build: {
+        let board = Board("Positioning")
+        board.loadViewIfNeeded()
+        let grid = board.place(UIView(), CGRect(x: 20, y: 0, width: 260, height: 150))
+        grid.backgroundColor = .systemGray6
+        grid.layer.cornerRadius = 10
+        let names = [["TL", "TC", "TR"], ["ML", "MC", "MR"], ["BL", "BC", "BR"]]
+        for (row, line) in names.enumerated() {
+            for (column, name) in line.enumerated() {
+                let cell = label(name, size: 13, weight: .semibold)
+                cell.translatesAutoresizingMaskIntoConstraints = false
+                grid.addSubview(cell)
+                let x: NSLayoutConstraint
+                switch column {
+                case 0: x = cell.leadingAnchor.constraint(equalTo: grid.leadingAnchor, constant: 8)
+                case 1: x = cell.centerXAnchor.constraint(equalTo: grid.centerXAnchor)
+                default: x = cell.trailingAnchor.constraint(equalTo: grid.trailingAnchor, constant: -8)
                 }
-                let item = NSCollectionLayoutItem(layoutSize: .init(widthDimension: .fractionalWidth(1 / 3), heightDimension: .fractionalHeight(1)))
-                item.contentInsets = .init(top: 4, leading: 4, bottom: 4, trailing: 4)
-                let group = NSCollectionLayoutGroup.horizontal(
-                    layoutSize: .init(widthDimension: .fractionalWidth(1), heightDimension: .absolute(110)), subitems: [item])
-                let section = NSCollectionLayoutSection(group: group)
-                section.contentInsets = .init(top: 0, leading: 12, bottom: 0, trailing: 12)
-                return section
+                let y: NSLayoutConstraint
+                switch row {
+                case 0: y = cell.topAnchor.constraint(equalTo: grid.topAnchor, constant: 8)
+                case 1: y = cell.centerYAnchor.constraint(equalTo: grid.centerYAnchor)
+                default: y = cell.bottomAnchor.constraint(equalTo: grid.bottomAnchor, constant: -8)
+                }
+                NSLayoutConstraint.activate([x, y])
             }
-            super.init(collectionViewLayout: layout)
         }
 
-        required init?(coder: NSCoder) { fatalError("not used") }
-
-        override func viewDidLoad() {
-            super.viewDidLoad()
-            collectionView.backgroundColor = .systemBackground
-            collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "cell")
+        // Margins around a box times padding inside it.
+        let holder = board.place(UIView(), CGRect(x: 20, y: 165, width: 400, height: 100))
+        for (i, (margin, padding)) in [(4.0, 4.0), (4.0, 12.0), (12.0, 4.0), (12.0, 12.0)].enumerated() {
+            let cell = CGRect(x: CGFloat(i % 2) * 200, y: CGFloat(i / 2) * 50, width: 200, height: 50)
+            let outer = UIView(frame: cell.insetBy(dx: CGFloat(margin), dy: CGFloat(margin)))
+            outer.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.35)
+            outer.directionalLayoutMargins = NSDirectionalEdgeInsets(
+                top: CGFloat(padding), leading: CGFloat(padding), bottom: CGFloat(padding), trailing: CGFloat(padding))
+            let text = label("Margin \(Int(margin)) padding \(Int(padding))", size: 12)
+            text.backgroundColor = UIColor.white.withAlphaComponent(0.8)
+            text.translatesAutoresizingMaskIntoConstraints = false
+            outer.addSubview(text)
+            NSLayoutConstraint.activate([
+                text.leadingAnchor.constraint(equalTo: outer.layoutMarginsGuide.leadingAnchor),
+                text.trailingAnchor.constraint(equalTo: outer.layoutMarginsGuide.trailingAnchor),
+                text.topAnchor.constraint(equalTo: outer.layoutMarginsGuide.topAnchor),
+                text.bottomAnchor.constraint(equalTo: outer.layoutMarginsGuide.bottomAnchor),
+            ])
+            holder.addSubview(outer)
         }
 
-        override func numberOfSections(in collectionView: UICollectionView) -> Int { 2 }
-
-        override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-            section == 0 ? 12 : 30
+        // Four levels, each offset inside the one above.
+        var parent: UIView = board.place(UIView(), CGRect(x: 20, y: 280, width: 180, height: 110))
+        parent.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
+        for level in 2...4 {
+            let size = parent.bounds.insetBy(dx: 12, dy: 10).size
+            let child = UIView(frame: CGRect(x: 12, y: 10, width: size.width, height: size.height))
+            child.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1 + 0.1 * CGFloat(level))
+            parent.addSubview(child)
+            parent = child
         }
+        let deepest = label("Depth four", size: 13, weight: .semibold)
+        deepest.frame = CGRect(x: 8, y: 15, width: 90, height: 20)
+        parent.addSubview(deepest)
 
-        override func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath)
-            let hues: [UIColor] = [.systemRed, .systemOrange, .systemGreen, .systemBlue, .systemPurple, .systemPink]
-            cell.contentView.backgroundColor = hues[indexPath.item % hues.count]
-            cell.contentView.layer.cornerRadius = 10
-            let tag = 99
-            let label = (cell.contentView.viewWithTag(tag) as? UILabel) ?? {
-                let label = UILabel()
-                label.tag = tag
-                label.textColor = .white
-                label.font = .systemFont(ofSize: 15, weight: .semibold)
-                label.textAlignment = .center
-                label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                label.frame = cell.contentView.bounds
-                cell.contentView.addSubview(label)
-                return label
-            }()
-            label.text = String(format: indexPath.section == 0 ? "Card %02d" : "Tile %02d", indexPath.item + 1)
-            return cell
+        // A child half outside its parent, which does not clip.
+        let host = board.place(UIView(), CGRect(x: 260, y: 300, width: 150, height: 80))
+        host.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.3)
+        let outside = UIView(frame: CGRect(x: -40, y: -14, width: 110, height: 36))
+        outside.backgroundColor = .systemOrange
+        let outsideLabel = label("Half outside", size: 13, weight: .semibold, color: .white)
+        outsideLabel.frame = CGRect(x: 8, y: 8, width: 94, height: 20)
+        outside.addSubview(outsideLabel)
+        host.addSubview(outside)
+
+        let moved = board.place(UIView(), CGRect(x: 20, y: 410, width: 120, height: 40))
+        moved.backgroundColor = .systemGreen
+        moved.tag = 1401
+        let movedLabel = label("Translated", size: 13, weight: .semibold, color: .white)
+        movedLabel.frame = CGRect(x: 10, y: 10, width: 100, height: 20)
+        moved.addSubview(movedLabel)
+        moved.transform = CGAffineTransform(translationX: 40, y: 8)
+
+        // Overlapping siblings: the first in front by its zPosition, then
+        // the later one in front by order.
+        func card(_ text: String, _ color: UIColor, _ frame: CGRect, tag: Int) -> UIView {
+            let view = board.place(UIView(), frame)
+            view.backgroundColor = color
+            view.tag = tag
+            let title = label(text, size: 13, weight: .semibold, color: .white)
+            title.frame = CGRect(x: 8, y: 6, width: frame.width - 16, height: 18)
+            view.addSubview(title)
+            return view
         }
-    }
-
-    static let collection = GalleryScenario(id: "collection", title: "Collection", build: {
-        CollectionController()
+        card("Front by z", .systemRed, CGRect(x: 230, y: 410, width: 120, height: 50), tag: 1402).layer.zPosition = 1
+        card("Back by z", .systemBlue, CGRect(x: 270, y: 432, width: 120, height: 50), tag: 1403)
+        card("Under by order", .systemPurple, CGRect(x: 20, y: 480, width: 130, height: 50), tag: 1404)
+        card("Over by order", .systemBrown, CGRect(x: 60, y: 502, width: 130, height: 50), tag: 1405)
+        return board
     }, script: { d, controller in
-        let grid = (controller as! UICollectionViewController).collectionView!
-        d.checkpoint(shows: ["Card 01", "Card 02", "Tile 01", "Tile 06"])
-        if let strip = grid.subviews.compactMap({ $0 as? UIScrollView }).first(where: { $0.bounds.height < 120 }) {
-            d.scroll(strip, to: CGPoint(x: 400, y: 0))
-            d.checkpoint("strip", shows: ["Card 05"], hides: ["Card 01"])
-        } else {
-            d.fail("no horizontal section")
-        }
-        d.scroll(grid, to: CGPoint(x: 0, y: 500))
-        d.checkpoint("scrolled", shows: ["Tile 18"], hides: ["Tile 01"])
+        let all = ["TL", "TC", "TR", "ML", "MC", "MR", "BL", "BC", "BR", "Margin 4 padding 4", "Margin 12 padding 12",
+                   "Depth four", "Half outside", "Translated", "Front by z", "Back by z", "Under by order", "Over by order"]
+        d.checkpoint(shows: all)
+        let board = controller as! Board
+        board.canvas.viewWithTag(1402)?.layer.zPosition = 0
+        if let under = board.canvas.viewWithTag(1404) { board.canvas.bringSubviewToFront(under) }
+        board.canvas.viewWithTag(1401)?.transform = CGAffineTransform(translationX: 90, y: 0)
+        d.checkpoint("moved", shows: all)
     })
 
-    // MARK: - Navigation
+    // MARK: - 3 transforms: rotations, scales about the center and a corner, mirroring
 
-    final class ListController: UIViewController {
+    static let transforms = GalleryScenario(id: "transforms", title: "Transforms", build: {
+        let board = Board("Transforms")
+        board.loadViewIfNeeded()
+        let xs: [CGFloat] = [80, 220, 360], ys: [CGFloat] = [60, 190, 320, 450]
+        let size = CGSize(width: 100, height: 40)
+        func add(_ view: UIView, _ transform: CGAffineTransform, tag: Int = 0) {
+            view.transform = transform
+            view.tag = tag
+            board.canvas.addSubview(view)
+        }
+        add(tile(.systemRed, "Rot 15", size: size, center: CGPoint(x: xs[0], y: ys[0])), .init(rotationAngle: .pi / 12), tag: 1501)
+        add(tile(.systemOrange, "Rot 45", size: size, center: CGPoint(x: xs[1], y: ys[0])), .init(rotationAngle: .pi / 4))
+        add(tile(.systemYellow, "Rot 90", size: size, center: CGPoint(x: xs[2], y: ys[0])), .init(rotationAngle: .pi / 2))
+        add(tile(.systemGreen, "Rot 180", size: size, center: CGPoint(x: xs[0], y: ys[1])), .init(rotationAngle: .pi))
+        add(tile(.systemTeal, "Half size", size: size, center: CGPoint(x: xs[1], y: ys[1])), .init(scaleX: 0.5, y: 0.5))
+        add(tile(.systemBlue, "Double", size: CGSize(width: 60, height: 24), center: CGPoint(x: xs[2], y: ys[1]), fontSize: 11),
+            .init(scaleX: 2, y: 2))
+        // Scaled about the top left corner: the anchor point is the pivot.
+        for (i, (text, scale)) in [("Pivot half", 0.5), ("Pivot grow", 1.6)].enumerated() {
+            let view = tile(.systemIndigo, text, size: CGSize(width: 80, height: 30), center: .zero)
+            view.layer.anchorPoint = .zero
+            view.layer.position = CGPoint(x: xs[i] - 50, y: ys[2] - 40)
+            add(view, .init(scaleX: CGFloat(scale), y: CGFloat(scale)))
+        }
+        add(tile(.systemPurple, "Turn and grow", size: CGSize(width: 90, height: 30), center: CGPoint(x: xs[2], y: ys[2]), fontSize: 11),
+            CGAffineTransform(rotationAngle: .pi / 6).scaledBy(x: 1.3, y: 1.3))
+        let outer = UIView()
+        outer.backgroundColor = UIColor.systemPink.withAlphaComponent(0.3)
+        outer.bounds = CGRect(x: 0, y: 0, width: 120, height: 60)
+        outer.center = CGPoint(x: xs[0], y: ys[3])
+        let nested = tile(.systemPink, "Nested turn", size: CGSize(width: 90, height: 30), center: CGPoint(x: 60, y: 30))
+        nested.transform = CGAffineTransform(rotationAngle: .pi / 9)
+        outer.addSubview(nested)
+        add(outer, .init(rotationAngle: .pi / 9))
+        add(tile(.systemBrown, "Mirrored", size: size, center: CGPoint(x: xs[1], y: ys[3])), .init(scaleX: -1, y: 1), tag: 1502)
+        return board
+    }, script: { d, controller in
+        d.checkpoint(shows: ["Rot 15", "Rot 45", "Rot 90", "Rot 180", "Half size", "Double", "Pivot half", "Pivot grow",
+                             "Turn and grow", "Nested turn", "Mirrored"])
+        let canvas = (controller as! Board).canvas
+        if let turned = canvas.viewWithTag(1501) {
+            turned.transform = CGAffineTransform(rotationAngle: .pi / 3)
+            (turned.subviews.first as? UILabel)?.text = "Rot 60"
+        }
+        if let mirrored = canvas.viewWithTag(1502) {
+            mirrored.transform = CGAffineTransform(scaleX: -1, y: -1)
+            (mirrored.subviews.first as? UILabel)?.text = "Flipped"
+        }
+        d.checkpoint("changed", shows: ["Rot 60", "Flipped", "Rot 45"], hides: ["Rot 15", "Mirrored"])
+    })
+
+    // MARK: - 4 clipping: on and off, rounded, capsule, inside a scrolled view
+
+    static let clipping = GalleryScenario(id: "clipping", title: "Clipping", build: {
+        let board = Board("Clipping")
+        board.loadViewIfNeeded()
+        for (i, (clips, text)) in [(false, "Overflow shown past the edge"), (true, "Overflow cut at the edge")].enumerated() {
+            let host = board.place(UIView(), CGRect(x: 20 + CGFloat(i) * 210, y: 0, width: 150, height: 70))
+            host.backgroundColor = UIColor.systemIndigo.withAlphaComponent(0.2)
+            host.clipsToBounds = clips
+            let title = label(text, size: 14)
+            title.frame = CGRect(x: 12, y: 10, width: 220, height: 20)
+            host.addSubview(title)
+            let square = UIView(frame: CGRect(x: 110, y: 40, width: 60, height: 50))
+            square.backgroundColor = .systemIndigo
+            host.addSubview(square)
+        }
+        let rounded = board.place(UIView(), CGRect(x: 20, y: 110, width: 120, height: 120))
+        rounded.backgroundColor = .systemGray5
+        rounded.layer.cornerRadius = 28
+        rounded.clipsToBounds = true
+        let corner = UIView(frame: CGRect(x: 0, y: 0, width: 70, height: 70))
+        corner.backgroundColor = .systemPink
+        rounded.addSubview(corner)
+        let roundedLabel = label("Rounded clip", size: 14, weight: .semibold)
+        roundedLabel.frame = CGRect(x: 14, y: 84, width: 100, height: 20)
+        rounded.addSubview(roundedLabel)
+
+        let capsule = board.place(UIView(), CGRect(x: 160, y: 130, width: 260, height: 50))
+        capsule.backgroundColor = .systemGray5
+        capsule.layer.cornerRadius = 25
+        capsule.clipsToBounds = true
+        let capsuleLabel = label("Capsule clip cuts this long line where the edge is", size: 15)
+        capsuleLabel.frame = CGRect(x: 18, y: 14, width: 400, height: 22)
+        capsule.addSubview(capsuleLabel)
+
+        let scroll = board.place(UIScrollView(), CGRect(x: 20, y: 260, width: 400, height: 170))
+        scroll.backgroundColor = .secondarySystemBackground
+        scroll.layer.cornerRadius = 12
+        scroll.contentSize = CGSize(width: 400, height: 10 + 12 * 44)
+        scroll.tag = 1601
+        for i in 0..<12 {
+            let row = UIView(frame: CGRect(x: 16, y: 10 + CGFloat(i) * 44, width: 368, height: 36))
+            row.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
+            row.layer.cornerRadius = 8
+            row.clipsToBounds = true
+            let text = i == 2 ? "Scroll row 03 clips a line far longer than its own rounded box" : String(format: "Scroll row %02d", i + 1)
+            let title = label(text, size: 15)
+            title.frame = CGRect(x: 12, y: 8, width: i == 2 ? 520 : 300, height: 20)
+            row.addSubview(title)
+            scroll.addSubview(row)
+        }
+        return board
+    }, script: { d, controller in
+        d.checkpoint(shows: ["Overflow shown past the edge", "Overflow cut at the edge", "Rounded clip",
+                             "Capsule clip cuts", "Scroll row 01", "Scroll row 03 clips"],
+                     hides: ["Scroll row 06"])
+        guard let scroll = (controller as! Board).canvas.viewWithTag(1601) as? UIScrollView else { return d.fail("no scroll view") }
+        d.scroll(scroll, to: CGPoint(x: 0, y: 200))
+        d.checkpoint("scrolled", shows: ["Scroll row 07", "Overflow cut at the edge"], hides: ["Scroll row 01", "Scroll row 12"])
+    })
+
+    // MARK: - 5 stacks: axes, distributions, alignments
+
+    static let stacks = GalleryScenario(id: "stacks", title: "Stacks", build: {
+        let page = Page("Stacks")
+        page.loadViewIfNeeded()
+        func stack(_ views: [UIView], axis: NSLayoutConstraint.Axis = .horizontal,
+                   distribution: UIStackView.Distribution = .fill, alignment: UIStackView.Alignment = .fill,
+                   tag: Int = 0) -> UIStackView {
+            let stack = UIStackView(arrangedSubviews: views)
+            stack.axis = axis
+            stack.distribution = distribution
+            stack.alignment = alignment
+            stack.spacing = 8
+            stack.tag = tag
+            return stack
+        }
+        let hugs = chip("Hugs", .systemBlue)
+        hugs.setContentHuggingPriority(.required, for: .horizontal)
+        let stretches = chip("Stretches to fill", .systemTeal)
+        stretches.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        page.add(stack([hugs, stretches]))
+        let two = chip("Equal two", .systemOrange)
+        two.tag = 1701
+        page.add(stack([chip("Equal one", .systemRed), two, chip("Equal three", .systemPink)], distribution: .fillEqually))
+        page.add(stack([chip("Gap A", .systemGreen), chip("Gap B", .systemGreen), chip("Gap C", .systemGreen)],
+                       distribution: .equalSpacing))
+        let leading = stack([chip("Leading item", .systemIndigo), chip("Leading longer item", .systemIndigo)],
+                            axis: .vertical, alignment: .leading, tag: 1702)
+        page.add(leading)
+        page.add(stack([chip("Centered item", .systemPurple)], axis: .vertical, alignment: .center))
+        page.add(stack([chip("Trailing item", .systemBrown)], axis: .vertical, alignment: .trailing))
+        let low = chip("Low", .systemGray, height: 30), mid = chip("Mid", .systemGray2, height: 50)
+        let high = chip("High", .systemGray3, height: 70)
+        page.add(stack([low, mid, high], distribution: .fillEqually, alignment: .bottom))
+        page.add(stack([chip("Top aligned", .systemMint, height: 30), chip("Tall neighbour", .systemCyan, height: 60)],
+                       distribution: .fillEqually, alignment: .top))
+        return page
+    }, script: { d, controller in
+        d.checkpoint(shows: ["Hugs", "Stretches to fill", "Equal one", "Equal two", "Gap A", "Gap C", "Leading longer item",
+                             "Centered item", "Trailing item", "Low", "High", "Top aligned"])
+        let view = controller.view!
+        view.viewWithTag(1701)?.isHidden = true
+        (view.viewWithTag(1702) as? UIStackView)?.alignment = .trailing
+        d.checkpoint("changed", shows: ["Equal one", "Equal three", "Leading item"], hides: ["Equal two"])
+    })
+
+    // MARK: - 6 constraints: centering, multipliers, aspect ratio, pins, chains
+
+    final class ConstraintsController: UIViewController {
+        let box = UIView()
+        var half: NSLayoutConstraint!
+        var offset: NSLayoutConstraint!
+        let halfLabel = GalleryScenes.label("Half width", size: 13, weight: .semibold, color: .white)
+
         override func viewDidLoad() {
             super.viewDidLoad()
-            title = "Inbox"
             view.backgroundColor = .systemBackground
-            navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: nil, action: nil)
-            navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Edit", style: .plain, target: nil, action: nil)
-            let text = GalleryScenes.label("Three new messages", size: 17)
-            text.frame = CGRect(x: 20, y: 200, width: 300, height: 24)
-            view.addSubview(text)
-        }
-    }
-
-    static let navigation = GalleryScenario(id: "navigation", title: "Navigation", build: {
-        let nav = UINavigationController(rootViewController: ListController())
-        nav.navigationBar.prefersLargeTitles = true
-        return nav
-    }, script: { d, controller in
-        let nav = controller as! UINavigationController
-        d.checkpoint(shows: ["Inbox", "Edit", "Three new messages"])
-        let detail = UIViewController()
-        detail.title = "Message"
-        detail.view.backgroundColor = .systemBackground
-        detail.navigationItem.largeTitleDisplayMode = .never
-        let body = GalleryScenes.label("Hello from the detail page", size: 17)
-        body.frame = CGRect(x: 20, y: 160, width: 320, height: 24)
-        detail.view.addSubview(body)
-        d.tap(at: CGPoint(x: 200, y: 212)) { nav.pushViewController(detail, animated: true) }
-        d.checkpoint("pushed", shows: ["Message", "Hello from the detail page"], hides: ["Three new messages"], settle: 0.8)
-        d.tap(at: CGPoint(x: 30, y: 70)) { nav.popViewController(animated: true) }
-        d.checkpoint("popped", shows: ["Three new messages"], hides: ["Hello from the detail page"], settle: 0.8)
-    })
-
-    static let tabs = GalleryScenario(id: "tabs", title: "Tabs", build: {
-        func tab(_ title: String, _ symbol: String, _ text: String) -> UIViewController {
-            let controller = UIViewController()
-            controller.view.backgroundColor = .systemBackground
-            controller.tabBarItem = UITabBarItem(title: title, image: UIImage(systemName: symbol), tag: 0)
-            let body = GalleryScenes.label(text, size: 22, weight: .semibold)
-            body.frame = CGRect(x: 20, y: 140, width: 320, height: 30)
-            controller.view.addSubview(body)
-            return controller
-        }
-        let tabs = UITabBarController()
-        tabs.viewControllers = [tab("Home", "house.fill", "Home page"), tab("Search", "magnifyingglass", "Search page"),
-                                tab("Profile", "person.fill", "Profile page")]
-        return tabs
-    }, script: { d, controller in
-        let tabs = controller as! UITabBarController
-        d.checkpoint(shows: ["Home", "Search", "Profile", "Home page"])
-        let bar = tabs.tabBar.convert(tabs.tabBar.bounds, to: d.window)
-        d.tap(at: CGPoint(x: bar.midX, y: bar.midY)) { tabs.selectedIndex = 1 }
-        d.checkpoint("search", shows: ["Search page"], hides: ["Home page"], settle: 0.6)
-    })
-
-    // MARK: - Overlays
-
-    static let alerts = GalleryScenario(id: "alerts", title: "Alerts", build: {
-        let page = Page("Alerts")
-        page.loadViewIfNeeded()
-        page.add(label("Behind the alert", size: 17))
-        return page
-    }, script: { d, controller in
-        let alert = UIAlertController(title: "Delete photo?", message: "This cannot be undone.", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Delete", style: .destructive))
-        controller.present(alert, animated: true)
-        d.checkpoint("alert", shows: ["Delete photo?", "This cannot be undone.", "Cancel", "Delete", "Behind the alert"],
-                     settle: 0.8)
-        alert.dismiss(animated: false)
-        d.wait(0.4)
-        let sheet = UIAlertController(title: "Share", message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Copy link", style: .default))
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        controller.present(sheet, animated: true)
-        d.checkpoint("action-sheet", shows: ["Share", "Copy link", "Cancel"], hides: ["Delete photo?"], settle: 0.8)
-        sheet.dismiss(animated: false)
-        d.wait(0.4)
-        d.checkpoint("dismissed", shows: ["Behind the alert"], hides: ["Copy link"])
-    })
-
-    static let sheet = GalleryScenario(id: "sheet", title: "Sheet", build: {
-        let page = Page("Sheets")
-        page.loadViewIfNeeded()
-        page.add(label("Under the sheet", size: 17))
-        return page
-    }, script: { d, controller in
-        let content = UIViewController()
-        content.view.backgroundColor = .secondarySystemBackground
-        let text = GalleryScenes.label("A half-height sheet", size: 20, weight: .semibold)
-        text.frame = CGRect(x: 20, y: 30, width: 300, height: 28)
-        content.view.addSubview(text)
-        if let presentation = content.sheetPresentationController {
-            presentation.detents = [.medium()]
-            presentation.prefersGrabberVisible = true
-        }
-        controller.present(content, animated: true)
-        d.checkpoint(shows: ["A half-height sheet", "Under the sheet"], settle: 0.9)
-        content.dismiss(animated: false)
-        d.wait(0.4)
-    })
-
-    // MARK: - Privacy
-
-    static let privacy = GalleryScenario(id: "privacy", title: "Privacy", build: {
-        let page = Page("Privacy")
-        page.loadViewIfNeeded()
-        let blank = UIView()
-        blank.backgroundColor = .secondarySystemBackground
-        blank.tracewayPrivacyMask = .blank()
-        let card = label("Card 4242 4242 4242 4242", size: 17)
-        card.frame = CGRect(x: 12, y: 14, width: 300, height: 22)
-        blank.addSubview(card)
-        page.add(blank, height: 50)
-        let blurred = UIView()
-        blurred.tracewayPrivacyMask = .blur
-        let balance = label("Balance $12,345.67", size: 17)
-        balance.frame = CGRect(x: 12, y: 14, width: 300, height: 22)
-        blurred.addSubview(balance)
-        let avatar = UIImageView(image: UIImage(systemName: "person.fill"))
-        avatar.frame = CGRect(x: 280, y: 10, width: 30, height: 30)
-        blurred.addSubview(avatar)
-        page.add(blurred, height: 50)
-        page.add(label("Public text stays", size: 17))
-        return page
-    }, script: { d, _ in
-        d.secret("4242 4242")
-        d.secret("12,345.67")
-        d.checkpoint(shows: ["Public text stays", "******* **********"], hides: ["4242", "12,345.67"])
-    })
-
-    // MARK: - SwiftUI
-
-    final class SwiftUIModel: ObservableObject {
-        @Published var on = false
-        @Published var count = 0
-    }
-
-    struct SwiftUIScreen: View {
-        @ObservedObject var model: SwiftUIModel
-
-        var body: some View {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("SwiftUI").font(.largeTitle.bold())
-                    Text("Plain SwiftUI text")
-                    Text("Secondary caption").font(.caption).foregroundColor(.secondary)
-                    HStack(spacing: 12) {
-                        RoundedRectangle(cornerRadius: 12).fill(Color.red).frame(width: 80, height: 50)
-                        Circle().fill(Color.green).frame(width: 50, height: 50)
-                        Capsule().stroke(Color.blue, lineWidth: 3).frame(width: 90, height: 40)
-                        Image(systemName: "star.fill").foregroundColor(.yellow).font(.system(size: 30))
-                    }
-                    LinearGradient(colors: [.purple, .orange], startPoint: .leading, endPoint: .trailing)
-                        .frame(height: 40).cornerRadius(8)
-                    Toggle("Notifications", isOn: $model.on)
-                    Button("Count \(model.count)") { model.count += 1 }
-                        .buttonStyle(.borderedProminent)
-                    Text("Masked in SwiftUI 555-0101").tracewayPrivacyMask()
-                    ForEach(1..<6) { i in
-                        HStack {
-                            Text("List row \(i)")
-                            Spacer()
-                            Image(systemName: "chevron.right").foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 6)
-                        Divider()
-                    }
-                }
-                .padding(20)
+            let title = GalleryScenes.label("Constraints", size: 28, weight: .bold)
+            box.backgroundColor = .systemGray6
+            box.layer.cornerRadius = 12
+            let halfBar = UIView()
+            halfBar.backgroundColor = .systemBlue
+            let aspect = UIView()
+            aspect.backgroundColor = .systemOrange
+            let aspectLabel = GalleryScenes.label("Aspect 2:1", size: 13, weight: .semibold, color: .white)
+            let centered = GalleryScenes.label("Centered", size: 15, weight: .semibold)
+            let lead = GalleryScenes.label("Leading pin", size: 14)
+            let trail = GalleryScenes.label("Trailing pin", size: 14)
+            let shifted = GalleryScenes.label("Offset center", size: 14)
+            let first = GalleryScenes.chip("Chained first", .systemGreen, height: 32)
+            let second = GalleryScenes.chip("Chained second", .systemMint, height: 32)
+            for v in [title, box, first, second] { view.addSubview(v) }
+            for v in [halfBar, aspect, centered, lead, trail, shifted] { box.addSubview(v) }
+            halfBar.addSubview(halfLabel)
+            aspect.addSubview(aspectLabel)
+            for v in [title, box, halfBar, aspect, aspectLabel, halfLabel, centered, lead, trail, shifted, first, second] {
+                v.translatesAutoresizingMaskIntoConstraints = false
             }
+            let guide = view.safeAreaLayoutGuide
+            half = halfBar.widthAnchor.constraint(equalTo: box.widthAnchor, multiplier: 0.5)
+            offset = shifted.centerXAnchor.constraint(equalTo: box.centerXAnchor, constant: 60)
+            NSLayoutConstraint.activate([
+                title.topAnchor.constraint(equalTo: guide.topAnchor, constant: 12),
+                title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                box.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 16),
+                box.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                box.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+                box.heightAnchor.constraint(equalToConstant: 300),
+                halfBar.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+                halfBar.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
+                halfBar.heightAnchor.constraint(equalToConstant: 30),
+                half,
+                halfLabel.centerXAnchor.constraint(equalTo: halfBar.centerXAnchor),
+                halfLabel.centerYAnchor.constraint(equalTo: halfBar.centerYAnchor),
+                aspect.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
+                aspect.topAnchor.constraint(equalTo: halfBar.bottomAnchor, constant: 12),
+                aspect.widthAnchor.constraint(equalToConstant: 120),
+                aspect.heightAnchor.constraint(equalTo: aspect.widthAnchor, multiplier: 0.5),
+                aspectLabel.centerXAnchor.constraint(equalTo: aspect.centerXAnchor),
+                aspectLabel.centerYAnchor.constraint(equalTo: aspect.centerYAnchor),
+                centered.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+                centered.centerYAnchor.constraint(equalTo: box.centerYAnchor),
+                lead.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
+                lead.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -16),
+                trail.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
+                trail.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -16),
+                offset,
+                shifted.centerYAnchor.constraint(equalTo: box.centerYAnchor, constant: 50),
+                first.topAnchor.constraint(equalTo: box.bottomAnchor, constant: 16),
+                first.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+                first.widthAnchor.constraint(equalToConstant: 150),
+                second.topAnchor.constraint(equalTo: first.topAnchor),
+                second.leadingAnchor.constraint(equalTo: first.trailingAnchor, constant: 12),
+                second.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            ])
         }
     }
 
-    static let swiftUIModel = SwiftUIModel()
-
-    static let swiftUI = GalleryScenario(id: "swiftui", title: "SwiftUI", build: {
-        UIHostingController(rootView: SwiftUIScreen(model: swiftUIModel))
+    static let constraints = GalleryScenario(id: "constraints", title: "Constraints", build: {
+        ConstraintsController()
     }, script: { d, controller in
-        d.secret("555-0101")
-        // SwiftUI's text is readable only through accessibility, which iOS
-        // fills in while an assistive technology runs; otherwise each text
-        // is a bar where it is drawn.
-        let readable = controller.view.accessibilityElementCount() > 0
-            || !(controller.view.accessibilityElements?.isEmpty ?? true)
-        d.checkpoint(shows: readable ? ["SwiftUI", "Plain SwiftUI text", "Notifications", "Count 0", "List row 1"] : [],
-                     hides: ["555-0101"], settle: 0.9)
-        swiftUIModel.on = true
-        swiftUIModel.count = 1
-        d.checkpoint("changed", shows: readable ? ["Count 1"] : [], hides: ["555-0101"], settle: 1.2)
-    })
-
-    // MARK: - Native views
-
-    static let native = GalleryScenario(id: "native", title: "Native", build: {
-        let page = Page("Native views")
-        page.loadViewIfNeeded()
-        let web = WKWebView()
-        page.add(web, height: 160)
-        page.add(label("Web content is a placeholder", size: 15, color: .secondaryLabel))
-        let drawn = DrawnView()
-        page.add(drawn, height: 60)
-        return page
-    }, script: { d, _ in
-        d.checkpoint(shows: ["Web view", "Web content is a placeholder"])
-    })
-
-    /// Draws itself in draw(_:): its pixels are not recorded.
-    final class DrawnView: UIView {
-        override func draw(_ rect: CGRect) {
-            UIColor.systemMint.setFill()
-            UIBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 4), cornerRadius: 10).fill()
-        }
-    }
-
-    // MARK: - Motion
-
-    static let motion = GalleryScenario(id: "motion", title: "Motion", build: {
-        let page = Page("Motion")
-        page.loadViewIfNeeded()
-        let lane = UIView()
-        lane.backgroundColor = .systemGray6
-        page.add(lane, height: 60)
-        let mover = box(.systemPink, "Moving", size: CGSize(width: 80, height: 40))
-        mover.translatesAutoresizingMaskIntoConstraints = true
-        mover.frame = CGRect(x: 0, y: 10, width: 80, height: 40)
-        mover.tag = 1101
-        lane.addSubview(mover)
-        return page
-    }, script: { d, controller in
-        guard let mover = controller.view.viewWithTag(1101) else { return d.fail("no mover") }
-        d.checkpoint("start", shows: ["Moving"])
-        UIView.animate(withDuration: 1.2, delay: 0, options: [.curveLinear]) {
-            mover.frame.origin.x = 240
-        }
-        d.wait(0.6)
-        d.checkpoint("moving", shows: ["Moving"], settle: 0, minMutations: 2)
-        d.checkpoint("end", shows: ["Moving"], settle: 1.0)
+        d.checkpoint(shows: ["Constraints", "Half width", "Aspect 2:1", "Centered", "Leading pin", "Trailing pin",
+                             "Offset center", "Chained first", "Chained second"])
+        let c = controller as! ConstraintsController
+        c.half.isActive = false
+        c.half = c.halfLabel.superview!.widthAnchor.constraint(equalTo: c.box.widthAnchor, multiplier: 0.75)
+        c.half.isActive = true
+        c.halfLabel.text = "Three quarters"
+        c.offset.constant = -60
+        d.checkpoint("changed", shows: ["Three quarters", "Offset center"], hides: ["Half width"])
     })
 }
 #endif

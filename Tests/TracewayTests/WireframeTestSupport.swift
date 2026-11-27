@@ -235,3 +235,142 @@ func replay(_ events: [JSON], file: StaticString = #filePath, line: UInt = #line
     mirror.play(events)
     return mirror
 }
+
+#if canImport(UIKit)
+import UIKit
+
+/// A window to show real views in and the capture that turns them into
+/// wireframe frames, for the UIKit and SwiftUI component tests. Positions
+/// are checked against the native frames (`convert(_:to:)` the window).
+class WireframeViewTestCase: XCTestCase {
+    var window: UIWindow!
+    var capture: WireframeCapture!
+    var clock: Int64 = 1_800_000_000_000
+
+    override func setUp() {
+        super.setUp()
+        UIView.setAnimationsEnabled(false)
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+        } else {
+            window = UIWindow()
+        }
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.overrideUserInterfaceStyle = .light
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 5)
+        window.isHidden = false
+        capture = WireframeCapture()
+    }
+
+    override func tearDown() {
+        window.rootViewController?.presentedViewController?.dismiss(animated: false)
+        window.isHidden = true
+        window.rootViewController = nil
+        window = nil
+        UIView.setAnimationsEnabled(true)
+        super.tearDown()
+    }
+
+    /// A controller whose view holds `views` at the frames they have.
+    @discardableResult
+    func show(_ views: UIView..., background: UIColor = .white) -> UIViewController {
+        let controller = UIViewController()
+        controller.view.backgroundColor = background
+        for view in views { controller.view.addSubview(view) }
+        window.rootViewController = controller
+        settle()
+        return controller
+    }
+
+    func show(_ controller: UIViewController) {
+        window.rootViewController = controller
+        settle()
+    }
+
+    func settle(_ seconds: TimeInterval = 0.05) {
+        window.layoutIfNeeded()
+        CATransaction.flush()
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        window.layoutIfNeeded()
+    }
+
+    func frame(keyboard: CGRect? = nil) throws -> WireframeFrame {
+        settle()
+        clock += 250
+        return try XCTUnwrap(capture.capture(windows: [window], timestampMs: clock, href: "/test", keyboardFrame: keyboard))
+    }
+
+    func screen() throws -> VNode {
+        try XCTUnwrap(try frame().screen)
+    }
+
+    /// A recorder fed by hand with this test's frames and clock.
+    func recorder() -> WireframeRecorder {
+        WireframeRecorder(maxFrames: 50, fps: 4, now: { [unowned self] in self.clock })
+    }
+
+    /// Replays what `recorder` holds and checks the replay ends on `last`.
+    @discardableResult
+    func replayEnds(_ recorder: WireframeRecorder, on last: WireframeFrame,
+                    file: StaticString = #filePath, line: UInt = #line) throws -> Mirror {
+        let clip = try XCTUnwrap(recorder.captureRecording(clipId: "c", sinceMs: nil, untilMs: clock + 1), file: file, line: line)
+        let mirror = replay(clip.events, file: file, line: line)
+        XCTAssertEqual(mirror.screen.dump(), dump(try XCTUnwrap(last.screen)), "the replay ends on the last screen",
+                       file: file, line: line)
+        return mirror
+    }
+
+    func node(_ text: String, in screen: VNode, file: StaticString = #filePath, line: UInt = #line) throws -> VNode {
+        try XCTUnwrap(element(withText: text, in: screen), "no node shows \"\(text)\" in \(allTexts(screen))",
+                      file: file, line: line)
+    }
+
+    func label(_ text: String, _ frame: CGRect, size: CGFloat = 17) -> UILabel {
+        let label = UILabel(frame: frame)
+        label.text = text
+        label.font = .systemFont(ofSize: size)
+        label.textColor = .black
+        return label
+    }
+
+    /// `view`'s frame in the window.
+    func nativeFrame(_ view: UIView) -> CGRect {
+        view.convert(view.bounds, to: window)
+    }
+
+    /// Checks that `node` covers on screen what `view` covers, within
+    /// `accuracy` points: for a transformed view, the bounds of both.
+    func assertPlaced(_ node: VNode, in screen: VNode, like view: UIView, accuracy: Double = 0.11,
+                      file: StaticString = #filePath, line: UInt = #line) {
+        let native = nativeFrame(view)
+        guard let box = screenBox(screen, node) else { return XCTFail("the node is not on the screen", file: file, line: line) }
+        XCTAssertEqual(Double(box.minX), Double(native.minX), accuracy: accuracy, "x", file: file, line: line)
+        XCTAssertEqual(Double(box.minY), Double(native.minY), accuracy: accuracy, "y", file: file, line: line)
+        XCTAssertEqual(Double(box.width), Double(native.width), accuracy: accuracy, "width", file: file, line: line)
+        XCTAssertEqual(Double(box.height), Double(native.height), accuracy: accuracy, "height", file: file, line: line)
+    }
+}
+
+/// The bounds `node` covers on the replayed screen: its `left`/`top` or
+/// `transform:matrix(…)` (about its top left corner) and those of its
+/// ancestors applied to its `width` and `height`, as the browser's
+/// `getBoundingClientRect` gives them.
+func screenBox(_ root: VNode, _ node: VNode) -> CGRect? {
+    guard let path = ancestry(root, node) else { return nil }
+    var t = CGAffineTransform.identity
+    for n in path {
+        let style = styleMap(n)
+        let local: CGAffineTransform
+        if let m = style["transform"], m.hasPrefix("matrix("), m.hasSuffix(")") {
+            let v = m.dropFirst(7).dropLast().split(separator: ",").compactMap { Double($0) }.map { CGFloat($0) }
+            guard v.count == 6 else { return nil }
+            local = CGAffineTransform(a: v[0], b: v[1], c: v[2], d: v[3], tx: v[4], ty: v[5])
+        } else {
+            local = CGAffineTransform(translationX: CGFloat(styleNumber(n, "left") ?? 0), y: CGFloat(styleNumber(n, "top") ?? 0))
+        }
+        t = local.concatenating(t)
+    }
+    let w = CGFloat(styleNumber(node, "width") ?? 0), h = CGFloat(styleNumber(node, "height") ?? 0)
+    return CGRect(x: 0, y: 0, width: w, height: h).applying(t)
+}
+#endif
