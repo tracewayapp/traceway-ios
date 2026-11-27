@@ -25,7 +25,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   session it happened in. Issues are written to disk (OTLP protobuf) before
   they are sent.
 - **Ring buffer**: logs (`Traceway.log`), requests, navigation, taps and custom
-  events stay on the device (2 MB / 10 minutes) and are uploaded when an
+  events stay on the device (2 MiB / 10 minutes) and are uploaded when an
   exception, a trigger or a capture asks for them. It is saved when the app
   goes to the background and restored when the same session goes on after a
   restart.
