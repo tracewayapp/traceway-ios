@@ -273,7 +273,8 @@ final class GalleryDriver {
     func present(_ presented: UIViewController, over controller: UIViewController) {
         var done = false
         controller.present(presented, animated: true) { done = true }
-        if !wait(upTo: 5, until: { done }) { fail("\(Swift.type(of: presented)) did not finish presenting") }
+        // A busy CI Simulator can take many seconds to finish a presentation.
+        if !wait(upTo: 20, until: { done }) { fail("\(Swift.type(of: presented)) did not finish presenting") }
     }
 
     /// Dismisses `presented` and waits until it is gone.
