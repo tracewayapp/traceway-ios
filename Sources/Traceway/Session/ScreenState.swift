@@ -57,7 +57,10 @@ final class ScreenState {
     /// replaces becomes the previous one, and its route template goes with
     /// it. An empty path changes nothing. Returns the screen and route now.
     @discardableResult
-    func navigated(to path: String, atMs: Int64) -> (name: String?, route: String?) {
+    /// `route` is the screen's template when the router knows it; it is set
+    /// in the same step, so no record sees the new screen without it.
+    func navigated(to path: String, atMs: Int64, route: String? = nil) -> (name: String?, route: String?) {
+        let template = ScreenState.template(route)
         lock.lock(); defer { lock.unlock() }
         if !path.isEmpty, path != _name {
             _previous = _name
@@ -65,6 +68,7 @@ final class ScreenState {
             _sinceMs = atMs
             _route = nil
         }
+        if !path.isEmpty, let template = template { _route = template }
         return (_name, _route)
     }
 

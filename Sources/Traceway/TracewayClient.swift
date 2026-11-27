@@ -874,17 +874,18 @@ public final class TracewayClient {
 
     /// Records that the app shows `path`, for routers and SwiftUI navigation
     /// that no view controller reports.
-    public func recordNavigation(_ path: String, action: String = "push", from: String? = nil) {
-        recordNavigation(to: path, action: action, from: from, time: Date())
+    public func recordNavigation(_ path: String, action: String = "push", from: String? = nil, route: String? = nil) {
+        recordNavigation(to: path, action: action, from: from, route: route, time: Date())
     }
 
     /// `displayStartMs` is when the screen began to load or appear (Unix ms),
     /// when that was before the navigation is reported.
-    func recordNavigation(to path: String, action: String, from: String?, time: Date, displayStartMs: Int64? = nil) {
+    func recordNavigation(to path: String, action: String, from: String?, route: String? = nil, time: Date,
+                          displayStartMs: Int64? = nil) {
         // The screen changes now, on the caller's thread: an issue captured
         // right after names the screen it happened on.
-        let shown = screen.navigated(to: path, atMs: Clock.ms(time))
-        vitals?.navigated(path.isEmpty ? nil : normalizePath(path), action: action,
+        let shown = screen.navigated(to: path, atMs: Clock.ms(time), route: route)
+        vitals?.navigated(path.isEmpty ? nil : ScreenState.template(route) ?? normalizePath(path), action: action,
                           timeMs: displayStartMs ?? Clock.ms(time))
         onQueue {
             self.sessions?.markActivity()
