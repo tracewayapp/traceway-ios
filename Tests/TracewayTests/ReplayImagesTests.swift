@@ -70,12 +70,22 @@ final class ReplayImagesTests: XCTestCase {
         XCTAssertEqual(size(100, 100, source: (60, 60)), [60, 60], "never more pixels than the bitmap has")
         XCTAssertNil(size(0, 100, source: (60, 60)))
         XCTAssertNil(size(.infinity, 100, source: (60, 60)))
+        // A see-through picture is a PNG of at most 192 a side.
+        func alpha(_ w: Double, _ h: Double) -> [Int]? {
+            WireframeImageEncoding.pixelSize(displayed: (w, h), source: (4000, 3000), hasAlpha: true)
+                .map { [$0.width, $0.height] }
+        }
+        XCTAssertEqual(alpha(400, 300), [192, 144])
+        XCTAssertEqual(alpha(150, 100), [150, 100])
     }
 
-    func testPNGOnlyForSmallSeeThroughPictures() {
-        XCTAssertTrue(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 96, height: 40))
-        XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: true, width: 97, height: 40))
-        XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: false, width: 32, height: 32))
+    /// A picture with see-through pixels is never a JPEG: it would replay
+    /// as a black or white box.
+    func testSeeThroughPicturesAreAlwaysPNG() {
+        XCTAssertTrue(WireframeImageEncoding.usesPNG(hasAlpha: true))
+        XCTAssertFalse(WireframeImageEncoding.usesPNG(hasAlpha: false))
+        XCTAssertEqual(WireframeImageEncoding.maxPNGSide, 192)
+        XCTAssertEqual(WireframeImageEncoding.maxSide, 384)
         XCTAssertEqual(WireframeImageEncoding.jpegQuality, 0.45)
         XCTAssertEqual(WireframeImageEncoding.maxEncodedBytes, 48 * 1024)
         XCTAssertEqual(WireframeImageEncoding.retrySize((width: 300, height: 201)).map { [$0.width, $0.height] }, [150, 100])

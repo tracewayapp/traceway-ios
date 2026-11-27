@@ -6,17 +6,20 @@ import UIKit
 /// How the wireframe inlines a picture, the same on every Traceway SDK
 /// that does (CONTRACT §14.5): the bitmap an image view shows (never a
 /// screenshot of the window), downscaled to its displayed size at one pixel
-/// per point with the longest side at most 384 pixels, encoded as JPEG at
-/// quality 0.45 (PNG when it has see-through pixels and is at most 96
-/// pixels), and dropped when it still takes more than 48 KiB at half that
-/// size. Each picture is a CSS rule in a style node of its own:
+/// per point. An opaque picture is a JPEG at quality 0.45, its longest side
+/// at most 384 pixels; one with see-through pixels is always a PNG (as a
+/// JPEG it would replay as a black or white box), its longest side at most
+/// 192 pixels. Either is dropped when it still takes more than 48 KiB at
+/// half that size. Each picture is a CSS rule in a style node of its own:
 /// `.im.p<N>{background:url(data:…) center/cover no-repeat}`; the node
 /// showing it gets the classes `im p<N>` and an inline size and position for
 /// its content mode.
 enum WireframeImageEncoding {
     static let pixelsPerPoint = 1.0
+    /// The longest side of an opaque picture (JPEG).
     static let maxSide = 384
-    static let maxPNGSide = 96
+    /// The longest side of a picture with see-through pixels (PNG).
+    static let maxPNGSide = 192
     static let jpegQuality = 0.45
     static let maxEncodedBytes = 48 * 1024
     /// Pictures one capture holds at most; a new one past it evicts the one
@@ -39,10 +42,12 @@ enum WireframeImageEncoding {
 
     /// The pixel size a picture shown at `displayed` points is encoded at:
     /// one pixel per point, never more pixels than the bitmap has, the
-    /// longest side at most 384. Nil when there is nothing to draw.
+    /// longest side at most 384, or 192 for one with see-through pixels.
+    /// Nil when there is nothing to draw.
     static func pixelSize(
         displayed: (width: Double, height: Double),
-        source: (width: Double, height: Double)
+        source: (width: Double, height: Double),
+        hasAlpha: Bool = false
     ) -> (width: Int, height: Int)? {
         guard displayed.width.isFinite, displayed.height.isFinite, displayed.width > 0, displayed.height > 0
         else { return nil }
@@ -54,17 +59,18 @@ enum WireframeImageEncoding {
             h *= scale
         }
         let longest = max(w, h)
-        if longest > Double(maxSide) {
-            let scale = Double(maxSide) / longest
+        let limit = Double(hasAlpha ? maxPNGSide : maxSide)
+        if longest > limit {
+            let scale = limit / longest
             w *= scale
             h *= scale
         }
         return (max(1, Int(w.rounded())), max(1, Int(h.rounded())))
     }
 
-    /// PNG keeps see-through pixels, at a size where that is cheap.
-    static func usesPNG(hasAlpha: Bool, width: Int, height: Int) -> Bool {
-        hasAlpha && max(width, height) <= maxPNGSide
+    /// PNG keeps see-through pixels: a picture with them is never a JPEG.
+    static func usesPNG(hasAlpha: Bool) -> Bool {
+        hasAlpha
     }
 
     /// The half size an encoding that came out too large is tried again at.
@@ -247,7 +253,7 @@ final class WireframeImages {
         into picture: Picture
     ) {
         guard let size = WireframeImageEncoding.pixelSize(
-            displayed: (Double(displayed.width), Double(displayed.height)), source: source
+            displayed: (Double(displayed.width), Double(displayed.height)), source: source, hasAlpha: hasAlpha
         ) else { return }
         // Formats read the screen; they are made here, on the main thread.
         let opaque = WireframeImages.format(opaque: true)
@@ -281,7 +287,7 @@ final class WireframeImages {
         var attempt: (width: Int, height: Int)? = size
         for _ in 0..<2 {
             guard let current = attempt else { return nil }
-            let png = WireframeImageEncoding.usesPNG(hasAlpha: hasAlpha, width: current.width, height: current.height)
+            let png = WireframeImageEncoding.usesPNG(hasAlpha: hasAlpha)
             let rect = CGRect(x: 0, y: 0, width: current.width, height: current.height)
             let renderer = UIGraphicsImageRenderer(size: rect.size, format: png ? clear : opaque)
             // Only the image is drawn, never anything around it.
@@ -289,11 +295,7 @@ final class WireframeImages {
             if png {
                 data = renderer.pngData { _ in image.draw(in: rect) }
             } else {
-                data = renderer.jpegData(withCompressionQuality: CGFloat(WireframeImageEncoding.jpegQuality)) { context in
-                    if hasAlpha {
-                        UIColor.white.setFill()
-                        context.fill(rect)
-                    }
+                data = renderer.jpegData(withCompressionQuality: CGFloat(WireframeImageEncoding.jpegQuality)) { _ in
                     image.draw(in: rect)
                 }
             }

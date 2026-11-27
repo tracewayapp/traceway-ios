@@ -135,9 +135,9 @@ triggers, taps, wireframe session replay and app performance metrics.
 - **Replay images**: with the setting `replay.images` (`off`, `wifi` by
   default, `always`) and the option `replayImages` as its ceiling, the
   wireframe includes the pictures image views and SwiftUI image layers show:
-  downscaled to their displayed size (one pixel per point, at most 384 px),
-  JPEG at 0.45 (PNG when small and see-through), at most 48 KiB each and
-  4 MiB per session, encoded off the main thread, sent once per bitmap and size, never
+  downscaled to their displayed size (one pixel per point), JPEG at 0.45 up
+  to 384 px, PNG up to 192 px for see-through pictures, at most 48 KiB each
+  and 4 MiB per session, encoded off the main thread, sent once per bitmap and size, never
   under a privacy mask. `wifi` means unmetered (`NWPathMonitor`: not
   cellular, a hotspot or Low Data Mode), decided for each frame. Session
   events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
@@ -226,9 +226,10 @@ triggers, taps, wireframe session replay and app performance metrics.
   descriptor first and never holding the writer up. The remote
   `signals.console` mode, `minSeverity` and `sampleRate` apply as to
   `Traceway.log`.
-- **Replay images are smaller** (§14.5): one pixel per point, at most 384 px a
-  side, JPEG at 0.45, PNG only for see-through pictures up to 96 px, at most
-  48 KiB after one retry at half size; up to 128 pictures per capture, and a
+- **Replay images are smaller** (§14.5): one pixel per point; opaque pictures
+  JPEG at 0.45 up to 384 px a side, see-through ones always PNG (never a JPEG,
+  which replayed them as a black or white box) up to 192 px; at most 48 KiB
+  after one retry at half size; up to 128 pictures per capture, and a
   new one past that evicts the one shown longest ago instead of waiting.
 - `flush()` on the main thread waits at most 2 seconds whatever its timeout,
   as on Android.

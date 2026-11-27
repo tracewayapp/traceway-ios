@@ -532,9 +532,10 @@ captures stream the session as segments. A session uploads at most 50 MiB and
 The pictures `UIImageView`s show, and the image layers SwiftUI uses for
 photos, can be part of the replay. Never a screenshot of the window: only the
 bitmap the view shows, downscaled to its displayed size (one pixel per
-point, at most 384 pixels a side), as JPEG at quality 0.45 (PNG for
-see-through images of at most 96 pixels), at most 48 KiB each (else tried
-once at half size, then dropped) and 4 MiB per session. A capture holds up
+point): an opaque picture as JPEG at quality 0.45, at most 384 pixels a
+side; one with see-through pixels always as PNG (a JPEG would replay it as a
+black or white box), at most 192 pixels a side; at most 48 KiB each (else
+tried once at half size, then dropped) and 4 MiB per session. A capture holds up
 to 128 pictures; a new one past that replaces the one shown longest ago. A picture
 seen for the first time is encoded off the main thread: the frame that first
 shows it has the placeholder, a later one the picture. The same picture in

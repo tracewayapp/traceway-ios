@@ -164,10 +164,11 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   or blur mask. Symbols and template images stay glyphs.
 - **Encoding** (`WireframeImageEncoding`): the bitmap is drawn alone with
   `UIGraphicsImageRenderer` at its displayed size × 1 (one pixel per
-  point), never more pixels than it has, the longest side at most 384; JPEG
-  at quality 0.45, PNG when it has see-through pixels and is at most 96 px.
-  An encoding over 48 KiB is tried once more at half size, then dropped
-  (CONTRACT §14.5).
+  point), never more pixels than it has. An opaque picture is a JPEG at
+  quality 0.45, the longest side at most 384; one with see-through pixels is
+  always a PNG (a JPEG would replay it as a black or white box), the longest
+  side at most 192. An encoding over 48 KiB is tried once more at half size,
+  then dropped (CONTRACT §14.5).
   Encoding runs off the main thread: the first frame shows the placeholder,
   a later one the picture.
 - **DOM**: one `style` node per picture in the screen node,
@@ -272,7 +273,7 @@ gzipped, to `/api/recordings`; an exception's clip carries its
 | rich text runs per label | 50 |
 | glyphs per recorder | 300, at most 512 px a side; a rule lingers 10 s |
 | pictures per recorder | 128, the one shown longest ago evicted first; a rule lingers 30 s |
-| picture size | 384 px longest side, 48 KiB encoded |
+| picture size | 384 px longest side (JPEG), 192 px with transparency (PNG), 48 KiB encoded |
 | image data per session | 4 MiB |
 | replay per session | 50 MiB and 10,000 rrweb events (`CollectionBudget`) |
 | upload queue | 10 MiB, retries after 5 s, 30 s and 120 s |

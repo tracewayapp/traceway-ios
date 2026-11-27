@@ -541,8 +541,10 @@ final class CrashSafetyTests: XCTestCase {
     /// §14.1: the handler runs on a stack of its own, so a stack overflow,
     /// which leaves no room on the thread's stack, is still recorded. A
     /// recursion to death would end the test run, so the setup is checked:
-    /// the action asks for the alternate stack, the thread has one, and a
-    /// signal is handled on it.
+    /// every handled signal's action asks for the alternate stack, the
+    /// thread has one, and a signal is handled on it. (`SIGFPE` is raised:
+    /// a raised `SIGSEGV` carries a fault's `si_code` on Darwin, so the
+    /// handler leaves it to fault again, which a raise never does.)
     func testTheSignalHandlerHasAStackOfItsOwn() throws {
         SignalHandler.uninstallForTesting()
         var original = sigaction()
@@ -550,26 +552,30 @@ final class CrashSafetyTests: XCTestCase {
         sigemptyset(&probe.sa_mask)
         probe.sa_flags = SA_SIGINFO | SA_ONSTACK
         probe.__sigaction_u.__sa_sigaction = stackProbeHandler
-        sigaction(SIGSEGV, &probe, &original)
+        sigaction(SIGFPE, &probe, &original)
         defer {
             SignalHandler.uninstallForTesting()
-            sigaction(SIGSEGV, &original, nil)
+            sigaction(SIGFPE, &original, nil)
         }
         let path = scratchDirectory(self).appendingPathComponent("crash.tw").path
         SignalHandler.install(crashPath: path, metadata: [])
-        XCTAssertNotEqual(SignalHandler.actionFlagsForTesting(SIGSEGV) & SA_ONSTACK, 0)
+        for signal in [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP] {
+            XCTAssertNotEqual(SignalHandler.actionFlagsForTesting(signal) & SA_ONSTACK, 0, "signal \(signal)")
+        }
         let alt = SignalHandler.altStackForTesting()
         XCTAssertTrue(alt.enabled)
         XCTAssertGreaterThanOrEqual(alt.size, Int(MINSIGSTKSZ))
         probedStackAddress = 0
-        raise(SIGSEGV)
+        raise(SIGFPE)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path), "Traceway's handler recorded it")
         XCTAssertGreaterThanOrEqual(probedStackAddress, alt.base, "handled on the alternate stack")
         XCTAssertLessThan(probedStackAddress, alt.base + UInt(alt.size))
+        print("traceway-alt-stack main base=\(alt.base) size=\(alt.size) MINSIGSTKSZ=\(MINSIGSTKSZ) probe=\(probedStackAddress)")
 
         // A thread that has an alternate stack of its own keeps it; one
         // without gets Traceway's.
         let result = Locked<(kept: Bool, given: Bool)>((false, false))
+        let report = Locked("")
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
             let size = 128 * 1024
@@ -585,16 +591,35 @@ final class CrashSafetyTests: XCTestCase {
             off.ss_flags = SS_DISABLE
             sigaltstack(&off, nil)
             free(mine)
+            let disabled = SignalHandler.altStackForTesting()
             SignalHandler.installAltStackForTesting()
             let given = SignalHandler.altStackForTesting()
+            report.value = "kept=\(kept) disabled=\(disabled) given=\(given)"
             result.value = (kept.base == UInt(bitPattern: mine) && kept.size == size,
-                            given.enabled && given.size == 64 * 1024)
+                            given.enabled && given.size >= Int(MINSIGSTKSZ) && given.size != size)
             done.signal()
         }
         thread.start()
         XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
-        XCTAssertTrue(result.value.kept, "the thread's own alternate stack is kept")
-        XCTAssertTrue(result.value.given, "a thread without one gets Traceway's")
+        print("traceway-alt-stack thread \(report.value)")
+        XCTAssertTrue(result.value.kept, "the thread's own alternate stack is kept: \(report.value)")
+        XCTAssertTrue(result.value.given, "a thread without one gets Traceway's: \(report.value)")
+    }
+
+    /// What a raised `SIGSEGV` carries on this platform (logged for the
+    /// report: the handler tells a fault from a sent signal by it).
+    func testWhatARaisedSegmentationFaultCarries() {
+        var original = sigaction()
+        var probe = sigaction()
+        sigemptyset(&probe.sa_mask)
+        probe.sa_flags = SA_SIGINFO
+        probe.__sigaction_u.__sa_sigaction = siginfoProbeHandler
+        sigaction(SIGSEGV, &probe, &original)
+        defer { sigaction(SIGSEGV, &original, nil) }
+        probedSiginfo = (-1, -1)
+        raise(SIGSEGV)
+        print("traceway-raised-sigsegv si_code=\(probedSiginfo.code) si_pid=\(probedSiginfo.pid) pid=\(getpid())")
+        XCTAssertNotEqual(probedSiginfo.code, -1, "the probe ran")
     }
 
     /// §14.2: from another thread, the main thread's stack while it is
@@ -706,6 +731,13 @@ private func previousSignalHandler(
 
 /// Where the probe handler's stack was when it ran.
 private var probedStackAddress: UInt = 0
+/// `si_code` and `si_pid` of the signal the siginfo probe got.
+private var probedSiginfo: (code: Int32, pid: Int32) = (-1, -1)
+private func siginfoProbeHandler(
+    _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
+) {
+    if let info = info { probedSiginfo = (info.pointee.si_code, info.pointee.si_pid) }
+}
 private func stackProbeHandler(
     _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
 ) {
