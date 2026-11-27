@@ -50,7 +50,13 @@ python3 CI/wireframe/run.py --dir .build/wireframe-gallery
 It needs Node with Playwright (`--playwright`), Chromium (`--chromium`) and
 rrweb-player (`--rrweb-player`, by default the dashboard's copy in
 `../traceway/frontend/node_modules`). Open `report.html` in `--out`.
-`--update-baseline` accepts a run into `CI/wireframe/baseline/<platform>-<size>/`.
+`--update-baseline` accepts a run into `CI/wireframe/baseline/<platform>-<size>/`:
+the replay renderings and their fidelity numbers, against which later runs must
+not lose more than `--tolerance` (0.03) of a metric or change more than 0.2% of
+the pixels. Renderings depend on the fonts and the Chromium build of the machine
+that runs `run.py`; the committed `ios-440x956` baseline (the iPhone 17 Pro Max
+simulator) was rendered on Linux with Chromium. A simulator of another size has
+no baseline and is only held to the fidelity floors.
 
 ## End to end against Traceway
 

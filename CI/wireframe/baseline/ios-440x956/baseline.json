@@ -1,0 +1,534 @@
+{
+ "checkpoints": {
+  "alerts-action-sheet": {
+   "fidelity": {
+    "color": 0.9858,
+    "edges": 0.9004,
+    "ssim": 0.9578
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "alerts-alert": {
+   "fidelity": {
+    "color": 0.9849,
+    "edges": 0.9038,
+    "ssim": 0.9634
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "alerts-dismissed": {
+   "fidelity": {
+    "color": 0.9989,
+    "edges": 1,
+    "ssim": 0.9965
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "buttons": {
+   "fidelity": {
+    "color": 0.9749,
+    "edges": 0.9287,
+    "ssim": 0.9474
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "buttons-tapped": {
+   "fidelity": {
+    "color": 0.9749,
+    "edges": 0.9286,
+    "ssim": 0.9483
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "collection": {
+   "fidelity": {
+    "color": 0.9867,
+    "edges": 1,
+    "ssim": 0.9687
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "collection-scrolled": {
+   "fidelity": {
+    "color": 0.9902,
+    "edges": 1,
+    "ssim": 0.9789
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "collection-strip": {
+   "fidelity": {
+    "color": 0.9864,
+    "edges": 1,
+    "ssim": 0.9677
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "controls": {
+   "fidelity": {
+    "color": 0.9943,
+    "edges": 0.9763,
+    "ssim": 0.9728
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "controls-changed": {
+   "fidelity": {
+    "color": 0.9939,
+    "edges": 0.9769,
+    "ssim": 0.9741
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "forms": {
+   "fidelity": {
+    "color": 0.9923,
+    "edges": 0.9435,
+    "ssim": 0.94
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "forms-filled": {
+   "fidelity": {
+    "color": 0.9908,
+    "edges": 0.931,
+    "ssim": 0.9335
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "images": {
+   "fidelity": {
+    "color": 0.8841,
+    "edges": 0.9352,
+    "ssim": 0.9414
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "layout": {
+   "fidelity": {
+    "color": 0.9924,
+    "edges": 1,
+    "ssim": 0.9661
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-end": {
+   "fidelity": {
+    "color": 0.9989,
+    "edges": 1,
+    "ssim": 0.9985
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-moving": {
+   "fidelity": {
+    "color": 0.9801,
+    "edges": 0.5458,
+    "ssim": 0.9735
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-start": {
+   "fidelity": {
+    "color": 0.9989,
+    "edges": 1,
+    "ssim": 0.9983
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "native": {
+   "fidelity": {
+    "color": 0.9074,
+    "edges": 0.4396,
+    "ssim": 0.8266
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation": {
+   "fidelity": {
+    "color": 0.9971,
+    "edges": 0.9941,
+    "ssim": 0.9896
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation-popped": {
+   "fidelity": {
+    "color": 0.9968,
+    "edges": 0.9837,
+    "ssim": 0.9884
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation-pushed": {
+   "fidelity": {
+    "color": 0.9979,
+    "edges": 0.9986,
+    "ssim": 0.9894
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "privacy": {
+   "fidelity": {
+    "color": 0.9421,
+    "edges": 0.5867,
+    "ssim": 0.9155
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "sheet": {
+   "fidelity": {
+    "color": 0.8825,
+    "edges": 0.9697,
+    "ssim": 0.9655
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "swiftui": {
+   "fidelity": {
+    "color": 0.9798,
+    "edges": 0.8232,
+    "ssim": 0.9061
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "swiftui-changed": {
+   "fidelity": {
+    "color": 0.9795,
+    "edges": 0.8258,
+    "ssim": 0.9072
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "table": {
+   "fidelity": {
+    "color": 0.9917,
+    "edges": 0.9785,
+    "ssim": 0.9303
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "table-bottom": {
+   "fidelity": {
+    "color": 0.9927,
+    "edges": 0.9998,
+    "ssim": 0.9314
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "table-scrolled": {
+   "fidelity": {
+    "color": 0.9923,
+    "edges": 0.9948,
+    "ssim": 0.9323
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "table-top": {
+   "fidelity": {
+    "color": 0.9926,
+    "edges": 0.9966,
+    "ssim": 0.9346
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "tabs": {
+   "fidelity": {
+    "color": 0.9957,
+    "edges": 0.9708,
+    "ssim": 0.9905
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "tabs-search": {
+   "fidelity": {
+    "color": 0.996,
+    "edges": 0.9718,
+    "ssim": 0.989
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "text": {
+   "fidelity": {
+    "color": 0.9824,
+    "edges": 0.9681,
+    "ssim": 0.8892
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  }
+ },
+ "scenarios": {
+  "alerts": {
+   "bytes": 12902,
+   "events": 9,
+   "mutations": 9
+  },
+  "buttons": {
+   "bytes": 13775,
+   "events": 5,
+   "mutations": 2
+  },
+  "collection": {
+   "bytes": 28219,
+   "events": 28,
+   "mutations": 8
+  },
+  "controls": {
+   "bytes": 16074,
+   "events": 22,
+   "mutations": 5
+  },
+  "forms": {
+   "bytes": 7545,
+   "events": 10,
+   "mutations": 7
+  },
+  "images": {
+   "bytes": 14500,
+   "events": 1,
+   "mutations": 1
+  },
+  "layout": {
+   "bytes": 10356,
+   "events": 3,
+   "mutations": 1
+  },
+  "motion": {
+   "bytes": 3792,
+   "events": 10,
+   "mutations": 9
+  },
+  "native": {
+   "bytes": 2106,
+   "events": 1,
+   "mutations": 1
+  },
+  "navigation": {
+   "bytes": 32955,
+   "events": 21,
+   "mutations": 15
+  },
+  "privacy": {
+   "bytes": 2206,
+   "events": 1,
+   "mutations": 1
+  },
+  "sheet": {
+   "bytes": 5833,
+   "events": 7,
+   "mutations": 7
+  },
+  "swiftui": {
+   "bytes": 8573,
+   "events": 3,
+   "mutations": 3
+  },
+  "table": {
+   "bytes": 136328,
+   "events": 53,
+   "mutations": 13
+  },
+  "tabs": {
+   "bytes": 10433,
+   "events": 7,
+   "mutations": 4
+  },
+  "text": {
+   "bytes": 7390,
+   "events": 1,
+   "mutations": 1
+  }
+ }
+}
