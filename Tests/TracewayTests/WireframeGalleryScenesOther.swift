@@ -218,17 +218,21 @@ extension GalleryScenes {
 
         static func force(_ view: UIView) {
             view.semanticContentAttribute = .forceRightToLeft
+            view.subviews.forEach(force)
+        }
+
+        /// A label works out its natural alignment when it gets its text:
+        /// once the screen is in the window, right to left all through, the
+        /// labels get theirs again.
+        static func refreshLabels(_ view: UIView) {
             if let label = view as? UILabel {
-                // A label works out its natural alignment when it gets its
-                // text: it gets it again, right to left.
                 let text = label.attributedText, alignment = label.textAlignment
                 label.attributedText = nil
                 label.textAlignment = alignment == .natural ? .left : .natural
                 label.attributedText = text
                 label.textAlignment = alignment
             }
-            view.setNeedsLayout()
-            view.subviews.forEach(force)
+            view.subviews.forEach(refreshLabels)
         }
     }
 
@@ -254,6 +258,7 @@ extension GalleryScenes {
         page.add(leftAligned)
         return RightToLeft(page)
     }, script: { d, controller in
+        RightToLeft.refreshLabels(controller.view)
         d.checkpoint(shows: ["ימין לשמאל", "שורה ראשונה של טקסט", "Natural alignment follows the layout", "One", "Three",
                              "חיפוש", "Switch at the start", "Left stays left"])
         let view = controller.view!
