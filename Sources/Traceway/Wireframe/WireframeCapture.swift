@@ -59,6 +59,7 @@ final class WireframeCapture {
     func reset() {
         previous = [:]
         textCache = [:]
+        cornerCache = [:]
     }
 
     // MARK: - Screen
@@ -439,8 +440,12 @@ final class WireframeCapture {
         let clips = view.clipsToBounds || layer.masksToBounds || layer.mask != nil
         if clips && p.box.isEmpty { return }
         var paint = box(layer, p, clips: clips)
-        if paint.radius.isEmpty, clips, let shape = s.shapeRadius, shape.box.isClose(to: p.box) {
-            paint.radius = WireframeCSS.radius(shape.radius)
+        if paint.radius.isEmpty, paint.paints || clips {
+            if let configured = configuredRadius(view, p), configured > 0 {
+                paint.radius = WireframeCSS.radius(configured)
+            } else if clips, let shape = s.shapeRadius, shape.box.isClose(to: p.box) {
+                paint.radius = WireframeCSS.radius(shape.radius)
+            }
         }
         let opacity = Double(layer.opacity)
         let scrolls = view is UIScrollView
@@ -526,6 +531,34 @@ final class WireframeCapture {
                 visitLayer(sublayer, s, &out)
             }
         }
+    }
+
+    private static let cornerConfigurationSelector = NSSelectorFromString("cornerConfiguration")
+    private var cornerCache: [ObjectIdentifier: (width: Double, height: Double, radius: Double?)] = [:]
+
+    /// The radius iOS 26's `cornerConfiguration` gives a view whose layer
+    /// has none (a sheet, a configured button): `fixed(radius:)`, or half
+    /// the short side for a capsule. Read once per view and size.
+    private func configuredRadius(_ view: UIView, _ p: Placed) -> Double? {
+        guard #available(iOS 26.0, *) else { return nil }
+        let key = ObjectIdentifier(view)
+        if let cached = cornerCache[key], cached.width == p.width, cached.height == p.height { return cached.radius }
+        var radius: Double?
+        if view.responds(to: WireframeCapture.cornerConfigurationSelector),
+           let configuration = view.value(forKey: "cornerConfiguration") {
+            let text = String(describing: configuration)
+            if let at = text.range(of: "topLeftRadius = ") {
+                let rest = text[at.upperBound...]
+                if rest.hasPrefix("capsule") {
+                    radius = min(p.width, p.height) / 2
+                } else if rest.hasPrefix("fixed(radius: "), let end = rest.firstIndex(of: ")") {
+                    radius = Double(rest[rest.index(rest.startIndex, offsetBy: 14)..<end]).map { min($0, min(p.width, p.height) / 2) }
+                }
+            }
+        }
+        if cornerCache.count > 2000 { cornerCache.removeAll() }
+        cornerCache[key] = (p.width, p.height, radius)
+        return radius
     }
 
     /// Whether a layer cuts out what is under it (`destOut`, `destIn`)
@@ -823,7 +856,15 @@ final class WireframeCapture {
     }
 
     private func label(_ label: UILabel, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
-        let (baseStyle, paints) = boxCss(s, p, layer, label)
+        var (baseStyle, paints) = boxCss(s, p, layer, label)
+        // A label draws its background color into its own contents, not as
+        // its layer's background.
+        if layer.backgroundColor == nil,
+           let background = WireframeCapture.color(label.backgroundColor, label.traitCollection),
+           !background.isTransparent {
+            baseStyle += WireframeCSS.fill(background)
+            paints = true
+        }
         var style = baseStyle
         let raw = label.attributedText?.string ?? label.text ?? ""
         let value = raw.isEmpty ? nil : shown(raw, p.box, s)

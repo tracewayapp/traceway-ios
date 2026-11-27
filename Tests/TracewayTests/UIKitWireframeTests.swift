@@ -163,6 +163,14 @@ final class UIKitWireframeTests: XCTestCase {
         XCTAssertTrue(styleMap(matrix)["transform"]!.hasPrefix("matrix(0,1,-1,0,"), styleMap(matrix)["transform"]!)
     }
 
+    func testALabelKeepsItsBackground() throws {
+        let badge = label("Badge", CGRect(x: 10, y: 10, width: 100, height: 22))
+        badge.backgroundColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.5)
+        show(badge)
+        let node = try node("Badge", in: try screen())
+        XCTAssertEqual(styleMap(node)["background-color"], "rgba(0,0,0,0.502)")
+    }
+
     func testLabelsKeepLinesAlignmentFontsAndCutLines() throws {
         let single = label("One line", CGRect(x: 10, y: 10, width: 300, height: 22))
         let centered = label("Centered", CGRect(x: 10, y: 40, width: 300, height: 22))
