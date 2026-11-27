@@ -212,8 +212,11 @@ extension GalleryScenes {
         body.frame = CGRect(x: 20, y: 160, width: 320, height: 24)
         detail.view.addSubview(body)
         d.tap(at: CGPoint(x: 200, y: 212)) { nav.pushViewController(detail, animated: true) }
+        // The checkpoint is the screen once the transition has ended.
+        d.wait(upTo: 5, until: { nav.transitionCoordinator == nil && nav.topViewController === detail })
         d.checkpoint("pushed", shows: ["Message", "Hello from the detail page"], hides: ["Three new messages"], settle: 0.8)
         d.tap(at: CGPoint(x: 30, y: 70)) { nav.popViewController(animated: true) }
+        d.wait(upTo: 5, until: { nav.transitionCoordinator == nil && nav.topViewController !== detail })
         d.checkpoint("popped", shows: ["Three new messages"], hides: ["Hello from the detail page"], settle: 0.8)
     })
 
