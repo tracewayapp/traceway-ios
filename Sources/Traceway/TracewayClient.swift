@@ -15,6 +15,12 @@ struct TracewayTestOverrides {
     var opampMinPollIntervalMs: Int64?
     /// Stands in for the wireframe recorder.
     var replaySource: ReplaySource?
+    /// Receives each metrics payload instead of the network and answers with
+    /// an HTTP status. Without it, a test that keeps OTLP logs in memory
+    /// (`logExporter`) has its metrics discarded, and one that does not
+    /// sends them through `transport`.
+    var metricsSink: ((Data) -> Int)?
+    var metricsScheduler: MetricsScheduler?
 }
 
 private let maxErrorsPerMinute = 60
@@ -64,10 +70,25 @@ public final class TracewayClient {
     let transport: HTTPTransport
     let recordings: RecordingsTransport
     let replay: ReplayController
+    /// App performance metrics: the aggregates and their uploads.
+    let metrics: MetricsRecorder
+    let memoryPeaks: MemoryPeaks
+    /// Start, display, frame and hang measurements; nil without
+    /// `captureMetrics`. The UIKit hooks give it its host.
+    let vitals: AppVitals?
+    /// What the metrics pipeline reads from any thread: the session, the
+    /// installation id, the resource and the state store, as the client's
+    /// queue last set them.
+    private let metricsSession = Locked<String?>(nil)
+    private let metricsInstallation = Locked("")
+    private let metricsResource = Locked<[String: String]>([:])
+    private let metricsStore = Locked(StateStore(directory: nil))
 
     private var globalAttributes: [String: String] = [:]
     private(set) var resourceAttributes: [String: String] = [:]
-    private(set) var store = StateStore(directory: nil)
+    private(set) var store = StateStore(directory: nil) {
+        didSet { metricsStore.value = store }
+    }
     private var outbox: Outbox?
     /// Traceway's queue when the live one belongs to another receiver.
     private var tracewayOutbox: Outbox?
@@ -153,7 +174,7 @@ public final class TracewayClient {
         } else {
             guard options.telemetry?.coversAllSignals == true else {
                 throw ConfigurationError(description:
-                    "Without a connection string, TracewayOptions.telemetry needs a url or both signal endpoints")
+                    "Without a connection string, TracewayOptions.telemetry needs a url or all three signal endpoints")
             }
             token = nil
             endpoints = nil
@@ -190,6 +211,7 @@ public final class TracewayClient {
                 // Standalone, nothing receives the session rows; the session
                 // id still correlates records and samples.
                 sessions: options.sessions && !standalone,
+                captureMetrics: options.captureMetrics,
                 replayImages: options.replayImages
             )
         )
@@ -213,6 +235,45 @@ public final class TracewayClient {
             nextSegmentIndex: { sessionsRef?()?.nextSegmentIndex() ?? 0 },
             segmentMs: min(max(Int(Double(ringMs) * 0.8), 200), 10_000)
         )
+
+        let scheduler = overrides?.metricsScheduler ?? DispatchMetricsScheduler()
+        let send: (Data) -> Int
+        if let sink = overrides?.metricsSink {
+            send = sink
+        } else if overrides?.logExporter != nil {
+            send = { _ in 200 }
+        } else {
+            let destination = routes.metrics
+            let transport = self.transport
+            send = { TracewayClient.postMetrics($0, to: destination, transport: transport) }
+        }
+        let session = metricsSession, installation = metricsInstallation
+        let resource = metricsResource, store = metricsStore
+        metrics = MetricsRecorder(
+            settings: settings.activeMetrics,
+            sessionId: { session.value },
+            installationId: { installation.value },
+            resource: { resource.value },
+            send: send,
+            store: { store.value },
+            scheduler: scheduler,
+            dimensions: options.metricDimensions,
+            deferUntilStart: true,
+            storageScope: routes.metrics.key
+        )
+        memoryPeaks = MemoryPeaks(recorder: metrics, store: { store.value }, storageScope: routes.metrics.key)
+        if options.captureMetrics {
+            let screen = self.screen
+            vitals = AppVitals(
+                recorder: metrics,
+                currentScreen: { TracewayClient.metricsScreen(screen) },
+                scheduler: scheduler,
+                reportHangsWithDebugger: options.reportHangsInDebug
+            )
+        } else {
+            vitals = nil
+        }
+
         queue.setSpecific(key: TracewayClient.queueKey, value: 1)
         sessionsRef = { [weak self] in self?.sessions }
     }
@@ -226,6 +287,7 @@ public final class TracewayClient {
         options: TracewayOptions,
         overrides: TracewayTestOverrides? = nil
     ) throws -> TracewayClient {
+        let sdkStartMs = AppVitals.monotonicMs()
         sharedLock.lock()
         if let existing = _shared, !existing.isShutdown {
             sharedLock.unlock()
@@ -234,7 +296,11 @@ public final class TracewayClient {
         sharedLock.unlock()
         Log.debugEnabled = options.debug
         let client = try TracewayClient(connectionString: connectionString, options: options, overrides: overrides)
-        let device = overrides?.deviceAttributes ?? DeviceInfoCollector.collectSync()
+        if overrides == nil {
+            client.vitals?.watchColdStart(sdkStartMs: sdkStartMs, processStartMs: AppVitals.processStartMonotonicMs())
+        }
+        let device = overrides?.deviceAttributes
+            ?? DeviceInfoCollector.collectSync().merging(DeviceDimensions.collect()) { $1 }
         client.queue.sync { client.startOnQueue(device: device) }
         sharedLock.lock()
         _shared = client
@@ -258,6 +324,7 @@ public final class TracewayClient {
             instanceUid = Ids.uuidBytes(Ids.uuidv7()) ?? Ids.randomBytes(16)
             store.set("instanceUid", .string(Ids.uuidString(instanceUid)))
         }
+        metricsInstallation.value = Ids.uuidString(instanceUid)
 
         var appliedHash: [UInt8]?
         if remoteConfigEnabled, let cached = store.get("config")?.object,
@@ -269,6 +336,7 @@ public final class TracewayClient {
         triggers.setTriggers(control.settings.triggers)
 
         buildResource(device)
+        metricsResource.value = resourceAttributes
         setUpOTel(stateDir)
 
         // Sessions always run: their id correlates records, samples and keys
@@ -324,6 +392,7 @@ public final class TracewayClient {
                 appliedConfigHash: appliedHash,
                 onInstanceUidChange: { [weak self] uid in
                     self?.instanceUid = uid
+                    self?.metricsInstallation.value = Ids.uuidString(uid)
                     self?.store.set("instanceUid", .string(Ids.uuidString(uid)))
                 },
                 onStopped: { code in Log.warn("remote config stopped (HTTP \(code))") },
@@ -336,6 +405,11 @@ public final class TracewayClient {
         }
 
         started = true
+        if options.captureMetrics {
+            let settings = control.settings
+            metrics.configure(settings.activeMetrics, flushSeconds: settings.metrics.flushSeconds)
+            metrics.start()
+        }
         control.onChange { [weak self] settings in self?.onSettingsChanged(settings) }
         restoreLocalCaptures()
         onSettingsChanged(control.settings)
@@ -388,6 +462,9 @@ public final class TracewayClient {
         if let environment = options.environment, !environment.isEmpty {
             attrs["deployment.environment.name"] = environment
         }
+        // The SDK's performance numbers arrive as metrics: the server must
+        // not count them a second time from the records.
+        if options.captureMetrics { attrs["traceway.metrics"] = "aggregated" }
         resourceAttributes = attrs
     }
 
@@ -467,7 +544,10 @@ public final class TracewayClient {
             sink: { [weak self] in self?.logSink }
         )
         let spanProcessor = ControlSpanProcessor(
-            route: { [weak self] span in self?.onQueue { self?.router?.routeSpan(span) } }
+            route: { [weak self] span in
+                self?.observeRequest(span)
+                self?.onQueue { self?.router?.routeSpan(span) }
+            }
         )
         let loggerProvider = LoggerProviderBuilder()
             .with(resource: resource)
@@ -527,6 +607,7 @@ public final class TracewayClient {
             attributes[Attr.exceptionId] = .string(Ids.uuidv4())
             emit(eventName: Events.exception, severity: .fatal, attributes: attributes,
                  time: Clock.date(ms: crash.recordedAtMs))
+            if options.captureMetrics { metrics.crash() }
         }
         for report in LegacyReports.take(baseDir: base) {
             var attributes: [String: AttributeValue] = [Attr.exceptionId: .string(Ids.uuidv4())]
@@ -615,6 +696,13 @@ public final class TracewayClient {
     /// An uncaught NSException, on the crashing thread: recorded and written
     /// to disk before this returns, then sent for up to `timeout` seconds.
     func captureFatalException(_ exception: NSException, timeout: TimeInterval = 2) {
+        if options.captureMetrics {
+            // Counted whatever the filters say, and on disk before the
+            // process ends; sent with the flush below, or by the next start.
+            metrics.crash()
+            metrics.flush(final: true)
+            metricsStore.value.flush()
+        }
         let type = exception.name.rawValue
         var attrs = screen.context(nowMs: Clock.nowMs())
         guard !ignored(type: type, message: exception.reason ?? "") else { return }
@@ -790,10 +878,14 @@ public final class TracewayClient {
         recordNavigation(to: path, action: action, from: from, time: Date())
     }
 
-    func recordNavigation(to path: String, action: String, from: String?, time: Date) {
+    /// `displayStartMs` is when the screen began to load or appear (Unix ms),
+    /// when that was before the navigation is reported.
+    func recordNavigation(to path: String, action: String, from: String?, time: Date, displayStartMs: Int64? = nil) {
         // The screen changes now, on the caller's thread: an issue captured
         // right after names the screen it happened on.
         let shown = screen.navigated(to: path, atMs: Clock.ms(time))
+        vitals?.navigated(path.isEmpty ? nil : normalizePath(path), action: action,
+                          timeMs: displayStartMs ?? Clock.ms(time))
         onQueue {
             self.sessions?.markActivity()
             var attrs: [String: AttributeValue] = [
@@ -811,10 +903,86 @@ public final class TracewayClient {
     }
 
     /// Names the current screen by its route template (`/orders/{id}`):
-    /// issues and navigation records carry it as `app.screen.route` until
+    /// issues and navigation records carry it as `app.screen.route`, and
+    /// metrics group by it instead of by the path with its ids folded, until
     /// the app reaches another screen. Nil removes it.
     public func setRoute(_ template: String?) {
         screen.setRoute(template)
+        if let route = screen.route { vitals?.routeNamed(route) }
+    }
+
+    // MARK: - Metrics
+
+    /// The screen on top shows everything it loads: ends its time to full
+    /// display (`app.screen.ttfd`).
+    public func reportFullyDisplayed() {
+        vitals?.fullyDisplayed()
+    }
+
+    /// Observes `value` of an app-defined distribution, e.g.
+    /// `checkout.duration`. Names are `[a-z][a-z0-9_.]`, up to 63
+    /// characters, outside `app.`, `browser.`, `traceway.` and `custom.`;
+    /// at most two dimensions, values as text.
+    public func metric(_ name: String, value: Double, dimensions: [String: Any] = [:]) {
+        guard options.captureMetrics else { return }
+        metrics.metric(name, value, dims: dimensions)
+    }
+
+    /// Adds `n` to an app-defined counter, with the names and dimensions of
+    /// `metric`.
+    public func count(_ name: String, n: Double = 1, dimensions: [String: Any] = [:]) {
+        guard options.captureMetrics else { return }
+        metrics.count(name, n, dims: dimensions)
+    }
+
+    /// Sets an app-defined dimension on every metric from now on
+    /// (`custom.<key>`), at most two keys; nil removes it.
+    public func setMetricDimension(_ key: String, _ value: String?) {
+        metrics.setDimension(key, value)
+    }
+
+    /// The current screen as a metrics dimension: its route template, or
+    /// its path with ids folded.
+    static func metricsScreen(_ screen: ScreenState) -> String? {
+        if let route = screen.route { return route }
+        guard let name = screen.name, !name.isEmpty else { return nil }
+        return normalizePath(name)
+    }
+
+    /// A finished request span (the URLSession instrumentation's, or a client
+    /// span of the app's own) as `app.request.*`. Any thread.
+    func observeRequest(_ span: SpanData) {
+        guard options.captureMetrics, span.kind == .client else { return }
+        let attributes = span.attributes
+        guard attributes["http.request.method"] != nil || attributes["http.method"] != nil,
+              let url = (attributes["url.full"] ?? attributes["http.url"])?.description
+        else { return }
+        let status = (attributes["http.response.status_code"] ?? attributes["http.status_code"])
+            .flatMap { Int($0.description) }
+        let failed = attributes["error.type"] != nil || (status ?? 0) <= 0 || (status ?? 0) >= 400
+        let bytes = attributes["http.response.body.size"].flatMap { Int64($0.description) }
+        let ms = max(0, span.endTime.timeIntervalSince(span.startTime) * 1000)
+        metrics.request(url, ms: ms, failed: failed, responseBytes: bytes)
+    }
+
+    /// One blocking upload of a metrics payload, gzipped where zlib is
+    /// there: the HTTP status, 0 without an answer.
+    static func postMetrics(_ body: Data, to destination: OtlpDestination, transport: HTTPTransport) -> Int {
+        var headers = destination.headers
+        headers["Content-Type"] = "application/x-protobuf"
+        var payload = body
+        if let compressed = Gzip.compress(body) {
+            payload = compressed
+            headers["Content-Encoding"] = "gzip"
+        }
+        let status = Locked(0)
+        let done = DispatchSemaphore(value: 0)
+        transport.post(url: destination.url, headers: headers, body: payload, timeout: 20) { result in
+            status.value = result.statusCode
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 25)
+        return status.value
     }
 
     /// Starts an interaction named `name`: a span (`traceway.interaction`)
@@ -891,6 +1059,13 @@ public final class TracewayClient {
         }
         group.enter()
         replay.drain { group.leave() }
+        group.enter()
+        let metrics = self.metrics
+        DispatchQueue.global(qos: .utility).async {
+            metrics.flush()
+            metrics.awaitUploads(timeoutMs: 20_000)
+            group.leave()
+        }
         group.notify(queue: queue) {
             // Batches that failed just now are in the outboxes.
             let drained = DispatchGroup()
@@ -917,8 +1092,13 @@ public final class TracewayClient {
             }
             if let session = self.sessions?.current {
                 self.emitSessionEnd(session, endedAtMs: Clock.nowMs())
+                // The session may go on after a restart: its memory is
+                // observed when it ends.
+                if self.options.captureMetrics { self.memoryPeaks.remember(session.id) }
             }
+            self.vitals?.stop()
             self.flushAll {
+                self.metrics.stop()
                 self.isShutdown = true
                 self.sessions?.stop()
                 self.opamp?.stop()
@@ -984,6 +1164,11 @@ public final class TracewayClient {
                 return
             }
             self.replay.onPaused()
+            if self.options.captureMetrics, self.started {
+                self.memoryPeaks.remember(self.sessions?.currentId)
+                // Stored before it is sent: the app may not live to see the answer.
+                self.metrics.flush(final: true)
+            }
             self.flushAll(completion)
         }
     }
@@ -1077,6 +1262,11 @@ public final class TracewayClient {
         }
         restoreTriggerProgress(session.id)
         replay.onSessionStart()
+        metricsSession.value = session.id
+        if options.captureMetrics {
+            memoryPeaks.settle(session.id)
+            metrics.sessionStarted(session.id, resumed: resumed)
+        }
         if control.settings.sessionsEnabled {
             reportedSessions.insert(session.id)
             emit(
@@ -1093,6 +1283,7 @@ public final class TracewayClient {
 
     private func onSessionEnd(_ session: SessionInfo, endedAtMs: Int64) {
         replay.onSessionEnd(session.id)
+        if options.captureMetrics { memoryPeaks.ended(session.id) }
         emitSessionEnd(session, endedAtMs: endedAtMs)
     }
 
@@ -1476,6 +1667,7 @@ public final class TracewayClient {
         )
         observeScreenForSequences()
         applyReplay()
+        metrics.configure(settings.activeMetrics, flushSeconds: settings.metrics.flushSeconds)
     }
 
     private func collectSelectors(_ matcher: Matcher, type: String, into out: inout [String]) {
@@ -1578,6 +1770,8 @@ public final class TracewayClient {
             isShutdown = true
             opamp?.stop()
             replay.stop()
+            metrics.stop()
+            vitals?.stop()
         }
         TracewayClient.sharedLock.lock()
         if TracewayClient._shared === self { TracewayClient._shared = nil }

@@ -11,6 +11,7 @@ struct TracewayEndpoints {
     let base: String
     let logs: URL
     let traces: URL
+    let metrics: URL
     let opamp: URL
     let recordings: URL
 
@@ -44,12 +45,15 @@ func resolveEndpoints(_ apiUrl: String) throws -> TracewayEndpoints {
     guard let base = components.string,
           let logs = URL(string: base + "/api/otel/v1/logs"),
           let traces = URL(string: base + "/api/otel/v1/traces"),
+          let metrics = URL(string: base + "/api/otel/v1/metrics"),
           let opamp = URL(string: base + "/api/otel/v1/opamp"),
           let recordings = URL(string: base + "/api/recordings")
     else {
         throw ConfigurationError(description: "Invalid connection string: \(apiUrl)")
     }
-    return TracewayEndpoints(base: base, logs: logs, traces: traces, opamp: opamp, recordings: recordings)
+    return TracewayEndpoints(
+        base: base, logs: logs, traces: traces, metrics: metrics, opamp: opamp, recordings: recordings
+    )
 }
 
 /// Where one OTLP signal is sent, and with which headers.
@@ -79,6 +83,7 @@ struct OtlpDestination {
 struct TelemetryRoutes {
     let logs: OtlpDestination
     let traces: OtlpDestination
+    let metrics: OtlpDestination
     /// Traceway's log endpoint, for exceptions, messages and the SDK's
     /// control records when ordinary logs go elsewhere. Nil standalone.
     let traceway: OtlpDestination?
@@ -91,10 +96,11 @@ struct TelemetryRoutes {
     func isOwn(_ url: String) -> Bool {
         (logs.external && url.hasPrefix(logs.url.absoluteString))
             || (traces.external && url.hasPrefix(traces.url.absoluteString))
+            || (metrics.external && url.hasPrefix(metrics.url.absoluteString))
     }
 
     /// `endpoints` and `token` are nil when the SDK runs standalone; then
-    /// `telemetry` must name a destination for both signals.
+    /// `telemetry` must name a destination for every signal.
     static func resolve(
         endpoints: TracewayEndpoints?,
         token: String?,
@@ -104,11 +110,12 @@ struct TelemetryRoutes {
         if let token = token { auth["Authorization"] = "Bearer \(token)" }
 
         func route(_ kind: String, _ endpoint: TracewayTelemetryEndpoint?, _ tracewayURL: URL?) throws -> OtlpDestination {
-            let base = telemetry?.url
+            // A blank url is unset, as in the browser and Android SDKs.
+            let base = telemetry?.url.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
             if endpoint == nil, base == nil {
                 guard let tracewayURL = tracewayURL else {
                     throw ConfigurationError(description:
-                        "TracewayTelemetry has no destination for \(kind): standalone telemetry needs a url or both signal endpoints")
+                        "TracewayTelemetry has no destination for \(kind): standalone telemetry needs a url or all three signal endpoints")
                 }
                 return OtlpDestination(url: tracewayURL, headers: auth)
             }
@@ -128,6 +135,7 @@ struct TelemetryRoutes {
         return TelemetryRoutes(
             logs: try route("logs", telemetry?.logs, endpoints?.logs),
             traces: try route("traces", telemetry?.traces, endpoints?.traces),
+            metrics: try route("metrics", telemetry?.metrics, endpoints?.metrics),
             traceway: endpoints.map { OtlpDestination(url: $0.logs, headers: auth) }
         )
     }

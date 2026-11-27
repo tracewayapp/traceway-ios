@@ -250,6 +250,14 @@ func applyOverlay(_ base: Settings, _ overlay: [String: JSON]) -> Settings {
         }
     }
 
+    if let metrics = overlay["metrics"]?.object {
+        if let enabled = metrics["enabled"]?.bool { out.metrics.enabled = enabled }
+        if let sampleRate = rate(metrics["sampleRate"]) { out.metrics.sampleRate = sampleRate }
+        if let seconds = positive(metrics["flushSeconds"], maxMetricsFlushSeconds) {
+            out.metrics.flushSeconds = max(seconds, minMetricsFlushSeconds)
+        }
+    }
+
     if let buffer = overlay["buffer"]?.object {
         if let maxBytes = positive(buffer["maxBytes"], maxBufferBytes) { out.bufferMaxBytes = Int(maxBytes) }
         if let maxAge = positive(buffer["maxAgeSeconds"], maxBufferAgeSeconds) { out.bufferMaxAgeSeconds = maxAge }
@@ -291,6 +299,7 @@ func applyLimits(_ ceilings: Ceilings, _ overlay: [String: JSON]?) -> Ceilings {
     if let replay = Mode(name: limits["replay"]) {
         out.replay = lowerMode(ceilings.replay, replay)
     }
+    if limits["metrics"]?.string == "off" { out.metrics = false }
     return out
 }
 
@@ -308,6 +317,7 @@ func clampToCeilings(_ settings: Settings, _ ceilings: Ceilings) -> Settings {
     // picture to record either.
     out.replayImages = ceilings.replay == .off ? .off : min(out.replayImages, ceilings.replayImages)
     out.sessionsEnabled = out.sessionsEnabled && ceilings.sessions
+    out.metrics.enabled = out.metrics.enabled && ceilings.metrics
     return out
 }
 

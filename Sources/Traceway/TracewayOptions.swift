@@ -47,6 +47,15 @@ public struct TracewayOptions {
     /// Record taps with the selector of the view that handled them, and feed
     /// them to recording triggers (signal `userActions`).
     public var captureUserActions: Bool
+    /// Measure app start, screen display times, slow and frozen frames,
+    /// hangs, crashes, sessions, users, memory and requests, and upload them
+    /// as OTLP metrics (see `Traceway.metric`). A ceiling: a rule's
+    /// `metrics` section can switch them off or sample them, never on.
+    public var captureMetrics: Bool
+    /// Up to two app-defined dimensions on every metric (`custom.<key>`);
+    /// `Traceway.setMetricDimension` changes them later. Keys are lowercase
+    /// `[a-z][a-z0-9_]`, up to 32 characters; values are cut at 64.
+    public var metricDimensions: [String: String]
 
     /// Stream breadcrumbs and the screen recording all the time instead of
     /// keeping them for errors.
@@ -77,6 +86,11 @@ public struct TracewayOptions {
     /// false drops it. Runs on the thread that captured it. A callback that
     /// throws keeps the record (and logs why with `debug`).
     public var beforeCapture: ((TracewayCapturedError) throws -> Bool)?
+    /// Report hangs (`app.hang`) while a debugger is attached too. Off by
+    /// default: a breakpoint or a step in the debugger stops the main thread
+    /// exactly like a hang does, and there is no telling them apart. Turn it
+    /// on to test hang reporting from Xcode.
+    public var reportHangsInDebug: Bool
 
     public init(
         sampleRate: Double = 1.0,
@@ -94,6 +108,8 @@ public struct TracewayOptions {
         captureNetwork: Bool = true,
         captureNavigation: Bool = true,
         captureUserActions: Bool = true,
+        captureMetrics: Bool = true,
+        metricDimensions: [String: String] = [:],
         recordAllSessions: Bool = false,
         collection: [String: Any]? = nil,
         sessions: Bool = true,
@@ -103,7 +119,8 @@ public struct TracewayOptions {
         telemetry: TracewayTelemetry? = nil,
         propagateTraceHeaderUrls: [String] = [],
         ignoreErrors: [TracewayErrorPattern]? = nil,
-        beforeCapture: ((TracewayCapturedError) throws -> Bool)? = nil
+        beforeCapture: ((TracewayCapturedError) throws -> Bool)? = nil,
+        reportHangsInDebug: Bool = false
     ) {
         self.sampleRate = sampleRate
         self.debug = debug
@@ -120,6 +137,8 @@ public struct TracewayOptions {
         self.captureNetwork = captureNetwork
         self.captureNavigation = captureNavigation
         self.captureUserActions = captureUserActions
+        self.captureMetrics = captureMetrics
+        self.metricDimensions = metricDimensions
         self.recordAllSessions = recordAllSessions
         self.collection = collection
         self.sessions = sessions
@@ -130,6 +149,7 @@ public struct TracewayOptions {
         self.propagateTraceHeaderUrls = propagateTraceHeaderUrls
         self.ignoreErrors = ignoreErrors
         self.beforeCapture = beforeCapture
+        self.reportHangsInDebug = reportHangsInDebug
     }
 
     /// What is not reported unless `ignoreErrors` says otherwise: a phone
@@ -149,29 +169,41 @@ public struct TracewayOptions {
 }
 
 /// Another OTLP/HTTP receiver (an OpenTelemetry Collector, Grafana,
-/// Honeycomb, ...). The shared `url` gets `/v1/logs` and `/v1/traces`
-/// appended; a per-signal endpoint is a complete URL, used as given. With a
-/// connection string, exceptions, messages and the SDK's session and control
-/// records still go to Traceway only, as do OpAMP and screen recordings.
+/// Honeycomb, ...). The shared `url` gets `/v1/logs`, `/v1/traces` and
+/// `/v1/metrics` appended; a per-signal endpoint is a complete URL, used as
+/// given. Without a shared `url`, the signals not listed keep their Traceway
+/// destination. With a connection string, exceptions, messages and the SDK's
+/// session and control records still go to Traceway only, as do OpAMP and
+/// screen recordings. The Traceway token is never sent to these receivers.
 public struct TracewayTelemetry {
     public var url: String?
     public var headers: [String: String]
     public var logs: TracewayTelemetryEndpoint?
     public var traces: TracewayTelemetryEndpoint?
+    public var metrics: TracewayTelemetryEndpoint?
 
     public init(
         url: String? = nil,
         headers: [String: String] = [:],
         logs: TracewayTelemetryEndpoint? = nil,
-        traces: TracewayTelemetryEndpoint? = nil
+        traces: TracewayTelemetryEndpoint? = nil,
+        metrics: TracewayTelemetryEndpoint? = nil
     ) {
         self.url = url
         self.headers = headers
         self.logs = logs
         self.traces = traces
+        self.metrics = metrics
     }
 
-    var coversAllSignals: Bool { url != nil || (logs != nil && traces != nil) }
+    /// The shared url; a blank one is unset, as in the browser and Android
+    /// SDKs.
+    var baseURL: String? {
+        url.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    }
+
+    /// Whether every signal has a destination here, as standalone mode needs.
+    var coversAllSignals: Bool { baseURL != nil || (logs != nil && traces != nil && metrics != nil) }
 }
 
 public struct TracewayTelemetryEndpoint {

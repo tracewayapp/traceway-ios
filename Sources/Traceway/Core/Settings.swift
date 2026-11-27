@@ -194,6 +194,22 @@ struct Capture: Equatable {
     var replay: Bool = false
 }
 
+let defaultMetricsFlushSeconds: Double = 300
+let minMetricsFlushSeconds: Double = 30
+let maxMetricsFlushSeconds: Double = 3600
+
+/// The aggregates: histograms and counters built on the device and uploaded
+/// as OTLP metrics (`metrics` in the settings document). Separate from the
+/// per-signal settings, which govern the detailed records: a signal can be
+/// off while its numbers are still charted.
+struct MetricsSettings: Equatable {
+    var enabled = true
+    /// Share of sessions that record metrics; each payload states it, so the
+    /// server weights counts by 1/rate.
+    var sampleRate: Double = 1
+    var flushSeconds: Double = defaultMetricsFlushSeconds
+}
+
 struct Settings: Equatable {
     /// Kill switch: when false nothing but the OpAMP poll leaves the device.
     var enabled: Bool
@@ -213,9 +229,16 @@ struct Settings: Equatable {
     var persist: Bool
     var triggers: [Trigger]
     var captures: [Capture]
+    var metrics = MetricsSettings()
 
     func signal(_ name: String) -> SignalSettings {
         signals[name] ?? SignalSettings(mode: .off)
+    }
+
+    /// The aggregates setting, or nil when metrics are off: the kill switch,
+    /// `captureMetrics`, the plan's limits or a rule.
+    var activeMetrics: MetricsSettings? {
+        enabled && metrics.enabled ? metrics : nil
     }
 }
 
@@ -229,6 +252,9 @@ struct Ceilings: Equatable {
     var sessions: Bool
     /// `TracewayOptions.replayImages`; nothing when replay is off.
     var replayImages: TracewayImagePolicy = .always
+    /// False when the app (`captureMetrics`) or the plan does not allow
+    /// metrics.
+    var metrics = true
 
     func signal(_ name: String) -> Mode { signals[name] ?? .off }
 }
@@ -304,6 +330,7 @@ func ceilingsFrom(
     captureNavigation: Bool = true,
     captureUserActions: Bool = true,
     sessions: Bool = true,
+    captureMetrics: Bool = true,
     replayImages: TracewayImagePolicy = .always
 ) -> Ceilings {
     func allow(_ flag: Bool) -> Mode { flag ? .stream : .off }
@@ -318,6 +345,7 @@ func ceilingsFrom(
         signals: signals,
         replay: allow(screenCapture),
         sessions: sessions,
-        replayImages: screenCapture ? replayImages : .off
+        replayImages: screenCapture ? replayImages : .off,
+        metrics: captureMetrics
     )
 }

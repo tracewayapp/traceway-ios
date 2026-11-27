@@ -3,9 +3,9 @@
 ## 2.0.0-beta.1 — unreleased
 
 Rebuilt on the official OpenTelemetry Swift SDK, at parity with the browser
-SDK 2.x and the Flutter SDK 2.0 (without app performance metrics): OTLP logs
-and spans, a ring buffer on the device, remote config over OpAMP, captures,
-recording triggers, taps, and wireframe session replay.
+SDK 2.x and the Flutter and Android SDKs 2.0: OTLP logs, spans and metrics, a
+ring buffer on the device, remote config over OpAMP, captures, recording
+triggers, taps, wireframe session replay and app performance metrics.
 
 - **Breaking**: requires a server with OTLP/OpAMP support for iOS projects; the
   1.x `/api/report` protocol is gone. Options `debounceMs`, `retryDelayMs`,
@@ -40,6 +40,26 @@ recording triggers, taps, and wireframe session replay.
   the view (`UIButton#pay`), plus `app.widget.*` and `app.screen.*` attributes.
 - **Screens**: view controllers that appear are recorded as
   `browser.navigation`; SwiftUI views report theirs with `.tracewayScreen`.
+- **App performance metrics** (`captureMetrics`, on by default), with the
+  Android and Flutter SDKs' names, dimensions and thresholds:
+  `app.start.duration` (`start_type` cold / warm / hot, from the process start
+  read with `kinfo_proc`, or from `Traceway.start` when iOS prewarmed the
+  process), `app.screen.ttid` and `app.screen.ttfd`
+  (`Traceway.reportFullyDisplayed()`), `app.frames.slow` and
+  `app.frames.frozen` from a `CADisplayLink` (frozen at 700 ms), `app.hang` and
+  `app.hang.duration` (main thread blocked 2 s in the foreground; not under a
+  debugger unless `reportHangsInDebug`), `app.crash`, `app.session`,
+  `app.user` and `app.user.affected`, `app.memory.peak` (`task_vm_info`
+  physical footprint) and `app.request.duration` / `.bytes` / `.failed` by host
+  from the URLSession spans. Delta exponential histograms (scale 3) and
+  monotonic sums, gzipped OTLP protobuf to `/api/otel/v1/metrics` every
+  `metrics.flushSeconds` (300 s) and on background; at most 200 series per
+  payload and 60 KB per body; one resend of a payload that got no answer.
+  `Traceway.metric`, `Traceway.count` and `Traceway.setMetricDimension` (or
+  `metricDimensions`) add the app's own. Remote `metrics.enabled`,
+  `metrics.sampleRate`, `metrics.flushSeconds` and `limits.metrics` apply.
+  `TracewayTelemetry` gains a `metrics` endpoint; standalone needs a `url` or
+  all three endpoints, and a blank `url` counts as unset.
 - **Network**: URLSession requests are client spans from the official
   `URLSessionInstrumentation` (stable HTTP semantic conventions);
   `propagateTraceHeaderUrls` adds W3C `traceparent` headers.

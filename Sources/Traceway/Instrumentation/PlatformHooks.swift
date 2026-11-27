@@ -55,6 +55,7 @@ extension TracewayClient {
 final class PlatformHooks {
     private static var current: PlatformHooks?
     private static var swizzled = false
+    private static var displaySwizzled = false
 
     private weak var client: TracewayClient?
     private let clientId: ObjectIdentifier
@@ -62,6 +63,8 @@ final class PlatformHooks {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     let recorder: WireframeRecorder?
     let touches = TouchTracker()
+    /// Frames, lifecycle and the main thread for the app performance metrics.
+    let vitalsHost: UIKitVitalsHost?
 
     private init(client: TracewayClient) {
         self.client = client
@@ -79,11 +82,13 @@ final class PlatformHooks {
         } else {
             recorder = nil
         }
+        vitalsHost = client.vitals != nil ? UIKitVitalsHost() : nil
     }
 
     static func install(_ client: TracewayClient) {
         let work = {
             current?.removeObservers()
+            current?.vitalsHost?.uninstall()
             let hooks = PlatformHooks(client: client)
             current = hooks
             hooks.addObservers()
@@ -94,7 +99,12 @@ final class PlatformHooks {
                 UIApplication.tracewaySwizzleSendEvent()
                 UIViewController.tracewaySwizzleViewDidAppear()
             }
+            if client.vitals != nil, !displaySwizzled {
+                displaySwizzled = true
+                UIViewController.tracewaySwizzleDisplayStart()
+            }
             if let recorder = hooks.recorder { client.attachReplaySource(recorder) }
+            client.vitals?.start(host: hooks.vitalsHost)
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
@@ -102,6 +112,7 @@ final class PlatformHooks {
     static func uninstall(for clientId: ObjectIdentifier) {
         guard let hooks = current, hooks.clientId == clientId else { return }
         hooks.removeObservers()
+        hooks.vitalsHost?.uninstall()
         hooks.recorder?.stop()
         current = nil
     }
@@ -176,7 +187,24 @@ final class PlatformHooks {
         lastScreen = (path, now)
         let action = controller.isMovingToParent || controller.isBeingPresented ? "push" : "pop"
         if let viewport = PlatformHooks.viewport() { client.screen.viewport = viewport }
-        client.recordNavigation(to: path, action: action, from: from, time: Date())
+        let displayStart = controller.tracewayDisplayStartMs
+        controller.tracewayDisplayStartMs = nil
+        client.recordNavigation(to: path, action: action, from: from, time: Date(), displayStartMs: displayStart)
+    }
+
+    /// A view controller begins to load its view (`load`) or to appear: the
+    /// start of its time to initial display. A view loaded long before it
+    /// appears counts from its appearance.
+    func displayStarting(_ controller: UIViewController, load: Bool) {
+        guard let client = activeClient, client.vitals != nil else { return }
+        let now = Clock.nowMs()
+        if load {
+            controller.tracewayDisplayStartMs = now
+        } else if let start = controller.tracewayDisplayStartMs, now - start <= 10_000 {
+            return
+        } else {
+            controller.tracewayDisplayStartMs = now
+        }
     }
 
     /// `/` and the name of a screen's view controller, or of the SwiftUI
@@ -274,7 +302,41 @@ extension UIApplication {
     }
 }
 
+private var displayStartKey: UInt8 = 0
+
 extension UIViewController {
+    /// When this controller began to load or appear (Unix ms), until its
+    /// `viewDidAppear` hands it to the navigation.
+    var tracewayDisplayStartMs: Int64? {
+        get { (objc_getAssociatedObject(self, &displayStartKey) as? NSNumber)?.int64Value }
+        set {
+            objc_setAssociatedObject(self, &displayStartKey, newValue.map { NSNumber(value: $0) },
+                                     .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+
+    static func tracewaySwizzleDisplayStart() {
+        for (original, replacement) in [
+            (#selector(UIViewController.viewDidLoad), #selector(UIViewController.traceway_viewDidLoad)),
+            (#selector(UIViewController.viewWillAppear(_:)), #selector(UIViewController.traceway_viewWillAppear(_:))),
+        ] {
+            guard let a = class_getInstanceMethod(UIViewController.self, original),
+                  let b = class_getInstanceMethod(UIViewController.self, replacement)
+            else { continue }
+            method_exchangeImplementations(a, b)
+        }
+    }
+
+    @objc dynamic func traceway_viewDidLoad() {
+        PlatformHooks.active?.displayStarting(self, load: true)
+        traceway_viewDidLoad()
+    }
+
+    @objc dynamic func traceway_viewWillAppear(_ animated: Bool) {
+        PlatformHooks.active?.displayStarting(self, load: false)
+        traceway_viewWillAppear(animated)
+    }
+
     static func tracewaySwizzleViewDidAppear() {
         guard let original = class_getInstanceMethod(UIViewController.self, #selector(UIViewController.viewDidAppear(_:))),
               let replacement = class_getInstanceMethod(UIViewController.self, #selector(UIViewController.traceway_viewDidAppear(_:)))
@@ -322,9 +384,14 @@ enum NetworkInstrumentation {
                 guard let client = TracewayClient.shared, let url = request.url?.absoluteString else { return false }
                 return client.propagatesTrace(to: url)
             },
-            receivedResponse: { response, _, span in
-                if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            receivedResponse: { response, dataOrFile, span in
+                guard let http = response as? HTTPURLResponse else { return }
+                if http.statusCode >= 400 {
                     span.setAttribute(key: "error.type", value: .string("\(http.statusCode)"))
+                }
+                // `app.request.bytes` without a Content-Length header: what arrived.
+                if http.value(forHTTPHeaderField: "Content-Length") == nil, let data = dataOrFile as? Data {
+                    span.setAttribute(key: "http.response.body.size", value: .int(data.count))
                 }
             },
             receivedError: { error, _, _, span in

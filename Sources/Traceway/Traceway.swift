@@ -102,10 +102,37 @@ public enum Traceway {
     }
 
     /// Names the current screen by its route template (`/orders/{id}`), so
-    /// issues carry it (`app.screen.route`). Lasts until the app reaches
-    /// another screen; nil removes it.
+    /// issues carry it (`app.screen.route`) and metrics group by it. Lasts
+    /// until the app reaches another screen; nil removes it.
     public static func setRoute(_ template: String?) {
         TracewayClient.shared?.setRoute(template)
+    }
+
+    // MARK: - Metrics
+
+    /// The screen on top shows everything it loads (data, images): ends its
+    /// time to full display (`app.screen.ttfd`).
+    public static func reportFullyDisplayed() {
+        TracewayClient.shared?.reportFullyDisplayed()
+    }
+
+    /// Observes `value` of an app-defined distribution, e.g.
+    /// `checkout.duration` in ms, charted like the built-in metrics. Names
+    /// are `[a-z][a-z0-9_.]`, up to 63 characters, outside `app.`,
+    /// `browser.`, `traceway.` and `custom.`; at most two dimensions.
+    public static func metric(_ name: String, value: Double, dimensions: [String: Any] = [:]) {
+        TracewayClient.shared?.metric(name, value: value, dimensions: dimensions)
+    }
+
+    /// Adds `n` to an app-defined counter, e.g. `cart.add`.
+    public static func count(_ name: String, n: Double = 1, dimensions: [String: Any] = [:]) {
+        TracewayClient.shared?.count(name, n: n, dimensions: dimensions)
+    }
+
+    /// Sets an app-defined dimension on every metric from now on
+    /// (`custom.<key>`), at most two keys; nil removes it.
+    public static func setMetricDimension(_ key: String, _ value: String?) {
+        TracewayClient.shared?.setMetricDimension(key, value)
     }
 
     // MARK: - Interactions

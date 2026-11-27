@@ -36,6 +36,9 @@ device, without a release.
   route template, the screen before it and the window size
 - **Interactions**: a span for one user action (`checkout`) that the requests
   and issues inside it belong to
+- **App performance metrics**: app start, screen display times, slow and
+  frozen frames, hangs, crashes, memory and requests as OTLP metrics, with the
+  Android and Flutter SDKs' names, plus metrics of your own
 - Network requests as client spans with the official URLSession
   instrumentation, and W3C `traceparent` propagation to your backend
 - Sessions, with the breadcrumb timeline of each one
@@ -254,12 +257,12 @@ It applies the collection settings defined under **Project → Data Collection**
 signal modes and sample rates, buffer sizes, replay settings, extra triggers
 and on-demand captures of one user or device.
 
-- The `capture*` options, `screenCapture`, `replayImages` and `sessions` are
-  **ceilings**: remote settings can lower what is collected but never raise
-  it. With `captureNetwork: false` no rule can turn network capture on, and
-  without `screenCapture: true` nothing is recorded. `sampleRate`,
-  `baselineSampleRate` and `recordAllSessions` are defaults a rule can change
-  either way.
+- The `capture*` options (`captureMetrics` included), `screenCapture`,
+  `replayImages` and `sessions` are **ceilings**: remote settings can lower
+  what is collected but never raise it. With `captureNetwork: false` no rule
+  can turn network capture on, and without `screenCapture: true` nothing is
+  recorded. `sampleRate`, `baselineSampleRate` and `recordAllSessions` are
+  defaults a rule can change either way.
 - The last applied settings are cached, so they are in effect from the first
   moment of the next start.
 - `remoteConfig: false` never polls; standalone (no connection string) the SDK
@@ -416,7 +419,8 @@ Traceway.setRoute("/orders/{id}")
 A navigation is a `browser.navigation` record with `url.full`,
 `navigation.action` (`push` or `pop`), `browser.navigation.type`,
 `navigation.to`, `navigation.from`, `app.screen.name` and, while a route
-template is set, `app.screen.route`. Issues carry the route too.
+template is set, `app.screen.route`. Issues carry the route too, and metrics
+group the screen's display times, frames and hangs by it.
 
 ## Session replay
 
@@ -525,9 +529,60 @@ strict CORS or request-signature check.
 
 ## App performance metrics
 
-Not on iOS yet. The Android and Flutter SDKs send `app.*` metrics (start
-time, frames, hangs, memory); the iOS SDK will send the same names in a later
-release.
+The SDK measures the app on the device and uploads the numbers as OTLP
+metrics to `/api/otel/v1/metrics`: base-2 exponential histograms and counters
+(delta temporality), one small payload every five minutes and when the app
+goes to the background. Nothing is sent per observation, and no user, device
+or session id is a dimension. The names, dimensions and thresholds are the
+Android and Flutter SDKs', so the same dashboards and SLOs work for all three.
+
+| Metric | What it measures |
+|--------|------------------|
+| `app.start.duration` (`start_type` `cold` / `warm` / `hot`) | Cold: from the process start (`kinfo_proc`; from `Traceway.start` when iOS prewarmed the process) to the first frame drawn while the app is active, only when the process was launched to show its UI. Warm: the first return of a process launched in the background, or a return that reconnects a scene. Hot: from any other return to the foreground to the next frame |
+| `app.screen.ttid` (`screen`) | Time to initial display: from the moment a view controller begins to load (`viewDidLoad`, or `viewWillAppear` for a view loaded before) to the first frame after `viewDidAppear`; from the call for `recordNavigation` and `.tracewayScreen` |
+| `app.screen.ttfd` (`screen`) | Time to full display: from the same start until the app calls `Traceway.reportFullyDisplayed()` |
+| `app.frames.slow`, `app.frames.frozen` (with `.total`, by `screen`) | A `CADisplayLink` in the foreground: slow when a frame took more than one and a half frame durations at the display's rate, frozen at 700 ms or more |
+| `app.hang`, `app.hang.duration` | The main thread ran nothing for 2 s or more while the app was in the foreground; not while a debugger is attached unless `reportHangsInDebug` is set |
+| `app.crash` | Uncaught `NSException`s, and fatal signals counted at the next start |
+| `app.session`, `app.user`, `app.user.affected` (`issue`) | Sessions; users counted once a day per installation, and once a day per problem they met (`crash`, `hang`, `slow_start`, `frozen_frames`, `failed_request`), so no id leaves the device |
+| `app.memory.peak` | The process's peak physical footprint (`task_vm_info`, what the system's memory limit counts), once per session |
+| `app.request.duration`, `app.request.bytes`, `app.request.failed` (`host`) | Every URLSession request the SDK records (up to 20 hosts, then `other`) |
+
+A start counts the user as affected (`slow_start`) at 5 s cold, 2 s warm and
+1.5 s hot. Screens are route templates when the app
+[names them](#naming-screens), else paths with ids folded (`/orders/8841` →
+`/orders/:id`); past 200 series in a payload the screen folds to `other`.
+Resource dimensions are the app version, environment, OS and its major
+version, form factor (`phone`, `tablet`, `desktop` for an iOS app on a Mac)
+and a coarse device class from the RAM (`low` under 3 GB, `mid` under 6 GB,
+`high`).
+
+```swift
+// The screen has what it loads: ends its time to full display.
+Traceway.reportFullyDisplayed()
+
+// App-defined metrics, charted like the built-in ones.
+Traceway.metric("checkout.duration", value: 1234, dimensions: ["plan": "pro"])
+Traceway.count("cart.add")
+Traceway.setMetricDimension("experiment", "b") // `custom.experiment` on every metric
+```
+
+Custom names are `[a-z][a-z0-9_.]`, up to 63 characters, outside `app.`,
+`browser.`, `traceway.` and `custom.`, with at most two dimensions.
+`metricDimensions` (up to two) sets `custom.<key>` from the start.
+
+A payload is kept on the device until the server answered it, and one that
+failed or was cut off by the app ending is sent once more (marked
+`traceway.retry`) after the next upload that works or at the next start;
+the server drops a copy it already has. Bodies stay under 60 KB (a larger
+payload is split); a 400, 401, 403, 413 or 422 is not retried.
+
+`captureMetrics: false` turns it all off. A rule's `metrics` section switches
+metrics off (`enabled`), samples sessions (`sampleRate`; counts are weighted
+back by the server) or changes the upload interval (`flushSeconds`, 30–3600),
+and a plan's `limits.metrics: "off"` turns them off for the organization.
+With `telemetry`, metrics go to the receiver's `/v1/metrics` (or its
+`metrics` endpoint) instead of Traceway.
 
 ## Setups
 
@@ -555,13 +610,14 @@ Traceway.start(
 )
 ```
 
-The shared `url` gets `/v1/logs` and `/v1/traces` appended; a
-`TracewayTelemetryEndpoint(url:headers:)` per signal is a complete URL, used as
-given. Exceptions, messages and the SDK's session and control records still go
-to Traceway, and only there, as do OpAMP and replays; ordinary logs and spans
-go to the receiver. Both sides carry `session.id`. The Traceway token is never
-sent to the receiver. Any key built into the app can be read out of it: use an
-ingestion key that can only write.
+The shared `url` gets `/v1/logs`, `/v1/traces` and `/v1/metrics` appended; a
+`TracewayTelemetryEndpoint(url:headers:)` per signal (`logs`, `traces`,
+`metrics`) is a complete URL, used as given; a blank `url` is unset.
+Exceptions, messages and the SDK's session and control records still go to
+Traceway, and only there, as do OpAMP and replays; ordinary logs, spans and
+metrics go to the receiver. Both sides carry `session.id`. The Traceway token
+is never sent to the receiver. Any key built into the app can be read out of
+it: use an ingestion key that can only write.
 
 ### Standalone, without a Traceway server
 
@@ -574,7 +630,7 @@ Traceway.start(
 )
 ```
 
-`telemetry` must then have a `url` or both signal endpoints. Remote config,
+`telemetry` must then have a `url` or all three signal endpoints. Remote config,
 replay uploads and session records are off; exceptions are OTLP log records
 with the event name `exception`, sent to your collector.
 
@@ -600,6 +656,8 @@ mobile SDKs.
 | `captureNetwork` | `true` | Record URLSession requests |
 | `captureNavigation` | `true` | Record screens |
 | `captureUserActions` | `true` | Record taps and feed them to recording triggers |
+| `captureMetrics` | `true` | Measure and upload app performance metrics (see [App performance metrics](#app-performance-metrics)) |
+| `metricDimensions` | `[:]` | Up to two app-defined dimensions on every metric (`custom.<key>`) |
 | `recordAllSessions` | `false` | Stream breadcrumbs and replay all the time |
 | `collection` | — | Local collection settings (see [Local config](#local-config)) |
 | `sessions` | `true` | Send session records (`session.start` / `session.end`) |
@@ -610,6 +668,7 @@ mobile SDKs.
 | `propagateTraceHeaderUrls` | `[]` | URL prefixes whose requests carry `traceparent` |
 | `ignoreErrors` | `nil` (`defaultIgnoreErrors`) | Issues not reported, matched against `Type: message` (see [Errors and messages](#errors-and-messages)) |
 | `beforeCapture` | `nil` | Sees every exception and message; returning false drops it |
+| `reportHangsInDebug` | `false` | Report hangs (`app.hang`) while a debugger is attached too |
 
 ## Crashes and symbolication
 
@@ -640,6 +699,7 @@ the home screen, then relaunch after the crash.
 | Sessions | `session.start`, `traceway.session.update`, `session.end` | always sent |
 | Remote config, triggers, captures, dropped data | `traceway.config.applied`, `traceway.trigger.fired`, `traceway.capture.started`, `traceway.collection.health` | always sent |
 | The screen, with `screenCapture: true` | wireframe replay clips and segments | replay |
+| App start, screens, frames, hangs, crashes, sessions, users, memory, requests | `app.*` OTLP metrics (see [App performance metrics](#app-performance-metrics)) | `metrics` settings |
 
 Every record carries `session.id`; the resource carries `service.name`,
 `service.version`, `service.instance.id`, `os.*`, `device.*` (model,
@@ -652,7 +712,7 @@ and `screen.density`.
 |----------|---------|
 | iOS 13+ (UIKit, SwiftUI) | everything above |
 | iPadOS | as iOS; a trackpad pointer is replayed as a mouse |
-| macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay or URLSession instrumentation |
+| macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay, URLSession instrumentation, or start, frame and hang measurements |
 
 ## Migrating from 1.x
 
