@@ -204,7 +204,11 @@ extension GalleryScenes {
         override func viewDidLoad() {
             super.viewDidLoad()
             addChild(child)
-            setOverrideTraitCollection(UITraitCollection(layoutDirection: .rightToLeft), forChild: child)
+            if #available(iOS 17.0, *) {
+                child.traitOverrides.layoutDirection = .rightToLeft
+            } else {
+                setOverrideTraitCollection(UITraitCollection(layoutDirection: .rightToLeft), forChild: child)
+            }
             child.view.frame = view.bounds
             child.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             view.addSubview(child.view)

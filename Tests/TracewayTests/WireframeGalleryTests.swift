@@ -502,6 +502,8 @@ final class GalleryDriver {
                 }
                 if let label = view as? UILabel { parts.append("text=\"\(label.text ?? "")\" lines=\(label.numberOfLines)") }
                 if view.isHidden { parts.append("HIDDEN-VIEW") }
+                if view.effectiveUserInterfaceLayoutDirection == .rightToLeft { parts.append("dir=rtl") }
+                if view.traitCollection.layoutDirection == .rightToLeft { parts.append("traits=rtl") }
                 if NSStringFromClass(Swift.type(of: view)).contains("Hosting") {
                     parts.append("ax=\(view.accessibilityElements?.count ?? -1)/\(view.accessibilityElementCount())")
                 }
