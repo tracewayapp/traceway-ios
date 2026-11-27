@@ -153,9 +153,9 @@ final class E2EScript {
 
     // MARK: - Scenarios
 
-    /// 1-5: buffered breadcrumbs, the exception, a trigger, a capture from
-    /// the dashboard, a remote rule; then the buffer is saved and the app
-    /// is killed.
+    /// 1-5 and 7: buffered breadcrumbs, the exception, a trigger, a capture
+    /// from the dashboard, remote rules, app-defined metrics; then the
+    /// buffer is saved and the app is killed.
     func main() throws {
         let client = try start(options(collection: ["triggers": [E2EScript.journeyTrigger.anyValue]]), dsn: dsn)
         Traceway.setAttribute("user.id", "e2e-user")
@@ -207,10 +207,13 @@ final class E2EScript {
         phase("capture_cancelled")
 
         // 5. A rule from the dashboard whose click step is the selector the
-        // server recorded for the tap.
+        // server recorded for the tap, and one that turns replay images off.
         client.refreshConfig()
         pause(2)
         tap(client, id: "pay", text: "Pay now", screen: "/checkout")
+        // 7. App-defined metrics, uploaded with the SDK's own `app.*` ones.
+        Traceway.metric("e2e.checkout", value: 1234, dimensions: ["plan": "pro"])
+        Traceway.count("e2e.cart_add", n: 3)
         Traceway.flush(timeout: 10)
         phase("rule_tapped")
 

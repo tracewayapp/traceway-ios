@@ -17,11 +17,17 @@ Flutter SDK's end-to-end check:
   4. a capture started from the dashboard API: its lookback comes up, logs
      stream, and cancelling it stops them
   5. a remote rule whose click step is the selector the server recorded for
-     a tap: the server accepts it and the app matches it on the next tap
+     a tap: the server accepts it and the app matches it on the next tap;
+     a second rule sets replay.images to off
   6. the app saves its buffer going to the background and is killed; the
      next start resumes the session, reports the earlier run's crash with
      its iOS stack trace, and its first error brings up what the killed run
-     had buffered
+     had buffered; the session's traceway.replay.images, wifi at its start,
+     is now off
+  7. metrics: the SDK's app.* ones a run without UIKit makes (session, user,
+     the crash, requests) and app-defined ones (Traceway.metric and count)
+     reach the server, and the project's Mobile Performance dashboard
+     charts them
 
 The replay is the wireframe gallery's recording when --gallery points at one
 (CI/wireframe/run.py --gh-run fetches it), else a synthetic screen.
@@ -132,6 +138,71 @@ def is_rrweb(events):
     return bool(events) and events[0].get('type') == 4 and any(e.get('type') == 2 for e in events)
 
 
+# The SDK's metrics a run without UIKit makes; the others need screens, frames and the main thread.
+SCRIPT_METRICS = {'app.session', 'app.user', 'app.user.affected', 'app.crash', 'app.request.duration',
+                  'app.request.failed', 'app.request.failed.total'}
+
+
+def check_metrics(api, since, check):
+    """Phase 7: the SDK's app.* metrics and app-defined ones, and the project's default dashboard."""
+    print('\n[7] metrics and the Mobile Performance dashboard', flush=True)
+    time.sleep(12)  # the server writes client metrics every 10 s
+    # Client metrics are kept per minute, stamped at its start.
+    metrics_since = since.replace(second=0, microsecond=0)
+
+    def metric(query):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        status, body = api.call('POST', '/api/metrics/query', {
+            'queries': [query], 'from': metrics_since.isoformat(),
+            'to': (now + datetime.timedelta(minutes=2)).isoformat(), 'wholeRange': True})
+        if status != 200:
+            return {'_error': f'{status} {body}'}
+        series = ((body or {}).get('results') or [{}])[0].get('series') or {}
+        return {k: sum(p.get('value') or 0 for p in v) for k, v in series.items() if v}
+
+    def one(name, aggregation, group_by=None):
+        return metric({'name': name, 'aggregation': aggregation, **({'groupBy': group_by} if group_by else {})})
+
+    def total(series):
+        # An ungrouped series is keyed `__all__`.
+        return sum(v for k, v in series.items() if k != '_error')
+
+    sessions_n, users = total(one('app.session', 'sum')), total(one('app.user', 'sum'))
+    check(sessions_n == 1 and users == 1, 'one session and one user: the resumed run counted neither again',
+          f'{sessions_n:.0f} sessions, {users:.0f} users')
+    crashes = total(one('app.crash', 'sum'))
+    check(crashes == 1, "the earlier run's crash is counted", f'{crashes:.0f}')
+    affected = one('app.user.affected', 'sum', 'issue')
+    check('crash' in affected, 'the user is counted as affected by the crash', f'{affected}')
+    hosts = one('app.request.duration', 'count', 'host')
+    check(hosts.get('api.example.com') == 1, 'the request duration, by host', f'{hosts}')
+    checkout, cart = total(one('e2e.checkout', 'p75')), total(one('e2e.cart_add', 'sum'))
+    check(1100 <= checkout <= 1350 and cart == 3, 'app-defined metrics arrive (Traceway.metric, Traceway.count)',
+          f'p75 {checkout:.0f}, count {cart:.0f}')
+
+    status, listing = api.call('GET', '/api/dashboards')
+    boards = (listing or {}).get('dashboards') or [] if isinstance(listing, dict) else []
+    board = [b for b in boards if b.get('templateKey') == 'mobile-performance']
+    check(len(board) == 1, 'the project came with the Mobile Performance dashboard', f'{[b.get("name") for b in boards]}')
+    if not board:
+        return
+    status, detail = api.call('GET', f"/api/dashboards/{board[0]['id']}")
+    widgets = (detail or {}).get('widgets') or [] if isinstance(detail, dict) else []
+    missing, uikit = [], []
+    for w in widgets:
+        config = json.loads(w['config']) if isinstance(w['config'], str) else w['config']
+        sources = config.get('sources', [])
+        if not any(src.get('name') in SCRIPT_METRICS for src in sources):
+            uikit.append(w['title'])
+            continue
+        if not any(total(metric({k: v for k, v in src.items() if k in ('name', 'aggregation', 'groupBy')}))
+                   for src in sources):
+            missing.append(w['title'])
+    print(f'        {len(widgets)} widgets, {len(uikit)} chart what only a UIKit app measures', flush=True)
+    check(widgets and len(uikit) < len(widgets) and not missing,
+          'every widget of the dashboard that charts what the script sends has data', f'empty: {missing}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--base', required=True, help='the Traceway server, e.g. http://127.0.0.1:8092')
@@ -240,6 +311,9 @@ def main():
         check(not spans, 'no HTTP span on the server yet', f'{len(spans)} spans')
         check(not issues, 'no issue yet', f'{len(issues)}')
         check(len(sessions) == 1, 'the session exists', f'{len(sessions)} sessions')
+        images = (sessions[0].get('attributes') or {}).get('traceway.replay.images') if sessions else None
+        check(images == 'wifi', 'the session names the replay images policy it started with, Wi-Fi only by default',
+              f'{images}')
         go('breadcrumbs_done')
 
         # ---- 2. the exception ----------------------------------------------
@@ -385,6 +459,11 @@ def main():
         })
         check(status in (200, 201), f'the server accepts the recorded selector {selector!r} in a rule',
               f'{status} {body if status >= 300 else ""}')
+        status, body = api.call('POST', '/api/sdk-config/rules', {
+            'name': 'e2e replay images off', 'enabled': True, 'conditions': {},
+            'settings': {'replay': {'images': 'off'}}})
+        check(status in (200, 201), 'the server accepts a rule that turns replay images off',
+              f'{status} {body if status >= 300 else ""}')
         go('capture_cancelled')
         wait_phase('rule_tapped', 90)
         time.sleep(6)
@@ -425,8 +504,14 @@ def main():
         check(any((r.get('body') or '') == 'e2e after restart' or 'e2e after restart' in json.dumps(r) for r in messages),
               'the message after the restart was sent', f'{len(messages)} messages')
         check(len(issues) >= 3, 'the crash, the message and the second error are issues', f'{len(issues)}')
+        session = next((s for s in sessions if s['id'] == session_id), {})
+        images = (session.get('attributes') or {}).get('traceway.replay.images')
+        check(images == 'off', 'the rule turned replay images off: the resumed session says so', f'{images}')
         go('resume_done')
         finish()
+
+        # ---- 7. metrics and the default dashboard --------------------------
+        check_metrics(api, since, check)
     finally:
         if proc is not None and proc.poll() is None:
             proc.kill()
