@@ -736,7 +736,7 @@ final class CrashSafetyTests: XCTestCase {
         let mine = try XCTUnwrap(images.first { $0.loadAddr == UInt(bitPattern: #dsohandle) }?.name)
         let client = try TracewayClient.start(
             token: "token", baseUrl: "https://traceway.example.com",
-            options: TracewayOptions(exportDelayMs: 50, reportHangsInDebug: true, appHangThresholdMs: 1000),
+            options: TracewayOptions(exportDelayMs: 50, appHangThresholdMs: 1000, reportHangsInDebug: true),
             overrides: TracewayTestOverrides(
                 transport: server,
                 deviceAttributes: ["os.name": "ios", "device.model": "iPhone15,2"],

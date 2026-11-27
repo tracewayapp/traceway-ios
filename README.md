@@ -164,8 +164,8 @@ or call `Traceway.recordNavigation` from your router (see
 
 `initialize` reads the SDK's state and what earlier runs left (their crashes,
 a fatal hang, unsent records) on the calling thread before it returns, so
-`Traceway.tracer` and interactions work right away; at launch that is a few
-milliseconds of the app's start, which `app.start.duration` includes.
+`Traceway.tracer` and interactions work right away. At launch that time is
+part of the app's start, and of the `app.start.duration` it reports.
 
 **Check it**: run the app with `TracewayOptions(debug: true)` and call
 `Traceway.captureMessage("Traceway works")`. It shows under **Issues** within
