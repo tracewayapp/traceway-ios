@@ -240,6 +240,8 @@ final class WireframeCapture {
         var blockImages = false
         /// The layer whose bounds `transform` maps; nil above the windows.
         var layer: CALayer?
+        /// Inside a Liquid Glass lens (the selection of a tab bar).
+        var lens = false
 
         /// The scope of what is inside a placed layer.
         func entering(_ p: Placed, _ model: CALayer) -> Scope {
@@ -343,10 +345,16 @@ final class WireframeCapture {
         guard let wrapper = wrapperTransform(view.layer, scope) else { return }
         var scope = scope
         if wrapper != .identity { scope.transform = scope.transform.then(wrapper) }
+        if WireframeCapture.cutsOut(layer) { return }
         guard let p = place(layer, scope) else { return }
         let info = ClassInfo.of(view)
         if info.kind == .skip { return }
+        if info.kind == .glassShape {
+            out.append(glass(id(view), layer, p, scope, dark: view.traitCollection.userInterfaceStyle == .dark))
+            return
+        }
         var s = scope
+        if info.isLens { s.lens = true }
 
         if let mode = view.tracewayPrivacyMask {
             switch mode {
@@ -474,6 +482,31 @@ final class WireframeCapture {
 
     /// The subviews and other sublayers of `view`, in the order they paint.
     private func visitSublayers(of view: UIView, _ s: Scope, _ out: inout [VNode]) {
+        // iOS 26 can put a subview's layer beside the view's own layer, in
+        // the wrapper layer they share (an alert button's background): it
+        // paints in the wrapper's order.
+        if let wrapper = view.layer.superlayer, wrapper.delegate === view, let siblings = wrapper.sublayers {
+            // A Liquid Glass group paints under the view's content: UIKit
+            // draws the content again over the glass through a portal.
+            let glassFirst = siblings.filter { sibling in
+                guard let subview = sibling.delegate as? UIView, subview.superview === view else { return false }
+                return ClassInfo.of(subview).isGlassGroup
+            }
+            let rest = siblings.filter { sibling in !glassFirst.contains { $0 === sibling } }
+            for sibling in glassFirst + rest {
+                guard budget > 0 else { return }
+                if sibling === view.layer {
+                    visitOwnSublayers(of: view, s, &out)
+                } else if let subview = sibling.delegate as? UIView, subview.superview === view {
+                    visit(subview, s, &out)
+                }
+            }
+            return
+        }
+        visitOwnSublayers(of: view, s, &out)
+    }
+
+    private func visitOwnSublayers(of view: UIView, _ s: Scope, _ out: inout [VNode]) {
         guard let sublayers = view.layer.sublayers else { return }
         for sublayer in sublayers {
             guard budget > 0 else { return }
@@ -483,6 +516,33 @@ final class WireframeCapture {
                 visitLayer(sublayer, s, &out)
             }
         }
+    }
+
+    /// Whether a layer cuts out what is under it (`destOut`, `destIn`)
+    /// instead of painting: Liquid Glass uses such masks.
+    private static func cutsOut(_ layer: CALayer) -> Bool {
+        guard let filter = layer.compositingFilter else { return false }
+        return String(describing: filter).hasPrefix("dest")
+    }
+
+    /// iOS 26's Liquid Glass: a shape (`CASDFElementLayer`) the system
+    /// fills with frosted glass. A light or dark frost with a soft shadow,
+    /// rounded as the layer is, else a capsule (bars and buttons) or a
+    /// rounded panel.
+    private func glass(_ id: Int, _ layer: CALayer, _ p: Placed, _ s: Scope, dark: Bool) -> VNode {
+        let side = min(p.width, p.height)
+        let radius = layer.cornerRadius > 0 ? min(Double(layer.cornerRadius), side / 2) : (side <= 80 ? side / 2 : 26)
+        var style = geometry(s, p) + "border-radius:\(WireframeCSS.px(radius));"
+        if s.lens {
+            // The lens over a selected tab or segment: a faint highlight
+            // over what it selects.
+            style += dark ? "background-color:rgba(255,255,255,.12);" : "background-color:rgba(120,120,128,.14);"
+        } else {
+            style += dark
+                ? "background-color:rgba(44,44,46,.78);box-shadow:inset 0 0 0 .5px rgba(255,255,255,.16),0 6px 20px rgba(0,0,0,.35);"
+                : "background-color:rgba(255,255,255,.78);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.06),0 6px 20px rgba(0,0,0,.1);"
+        }
+        return element(id, style, [])
     }
 
     private func visitSublayers(of layer: CALayer, _ s: Scope, _ out: inout [VNode]) {
@@ -505,10 +565,14 @@ final class WireframeCapture {
         visited.insert(key)
         budget -= 1
         let layer = model.presentation() ?? model
-        if layer.isHidden || layer.opacity < 0.01 { return }
+        if layer.isHidden || layer.opacity < 0.01 || WireframeCapture.cutsOut(layer) { return }
         guard let p = place(layer, scope) else { return }
         let info = ClassInfo.of(model)
         if info.kind == .skip { return }
+        if info.kind == .glassShape {
+            out.append(glass(id(model), layer, p, scope, dark: screenWindow?.traitCollection.userInterfaceStyle == .dark))
+            return
+        }
         if case .native(let label) = info.kind {
             out.append(element(
                 id(model), geometry(scope, p) + box(layer, p, clips: true).radius,
@@ -1522,6 +1586,8 @@ private struct ClassInfo: Equatable {
         case swiftUIImage
         /// A layer SwiftUI draws a `Text` into.
         case swiftUIText
+        /// A Liquid Glass shape the system fills with frosted glass.
+        case glassShape
         case imageLayer
         /// A view or layer whose pixels the system draws: a placeholder with
         /// this label.
@@ -1532,6 +1598,11 @@ private struct ClassInfo: Equatable {
 
     var kind: Kind = .plain
     var isKeyboardWindow = false
+    /// iOS 26's group of Liquid Glass shapes, painted under the content of
+    /// the view it belongs to.
+    var isGlassGroup = false
+    /// iOS 26's lens over a selection.
+    var isLens = false
 
     private static var cache: [ObjectIdentifier: ClassInfo] = [:]
 
@@ -1560,6 +1631,8 @@ private struct ClassInfo: Equatable {
         if has("UIRemoteKeyboardWindow") || has("UITextEffectsWindow") || has("UIKeyboardWindow") {
             info.isKeyboardWindow = true
         }
+        info.isGlassGroup = has("GlassGroupView")
+        info.isLens = has("LiquidLens")
         if has("_UIScrollViewScrollIndicator") || has("UIScrollViewScrollIndicator") {
             info.kind = .skip
         } else if has("WKWebView") || has("UIWebView") || has("SFSafariView") {
@@ -1579,6 +1652,8 @@ private struct ClassInfo: Equatable {
             info.kind = .native("Native view")
         } else if has("HostingView") {
             info.kind = .swiftUIHost
+        } else if has("SDFElement") {
+            info.kind = .glassShape
         } else if has("CGDrawingLayer") {
             info.kind = .swiftUIText
         } else if has("CGDrawingView") || (has("SwiftUI") && has("_UIGraphicsView")) {

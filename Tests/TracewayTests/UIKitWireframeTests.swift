@@ -538,6 +538,25 @@ final class UIKitWireframeTests: XCTestCase {
         XCTAssertTrue(allNodes(s).contains { classes($0).contains("cp") })
     }
 
+    func testLayersThatCutOutPaintNothing() throws {
+        // Liquid Glass punches holes with black layers composited destOut:
+        // they hide what is under them and paint nothing themselves.
+        let host = UIView(frame: CGRect(x: 10, y: 10, width: 200, height: 100))
+        let hole = CALayer()
+        hole.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+        hole.backgroundColor = UIColor.black.cgColor
+        hole.compositingFilter = "destOut"
+        host.layer.addSublayer(hole)
+        let painted = CALayer()
+        painted.frame = CGRect(x: 100, y: 0, width: 100, height: 100)
+        painted.backgroundColor = UIColor.blue.cgColor
+        host.layer.addSublayer(painted)
+        show(host)
+        let s = try screen()
+        XCTAssertFalse(allNodes(s).contains { styleMap($0)["background-color"] == "#000000" })
+        XCTAssertTrue(allNodes(s).contains { styleMap($0)["background-color"] == "#0000ff" })
+    }
+
     // MARK: - SwiftUI
 
     func testSwiftUIShowsItsTextAndShapes() throws {
