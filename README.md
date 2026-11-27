@@ -3,13 +3,14 @@
 Error tracking, session context and session replay for iOS apps, built on the
 official [OpenTelemetry Swift](https://github.com/open-telemetry/opentelemetry-swift)
 SDK. Exceptions and crashes arrive with their stack traces, the breadcrumbs
-that led up to them and a wireframe replay of the last seconds on screen.
+that led up to them and, with `screenCapture: true`, a wireframe replay of the
+last seconds on screen.
 What is collected is controlled from the Traceway dashboard over
 [OpAMP](https://opentelemetry.io/docs/specs/opamp/), per app version, user or
 device, without a release.
 
 > **2.0 is a beta.** It speaks OTLP and OpAMP and needs a Traceway server that
-> accepts iOS projects on those endpoints. On an older server stay on 1.x. See
+> accepts iOS projects on those endpoints. On an older server stay on 0.1.x. See
 > [Migrating from 1.x](#migrating-from-1x).
 
 ## Features
@@ -42,7 +43,7 @@ device, without a release.
 - Network requests as client spans with the official URLSession
   instrumentation, and W3C `traceparent` propagation to your backend
 - Sessions, with the breadcrumb timeline of each one
-- **Any OpenTelemetry backend**: send logs and spans to an OpenTelemetry
+- **Any OpenTelemetry backend**: send logs, spans and metrics to an OpenTelemetry
   Collector, Grafana, Honeycomb or any OTLP/HTTP receiver, next to Traceway or
   without it
 - Telemetry that failed to send is kept on disk and retried; issues are written
@@ -63,7 +64,18 @@ With the Swift Package Manager:
 .package(url: "https://github.com/tracewayapp/traceway-ios.git", from: "2.0.0-beta.1"),
 ```
 
-then add `"Traceway"` to your target's dependencies. The package brings in
+SwiftPM only offers a prerelease to a requirement that names one. The package
+identity is `traceway-ios` and the library product is `Traceway`, so a target
+needs the explicit form:
+
+```swift
+.target(
+    name: "MyApp",
+    dependencies: [.product(name: "Traceway", package: "traceway-ios")]
+),
+```
+
+The package brings in
 `opentelemetry-swift-core`, `opentelemetry-swift` and `swift-protobuf`;
 SwiftPM also resolves (but does not build) the gRPC and NIO packages
 `opentelemetry-swift` declares.
@@ -218,7 +230,7 @@ Every record belongs to a *signal*, and each signal has a mode:
 | Mode | Meaning |
 |------|---------|
 | `stream` | sent as soon as it is produced |
-| `buffer` | kept in a ring buffer on the device (2 MB / 10 minutes by default) until a trigger flushes it |
+| `buffer` | kept in a ring buffer on the device (2 MiB / 10 minutes by default) until a trigger or a capture uploads it |
 | `off` | dropped |
 
 | Signal | Source | Default |
@@ -233,8 +245,11 @@ Every record belongs to a *signal*, and each signal has a mode:
 | replay | wireframe screen recording | buffer |
 
 The built-in trigger fires on every exception: it uploads the buffered
-breadcrumbs of the last 10 minutes and the replay clip. An app that never
-throws sends only its session start and end. Clips are rationed to one per 5
+breadcrumbs of the last 10 minutes and the replay of the last 30 seconds, at
+most the frames the replay ring holds (`maxBufferFrames`). An app that never
+throws sends only its session and control records (`session.start`,
+`session.end`, `traceway.session.update`, `traceway.config.applied`) and its
+metrics. Clips are rationed to one per 5
 seconds and 20 per session; breadcrumbs are still sent for the exceptions in
 between. Identical errors within a second collapse into one, and at most 60
 errors a minute are sent; the next one carries `traceway.error.suppressed_count`.
@@ -251,9 +266,10 @@ also updates the session.
 
 ## Remote config
 
-The SDK polls the server over OpAMP (plain HTTP, protobuf): at start, every 5
-minutes by default (the server sets the interval), when the app returns to the
-foreground, and about 2 seconds after `Traceway.setAttribute` or a new session.
+The SDK polls the server over OpAMP (plain HTTP, protobuf): at start, at the
+interval the server sets (5 minutes by default, 60 seconds while a capture
+targets the device), when the app returns to the foreground, and about 2
+seconds after `Traceway.setAttribute` or a new session.
 It applies the collection settings defined under **Project → Data Collection**:
 signal modes and sample rates, buffer sizes, replay settings, extra triggers
 and on-demand captures of one user or device.
@@ -300,7 +316,10 @@ Traceway.initialize(
 )
 ```
 
-An invalid document is ignored with a console warning, and the defaults apply.
+Values must be JSON types (strings, numbers, booleans, arrays and
+dictionaries). A document that is not an object, or names another
+`schemaVersion`, is ignored with a console warning, and the defaults apply; in
+a valid one, unknown fields and malformed values are skipped one by one.
 
 ## Captures
 
@@ -317,7 +336,7 @@ ends. Records sent while a capture from the dashboard runs carry its id
   again only extends it.
 
 While a capture streams replay, the recording leaves as consecutive segments
-that each start with a full snapshot. An exception during a streaming capture
+of up to 10 seconds that each start with a full snapshot. An exception during a streaming capture
 still gets a clip of its own.
 
 ### Recording triggers
@@ -710,7 +729,7 @@ the home screen, then relaunch after the crash.
 | View controllers appearing | `browser.navigation` | `navigation` |
 | Taps | `browser.user_action.click` | `userActions` |
 | URLSession requests | client spans | `network` |
-| Sessions | `session.start`, `traceway.session.update`, `session.end` | always sent |
+| Sessions | `session.start`, `traceway.session.update`, `session.end` | the `sessions` option (on by default; off standalone) |
 | Remote config, triggers, captures, dropped data | `traceway.config.applied`, `traceway.trigger.fired`, `traceway.capture.started`, `traceway.collection.health` | always sent |
 | The screen, with `screenCapture: true` | wireframe replay clips and segments | replay |
 | App start, screens, frames, hangs, crashes, sessions, users, memory, requests | `app.*` OTLP metrics (see [App performance metrics](#app-performance-metrics)) | `metrics` settings |
@@ -744,9 +763,9 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
 
 ## Migrating from 1.x
 
-- **Server**: 2.0 sends OTLP to `/api/otel/v1/logs` and `/api/otel/v1/traces`,
-  polls `/api/otel/v1/opamp` and uploads replays to `/api/recordings`. There is
-  no fallback to the 1.x `/api/report` protocol.
+- **Server**: 2.0 sends OTLP to `/api/otel/v1/logs`, `/api/otel/v1/traces` and
+  `/api/otel/v1/metrics`, polls `/api/otel/v1/opamp` and uploads replays to
+  `/api/recordings`. There is no fallback to the 1.x `/api/report` protocol.
 - **Connection string**: unchanged; the bare server URL works too. It is now
   optional (standalone mode).
 - **Unsent 1.x reports** younger than 12 hours, and crashes 1.x recorded, are
@@ -761,7 +780,8 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
   `currentSessionId`; `log(_:severity:)` and `TracewayLogSeverity` in favor of
   `log(_:level:attributes:)` and `TracewayLogLevel`. New: `track`, `log`,
   `recordAction`, `recordNavigation`, `setRoute`, `startInteraction`,
-  `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `shutdown`,
+  `setAttribute(s)`, `removeAttribute`, `clearAttributes`,
+  `reportFullyDisplayed`, `metric`, `count`, `setMetricDimension`, `shutdown`,
   `refreshConfig`, `instanceId`, `currentSessionId`, `tracer`, privacy masks
   and `.tracewayScreen`.
 - **Issues regroup once**: 2.0 reports exceptions as OpenTelemetry `exception`
