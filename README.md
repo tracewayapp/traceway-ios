@@ -689,16 +689,28 @@ CI (`.github/workflows/tests.yml`) runs the suite on Linux and macOS, the
 XCTest suite on the iOS Simulator, and, on manual dispatch, on a real iPhone
 via Firebase Test Lab. See [CI/README.md](CI/README.md).
 
-- **Wireframe replay.** `UIKitWireframeTests` check what each kind of view
-  becomes, and `WireframeGalleryTests` records a gallery of UIKit and SwiftUI
-  screens (layout, text, buttons, controls, forms, images, tables, collections,
-  navigation, tabs, alerts, sheets, privacy, SwiftUI, native views, motion)
-  with the real recorder while it scrolls, taps, types and navigates through
-  them. It checks the recording the way rrweb's replayer applies it and saves
-  the app's own picture of every checkpoint. `python3 CI/wireframe/run.py
-  --gh-run <run id>` then renders each checkpoint in rrweb-player and compares
-  it with that picture (SSIM, edges, color), as the Flutter SDK's wireframe
-  suite does.
+- **Wireframe components.** `UIKitWireframeTests` and `SwiftUIWireframeTests`
+  hold one test per wireframe topic shared with the Android SDK (48 topics,
+  from boxes and corners to SwiftUI inside UIKit): what each kind of view
+  becomes, where its node is against the view's frame in the window, what is
+  masked, and that the frames replay through a strict model of rrweb's
+  replayer.
+- **Wireframe gallery.** `WireframeGalleryTests` records the 28 gallery
+  scenarios shared with the Android SDK (`layout`, `positioning`,
+  `transforms`, `clipping`, `stacks`, `constraints`, `text`, `rich-text`,
+  `buttons`, `controls`, `forms`, `keyboard`, `images`, `images-off`,
+  `lists`, `grids`, `carousel`, `navigation`, `tabs`, `dialogs`, `sheets`,
+  `menus`, `privacy`, `declarative`, `native`, `motion`, `rtl`, `dark-mode`;
+  70 checkpoints) on the iOS Simulator with the real recorder while it
+  scrolls, taps, types, presents and navigates. At every checkpoint it saves
+  the app's own picture and the window frames of the labelled views.
+  `python3 CI/wireframe/run.py --gh-run <run id>` then checks the recording
+  (structure, every mutation, texts, secrets), renders every checkpoint in
+  rrweb-player and compares it with the app's picture and the committed
+  baseline, and holds every label's replayed box within 1.5 pt (position)
+  and 2 pt (size) of its native frame. With `--dashboard` it uploads the run
+  as a session to a running Traceway and checks the dashboard's own player
+  the same way. See [CI/README.md](CI/README.md#wireframe-gallery).
 - **End to end.** `python3 CI/e2e/run.py --base http://127.0.0.1:8082 --email
   .. --password ..` runs the real client (on macOS or Linux) against a running
   Traceway with an iOS project and checks through the dashboard API what the
