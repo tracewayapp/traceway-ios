@@ -140,7 +140,8 @@ TracewayOptions(
 
 A string matches as a substring, `.regex` with search semantics. A
 `beforeCapture` that throws keeps the issue (and logs why with `debug`). Crashes
-the signal handler recorded are always reported.
+(uncaught `NSException`s and the fatal signals the signal handler recorded) end
+the process, are always reported and pass through neither.
 
 ### Logs
 

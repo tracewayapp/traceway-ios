@@ -703,9 +703,11 @@ public final class TracewayClient {
             metrics.flush(final: true)
             metricsStore.value.flush()
         }
+        // A crash that ends the process is always reported: neither `ignoreErrors` (its default `timeout`
+        // pattern would hide real crashes) nor app code in `beforeCapture`, which must not run while the
+        // process is going down, decides about it. The same as the Android SDK.
         let type = exception.name.rawValue
         var attrs = screen.context(nowMs: Clock.nowMs())
-        guard !ignored(type: type, message: exception.reason ?? "") else { return }
         let header = StackTraceFormatter.format(type: type, message: exception.reason, frames: [])
         let trace = CrashRecordStore.renderWireTrace(
             header: header,
@@ -713,10 +715,6 @@ public final class TracewayClient {
             images: BinaryImages.capture(),
             addresses: exception.callStackReturnAddresses.map { UInt(truncating: $0) }
         )
-        guard reports(TracewayCapturedError(
-            error: nil, type: type, message: exception.reason ?? "", isMessage: false,
-            attributes: TracewayClient.strings(attrs), stackTrace: trace
-        )) else { return }
         attrs["exception.type"] = .string(type)
         attrs["exception.stacktrace"] = .string(trace)
         attrs["exception.escaped"] = .bool(true)
