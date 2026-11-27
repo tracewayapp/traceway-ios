@@ -3,7 +3,7 @@ import Foundation
 import Darwin
 
 /// The main thread's stack, taken from another thread while the main thread
-/// is blocked (an `AppHang`, CONTRACT §14.2): the main thread is suspended,
+/// is blocked (an `AppHang`): the main thread is suspended,
 /// its registers are read with `thread_get_state`, its frame records are
 /// walked (at most `maxFrames`, each copied with `vm_read_overwrite` and
 /// checked to lie on the main thread's stack, above the one before), and it

@@ -157,7 +157,11 @@ final class TelemetryRouter {
         let signal = isRequest ? "network" : "custom"
         let item = TelemetryItem(.span(span))
         let timeMs = Clock.ms(span.endTime)
-        let routed = decide(signal, item, timeMs) { true }
+        // A failed interaction goes with the exception that failed it, as the
+        // browser, Android and Flutter SDKs send it, so the issue links to
+        // its trace; it ends after the exception's flush took the buffer.
+        let failedInteraction = attributes["traceway.interaction"] == .bool(true) && span.status.isError
+        let routed = decide(signal, item, timeMs, forceStream: failedInteraction) { true }
         observeAndSend(ObservedRecord(
             signal: signal, timeMs: timeMs, lookup: spanLookup(item, signal), item: item, routed: routed
         ))
@@ -228,16 +232,23 @@ final class TelemetryRouter {
 
     /// Decides what happens to a record; a buffered one is stored here, a
     /// streamed one is sent by the caller once triggers have seen it.
-    private func decide(_ signal: String, _ item: TelemetryItem, _ timeMs: Int64, _ accept: () -> Bool) -> Routed {
+    private func decide(_ signal: String, _ item: TelemetryItem, _ timeMs: Int64, forceStream: Bool = false,
+                        _ accept: () -> Bool) -> Routed {
         if signal == signalControl { return control.enabled ? .stream : .off }
         let mode = control.modeFor(signal)
         let sampleRate = control.sampleRate(signal)
-        if !accept() || (sampleRate < 1 && random() >= sampleRate) { return .filtered }
+        if !accept() { return .filtered }
+        if sampleRate < 1 && random() >= sampleRate {
+            if Log.debugEnabled, signal == "errors" || signal == "messages", case .log(let record) = item.record {
+                Log.debug("dropped \(shortened(issueLine(record))): not sampled (sampleRate \(sampleRate))")
+            }
+            return .filtered
+        }
         if mode == .off { return .off }
         let session = hooks?.sessionId
         let baselineSampled = baselineSignals.contains(signal)
             && (session.map { Ids.unitHash($0) < control.settings.baselineSampleRate } ?? false)
-        if mode == .stream || baselineSampled { return .stream }
+        if mode == .stream || baselineSampled || (forceStream && control.canExport(signal)) { return .stream }
         buffer.push(BufferEntry(timeMs: timeMs, signal: signal, bytes: estimateBytes(item), item: item))
         return .buffer
     }
@@ -462,4 +473,13 @@ extension SpanData {
         settingAttributes(attributes)
         settingTotalAttributeCount(attributes.count + dropped)
     }
+}
+
+/// An issue's first line, `Type: message`, as `ignoreErrors` sees it.
+func issueLine(_ record: ReadableLogRecord) -> String {
+    let attributes = record.attributes
+    if let type = attributes["exception.type"]?.description {
+        return ignoreLine(type: type, message: attributes["exception.message"]?.description ?? "")
+    }
+    return ignoreLine(type: nil, message: record.body?.description ?? "")
 }

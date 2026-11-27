@@ -130,9 +130,31 @@ final class PlatformHooks {
             }
             if let recorder = hooks.recorder { client.attachReplaySource(recorder) }
             client.vitals?.start(host: hooks.vitalsHost)
+            if client.options.debug, client.options.captureNavigation { hintSwiftUIScreens(client) }
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
+
+    /// With `debug`, once, 10 s after the start: a SwiftUI app whose window
+    /// holds a hosting controller records no screens by itself.
+    private static func hintSwiftUIScreens(_ client: TracewayClient) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak client] in
+            guarded("screen hint") {
+                guard let client = client, client === TracewayClient.shared, !client.isShutdown,
+                      client.screen.name == nil,
+                      let root = WireframeRoots.screenWindow(of: WireframeRoots.visibleWindows())?.rootViewController,
+                      String(describing: type(of: root)).hasPrefix("UIHostingController<")
+                else { return }
+                Log.debugOnce("swiftui screens", "no screen recorded yet: this is a SwiftUI app, add "
+                    + ".tracewayScreen(\"/path\") to its screens")
+            }
+        }
+    }
+
+    /// Set once a `.tracewayScreen` modifier has named a screen: from then
+    /// on hosting controllers are not screens, so an explicit name is not
+    /// replaced a moment later by the hosting controller's. Main thread.
+    static var explicitScreens = false
 
     static func uninstall(for clientId: ObjectIdentifier) {
         guard let hooks = current, hooks.clientId == clientId else { return }
@@ -251,6 +273,7 @@ final class PlatformHooks {
         }
         let name = String(describing: type(of: controller))
         if name.hasPrefix("UIHostingController<") {
+            if explicitScreens { return nil }
             var inner = String(name.dropFirst("UIHostingController<".count).dropLast())
             while inner.hasPrefix("ModifiedContent<") {
                 inner = String(inner.dropFirst("ModifiedContent<".count))
@@ -466,12 +489,34 @@ extension UIViewController {
 
 #if canImport(SwiftUI)
 @available(iOS 13.0, *)
+private struct TracewayScreenModifier: ViewModifier {
+    let path: String
+    let route: String?
+    @State private var appeared = false
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            guarded("tracewayScreen") {
+                PlatformHooks.explicitScreens = true
+                let navigation = ScreenAppearance.of(path, again: appeared, shown: TracewayClient.shared?.screen.name)
+                appeared = true
+                Traceway.recordNavigation(path, action: navigation.action, from: navigation.from, route: route)
+            }
+        }
+    }
+}
+
+@available(iOS 13.0, *)
 public extension View {
-    /// Records `path` as a navigation each time this view appears, for
-    /// SwiftUI navigation no view controller reports. Navigation triggers
-    /// match it, and the replay shows it as the address.
-    func tracewayScreen(_ path: String) -> some View {
-        onAppear { Traceway.recordNavigation(path) }
+    /// Names this view as the screen `path` (`/orders/42`), with its route
+    /// template when the router knows it (`/orders/:id`): each time it
+    /// appears it is recorded as a navigation, `push` the first time and
+    /// `pop` when it comes back, from the screen shown before. Navigation
+    /// triggers match it, and the replay shows it as the address. Once a
+    /// screen is named this way, hosting controllers are no longer recorded
+    /// as screens of their own.
+    func tracewayScreen(_ path: String, route: String? = nil) -> some View {
+        modifier(TracewayScreenModifier(path: path, route: route))
     }
 }
 #endif

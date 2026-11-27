@@ -14,15 +14,19 @@ struct CapturedLogLine: Equatable {
 
 /// The app's own entries in the unified log.
 protocol OSLogEntrySource: AnyObject {
-    /// The entries logged at or after `since`, oldest first.
-    func entries(since: Date) throws -> [CapturedLogLine]
+    /// Hands `visit` each entry logged at or after `since`, oldest first,
+    /// one at a time: nothing is gathered here, so a read holds only what
+    /// the reader keeps.
+    func entries(since: Date, _ visit: (CapturedLogLine) -> Void) throws
 }
 
 /// Reads what the app logs with `NSLog`, `os_log` and `Logger`
-/// incrementally (CONTRACT §14.3): each `read` returns the entries since
-/// the last one, once each, without the SDK's own lines and the system
-/// frameworks' (`com.apple.*` subsystems), at most `maxLinesPerRead` (the
-/// newest), each message at most `maxMessageBytes`. Thread-safe.
+/// incrementally: each `read` returns the entries since the last one, once
+/// each, without the SDK's own lines and the system frameworks'
+/// (`com.apple.*` subsystems), at most `maxLinesPerRead` (the newest), each
+/// message at most `maxMessageBytes`. The limits hold while the entries are
+/// read, so a burst of 100,000 lines or a multi-megabyte line never sits in
+/// memory. Thread-safe.
 final class OSLogReader {
     static let maxLinesPerRead = 1000
     static let maxMessageBytes = 16 * 1024
@@ -32,7 +36,9 @@ final class OSLogReader {
     private var cursor: Date
     /// Entries at exactly `cursor` already returned: the next read starts
     /// there again.
-    private var seenAtCursor: Set<String> = []
+    private var seenAtCursor: Set<Int> = []
+    /// The most lines the last read held at once, for tests.
+    private(set) var lastReadPeak = 0
 
     init(source: OSLogEntrySource, since: Date) {
         self.source = source
@@ -43,31 +49,43 @@ final class OSLogReader {
         lock.lock()
         defer { lock.unlock() }
         let since = cursor
-        guard let entries = guarded("os log read", fallback: nil, { try source.entries(since: since) }) else {
-            return []
-        }
-        var fresh: [CapturedLogLine] = []
+        let seenBefore = seenAtCursor
+        var kept = LineRing(capacity: OSLogReader.maxLinesPerRead)
         var newest = cursor
         var seenAtNewest = seenAtCursor
-        for entry in entries {
-            if entry.date < cursor { continue }
-            let key = OSLogReader.identity(entry)
-            if entry.date == cursor, seenAtCursor.contains(key) { continue }
-            if entry.date > newest {
-                newest = entry.date
-                seenAtNewest = []
+        let read = guarded("os log read", fallback: false) {
+            try source.entries(since: since) { entry in
+                if entry.date < since { return }
+                let message = OSLogReader.clip(entry.message)
+                let key = OSLogReader.identity(entry, message: message)
+                if entry.date == since, seenBefore.contains(key) { return }
+                if entry.date > newest {
+                    newest = entry.date
+                    seenAtNewest = []
+                }
+                // Bounded: only lines logged in one instant are kept here.
+                if entry.date == newest, seenAtNewest.count < OSLogReader.maxLinesPerRead {
+                    seenAtNewest.insert(key)
+                }
+                var line = entry
+                line.message = message
+                if OSLogReader.isCaptured(line) { kept.append(line) }
             }
-            if entry.date == newest { seenAtNewest.insert(key) }
-            if OSLogReader.isCaptured(entry) { fresh.append(entry) }
+            return true
         }
+        lastReadPeak = kept.peak
+        guard read else { return [] }
         cursor = newest
         seenAtCursor = seenAtNewest
-        if fresh.count > OSLogReader.maxLinesPerRead { fresh = Array(fresh.suffix(OSLogReader.maxLinesPerRead)) }
-        return fresh.map(OSLogReader.clipped)
+        return kept.lines
     }
 
-    private static func identity(_ entry: CapturedLogLine) -> String {
-        "\(entry.subsystem)\u{1}\(entry.category)\u{1}\(entry.message)"
+    private static func identity(_ entry: CapturedLogLine, message: String) -> Int {
+        var hasher = Hasher()
+        hasher.combine(entry.subsystem)
+        hasher.combine(entry.category)
+        hasher.combine(message)
+        return hasher.finalize()
     }
 
     /// Whether a line is the app's: not the SDK's own debug output, not a
@@ -117,18 +135,45 @@ final class OSLogReader {
     }
 }
 
+/// The newest `capacity` lines appended, oldest first.
+struct LineRing {
+    private var storage: [CapturedLogLine] = []
+    private var next = 0
+    let capacity: Int
+    private(set) var peak = 0
+
+    init(capacity: Int) {
+        self.capacity = max(1, capacity)
+    }
+
+    mutating func append(_ line: CapturedLogLine) {
+        if storage.count < capacity {
+            storage.append(line)
+            peak = storage.count
+        } else {
+            storage[next] = line
+            next = (next + 1) % capacity
+        }
+    }
+
+    var lines: [CapturedLogLine] {
+        Array(storage[next...] + storage[..<next])
+    }
+}
+
 #if canImport(OSLog)
 /// The current process's entries, through `OSLogStore` (iOS 15, macOS 12).
+/// Entries are enumerated one by one; the system frameworks' are skipped
+/// before their message is composed. (No `NSPredicate`: a key the store does
+/// not support raises an Objective-C exception Swift cannot contain.)
 @available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *)
 final class OSLogStoreSource: OSLogEntrySource {
-    func entries(since: Date) throws -> [CapturedLogLine] {
+    func entries(since: Date, _ visit: (CapturedLogLine) -> Void) throws {
         // A store opened now: one opened earlier does not see later entries.
         let store = try OSLogStore(scope: .currentProcessIdentifier)
-        var out: [CapturedLogLine] = []
         for entry in try store.getEntries(at: store.position(date: since)) {
-            // The system frameworks' entries are dropped here already.
             guard let log = entry as? OSLogEntryLog, !log.subsystem.hasPrefix("com.apple.") else { continue }
-            out.append(CapturedLogLine(
+            visit(CapturedLogLine(
                 date: log.date,
                 level: OSLogReader.level(osLogLevel: log.level.rawValue),
                 message: log.composedMessage,
@@ -136,7 +181,6 @@ final class OSLogStoreSource: OSLogEntrySource {
                 category: log.category
             ))
         }
-        return out
     }
 }
 #endif

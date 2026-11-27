@@ -51,19 +51,29 @@ final class EndpointsTests: XCTestCase {
         XCTAssertEqual(try resolveEndpoints("http://host:80").base, "http://host")
     }
 
-    func testConnectionStringsSplitAtTheFirstAtSign() throws {
-        for (connection, token, base) in [
-            ("token@https://traceway.example.com", "token", "https://traceway.example.com"),
-            ("mytoken@https://traceway.example.com/api/report", "mytoken", "https://traceway.example.com"),
-            ("abc-123_def@https://api.example.com/report", "abc-123_def", "https://api.example.com/report"),
-            ("token@https://user@host.com/api", "token", "https://user@host.com"),
+    /// The same rules as a connection string's URL, for a `baseUrl` given
+    /// on its own.
+    func testABaseUrlAloneIsNormalized() throws {
+        for (raw, base) in [
+            ("https://cloud.tracewayapp.com/api/report", "https://cloud.tracewayapp.com"),
+            ("cloud.tracewayapp.com", "https://cloud.tracewayapp.com"),
+            ("  https://cloud.tracewayapp.com/api/report?x=1#top  ", "https://cloud.tracewayapp.com"),
+            ("localhost:8082", "http://localhost:8082"),
+            ("127.0.0.1:8082/api", "http://127.0.0.1:8082"),
+            ("10.0.2.2:8082", "http://10.0.2.2:8082"),
+            ("[::1]:8082/api/report", "http://[::1]:8082"),
+            ("traceway.mycompany.com/traceway/api/", "https://traceway.mycompany.com/traceway"),
+            ("HTTPS://Cloud.TracewayApp.com:443/", "https://cloud.tracewayapp.com"),
         ] {
-            let parsed = try parseConnectionString(connection)
-            XCTAssertEqual(parsed.token, token, connection)
-            XCTAssertEqual(try resolveEndpoints(parsed.apiUrl).base, base, connection)
+            XCTAssertEqual(try normalizeBaseUrl(raw), base, raw)
+            XCTAssertEqual(try resolveEndpoints(raw).base, base, raw)
         }
-        for bad in ["notokenhere", "@https://example.com", "token@"] {
-            XCTAssertThrowsError(try parseConnectionString(bad), bad)
+        XCTAssertTrue(try normalizeBaseUrlDetailed("cloud.tracewayapp.com").schemeAdded)
+        XCTAssertFalse(try normalizeBaseUrlDetailed("https://cloud.tracewayapp.com").schemeAdded)
+        for bad in ["", "   ", "ftp://host", "https://", "/api/report", "\u{0}", "https://?x"] {
+            XCTAssertThrowsError(try normalizeBaseUrl(bad), bad) { error in
+                XCTAssertTrue("\(error)".contains("is not a Traceway server URL; expected https://host"), "\(error)")
+            }
         }
     }
 

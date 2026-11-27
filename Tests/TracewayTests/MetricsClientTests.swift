@@ -26,12 +26,13 @@ final class MetricsClientTests: XCTestCase {
     @discardableResult
     private func start(
         _ options: TracewayOptions = TracewayOptions(remoteConfig: false),
-        connectionString: String? = "token@https://traceway.example.com"
+        token: String? = "token"
     ) throws -> TracewayClient {
         var options = options
         options.exportDelayMs = 50
         return try TracewayClient.start(
-            connectionString: connectionString,
+            token: token,
+            baseUrl: "https://traceway.example.com",
             options: options,
             overrides: TracewayTestOverrides(
                 transport: server,
@@ -128,7 +129,7 @@ final class MetricsClientTests: XCTestCase {
         let client = try start(
             TracewayOptions(telemetry: TracewayTelemetry(url: "https://collector.example.com/otlp/",
                                                          headers: ["x-key": "k"])),
-            connectionString: nil
+            token: nil
         )
         client.flush(timeout: 10)
         let request = try XCTUnwrap(server.requests(to: "/otlp/v1/metrics").first)
@@ -143,7 +144,7 @@ final class MetricsClientTests: XCTestCase {
         let endpoint = TracewayTelemetryEndpoint(url: "https://collector.example.com/v1/logs")
         let traces = TracewayTelemetryEndpoint(url: "https://collector.example.com/v1/traces")
         XCTAssertThrowsError(try start(TracewayOptions(telemetry: TracewayTelemetry(logs: endpoint, traces: traces)),
-                                       connectionString: nil))
+                                       token: nil))
         let metrics = TracewayTelemetryEndpoint(url: "https://metrics.example.com/ingest", headers: ["x-key": "m"])
         let routes = try TelemetryRoutes.resolve(
             endpoints: nil, token: nil,
@@ -165,9 +166,9 @@ final class MetricsClientTests: XCTestCase {
         XCTAssertTrue(TracewayTelemetry(url: "https://collector.example.com").coversAllSignals)
         let endpoint = TracewayTelemetryEndpoint(url: "https://collector.example.com/v1/x")
         XCTAssertTrue(TracewayTelemetry(url: "", logs: endpoint, traces: endpoint, metrics: endpoint).coversAllSignals)
-        XCTAssertThrowsError(try start(TracewayOptions(telemetry: TracewayTelemetry(url: " ")), connectionString: nil))
+        XCTAssertThrowsError(try start(TracewayOptions(telemetry: TracewayTelemetry(url: " ")), token: nil))
         XCTAssertNil(TracewayClient.shared)
-        // With a connection string a blank url keeps every signal on Traceway.
+        // With a token a blank url keeps every signal on Traceway.
         let client = try start(TracewayOptions(remoteConfig: false, telemetry: TracewayTelemetry(url: "")))
         XCTAssertFalse(client.routes.metrics.external)
         XCTAssertEqual(client.routes.metrics.url.absoluteString, "https://traceway.example.com/api/otel/v1/metrics")

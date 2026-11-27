@@ -106,3 +106,12 @@ final class ScreenState {
         return out
     }
 }
+
+/// The navigation a named screen's appearance stands for: `push` the first
+/// time it appears, `pop` when it comes back; `from` is the screen shown
+/// before, when it is another one.
+enum ScreenAppearance {
+    static func of(_ path: String, again: Bool, shown: String?) -> (action: String, from: String?) {
+        (again ? "pop" : "push", shown == path ? nil : shown)
+    }
+}

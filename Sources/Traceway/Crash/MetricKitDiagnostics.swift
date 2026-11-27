@@ -12,7 +12,7 @@ struct MetricKitFrame: Equatable {
 
 /// A crash of an earlier run that MetricKit reported
 /// (`MXCrashDiagnostic`), read from the JSON `jsonRepresentation()` gives,
-/// so the same parser runs everywhere (CONTRACT §14.1).
+/// so the same parser runs everywhere.
 struct MetricKitCrash {
     /// Signal number, in Darwin's numbering.
     var signal: Int?

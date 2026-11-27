@@ -18,8 +18,9 @@ import OpenTelemetryApi
 /// ```
 ///
 /// Before the SDK has started, or once it has shut down, an interaction
-/// records nothing; `run` still runs its code. Thread-safe.
-public final class TracewayInteraction {
+/// records nothing; `run` still runs its code. Thread-safe, and `Sendable`:
+/// it can be started on the main actor and run in a task.
+public final class TracewayInteraction: @unchecked Sendable {
     private let span: Span?
     private weak var client: TracewayClient?
     private let lock = NSLock()
@@ -53,10 +54,15 @@ public final class TracewayInteraction {
         return try OpenTelemetry.instance.contextProvider.withActiveSpan(span, body)
     }
 
-    /// Runs async `body` as part of this interaction, until it returns.
+    /// Runs async `body` as part of this interaction, until it returns. It
+    /// runs on the caller's actor (`isolation`): from the main actor or a
+    /// view model, `try await checkout.run { … }` stays there.
     @available(iOS 13.0, macOS 10.15, *)
     @discardableResult
-    public func run<T>(_ body: () async throws -> T) async rethrows -> T {
+    public func run<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> T
+    ) async rethrows -> T {
         guard let span = span else { return try await body() }
         return try await OpenTelemetry.instance.contextProvider.withActiveSpan(span, body)
     }

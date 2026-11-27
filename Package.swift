@@ -39,6 +39,9 @@ let package = Package(
         .target(
             name: "Traceway",
             dependencies: tracewayDependencies,
+            // The privacy manifest App Store Connect reads for the SDK: the
+            // required-reason APIs it calls and the data it collects.
+            resources: [.copy("PrivacyInfo.xcprivacy")],
             // `zlib` ships with the Apple SDKs; it gzips replay uploads.
             linkerSettings: [
                 .linkedLibrary("z", .when(platforms: [.iOS, .macOS])),
@@ -51,6 +54,13 @@ let package = Package(
             // and Flutter SDKs' copy; `wireframeCss` must equal it. MetricKit
             // payloads as `jsonRepresentation()` gives them, for the parser.
             resources: [.copy("Resources/wireframe.css"), .copy("Resources/MetricKit")]
+        ),
+        // The README's snippets as an app in Swift 6 language mode writes
+        // them: they must compile without `@preconcurrency`.
+        .testTarget(
+            name: "TracewaySwift6Tests",
+            dependencies: ["Traceway"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ],
     swiftLanguageModes: [.v5]

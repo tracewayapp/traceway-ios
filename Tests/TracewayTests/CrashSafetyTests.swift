@@ -36,7 +36,7 @@ final class CrashSafetyTests: XCTestCase {
         var options = options
         options.exportDelayMs = 50
         return try TracewayClient.start(
-            connectionString: "token@https://traceway.example.com",
+            token: "token", baseUrl: "https://traceway.example.com",
             options: options,
             overrides: TracewayTestOverrides(
                 transport: transport ?? server,
@@ -242,6 +242,47 @@ final class CrashSafetyTests: XCTestCase {
         assertStillWorks(client, "after starts and shutdowns at once")
     }
 
+    /// Tokens and server URLs no one should pass (a NUL, a megabyte, another
+    /// scheme, half a URL) never trap: an unusable URL returns nil, before
+    /// any start, after a shutdown and from many threads at once, through
+    /// the deprecated connection strings too.
+    @available(*, deprecated)
+    func testGarbageTokensAndServerURLsNeverTrap() throws {
+        let huge = String(repeating: "x", count: 1_000_000)
+        let badURLs = ["\u{0}", huge, "ftp://host", "https://", "[", "[::1", "http://:0", "tok@", "?#", "javascript:x"]
+        let tokens: [String?] = [nil, "", " ", "\u{0}", huge, "tok\n@x"]
+        func options() -> TracewayOptions { TracewayOptions(exportDelayMs: 50) }
+        func overrides() -> TracewayTestOverrides {
+            TracewayTestOverrides(transport: server, deviceAttributes: ["os.name": "ios"])
+        }
+        func tryAll() {
+            for url in badURLs {
+                XCTAssertNil(Traceway.begin(token: "tok", baseUrl: url, options: options(), overrides: overrides()))
+                XCTAssertNil(Traceway.begin(connectionString: "tok@" + url, options: options(),
+                                            overrides: overrides()))
+            }
+            for cs in ["\u{0}", huge, "@", "@@", huge + "@ftp://h"] {
+                XCTAssertNil(Traceway.begin(connectionString: cs, options: options(), overrides: overrides()))
+            }
+            for token in tokens {
+                // A token is any text: these may start. They must not trap.
+                Traceway.begin(token: token, baseUrl: nil, options: options(), overrides: overrides())?.shutdown()
+            }
+        }
+        tryAll()
+        XCTAssertNil(Traceway.initialize(token: "tok", baseUrl: "ftp://host"))
+        XCTAssertNil(Traceway.initialize(connectionString: "\u{0}"))
+        let client = try start()
+        client.shutdown()
+        tryAll()
+        DispatchQueue.concurrentPerform(iterations: 8) { i in
+            XCTAssertNil(Traceway.begin(token: "tok", baseUrl: badURLs[i % badURLs.count], options: options(),
+                                        overrides: overrides()))
+        }
+        let next = try start()
+        assertStillWorks(next, "after garbage starts")
+    }
+
     func testPublicCallsFromManyThreadsAtOnce() throws {
         let client = try start(TracewayOptions(screenCapture: true, recordAllSessions: true),
                                replay: FakeReplaySource())
@@ -408,7 +449,7 @@ final class CrashSafetyTests: XCTestCase {
         let host = FakeVitalsHost()
         let scheduler = ManualMetricsScheduler(nowMs: Clock.nowMs())
         let client = try TracewayClient.start(
-            connectionString: "token@https://traceway.example.com",
+            token: "token", baseUrl: "https://traceway.example.com",
             options: TracewayOptions(recordAllSessions: true, exportDelayMs: 50, appHangThresholdMs: 1000),
             overrides: TracewayTestOverrides(
                 transport: server, stateDirectory: state,
@@ -694,7 +735,7 @@ final class CrashSafetyTests: XCTestCase {
         let images = BinaryImages.capture()
         let mine = try XCTUnwrap(images.first { $0.loadAddr == UInt(bitPattern: #dsohandle) }?.name)
         let client = try TracewayClient.start(
-            connectionString: "token@https://traceway.example.com",
+            token: "token", baseUrl: "https://traceway.example.com",
             options: TracewayOptions(exportDelayMs: 50, reportHangsInDebug: true, appHangThresholdMs: 1000),
             overrides: TracewayTestOverrides(
                 transport: server,

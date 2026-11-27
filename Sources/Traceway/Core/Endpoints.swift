@@ -4,8 +4,8 @@ struct ConfigurationError: Error, CustomStringConvertible {
     let description: String
 }
 
-/// Every endpoint the SDK talks to on a Traceway server, derived from the
-/// URL half of the connection string.
+/// Every endpoint the SDK talks to on a Traceway server, derived from its
+/// base URL (`baseUrl`).
 struct TracewayEndpoints {
     /// Where the server is reachable, without a trailing slash.
     let base: String
@@ -22,34 +22,106 @@ struct TracewayEndpoints {
     }
 }
 
-/// Accepts the bare server URL as well as the 1.x form that ended in
-/// `/api/report`, so existing connection strings keep working.
-func resolveEndpoints(_ apiUrl: String) throws -> TracewayEndpoints {
-    var trimmed = apiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-    while trimmed.hasSuffix("/") { trimmed.removeLast() }
-    if trimmed.hasSuffix("/api/report") { trimmed.removeLast("/api/report".count) }
-    if trimmed.hasSuffix("/api") { trimmed.removeLast("/api".count) }
-    guard var components = URLComponents(string: trimmed),
-          let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
-          let host = components.host, !host.isEmpty
-    else {
-        throw ConfigurationError(description: "Invalid connection string: \(apiUrl) is not an HTTP(S) URL")
+/// Hosts a URL without a scheme reaches over plain `http://`: the machine
+/// itself, or it seen from an Android emulator.
+private let localHosts: Set<String> = ["localhost", "127.0.0.1", "10.0.2.2", "[::1]"]
+
+/// A server URL as every Traceway SDK normalizes it, and whether a scheme
+/// had to be added.
+struct NormalizedBaseUrl: Equatable {
+    let base: String
+    let schemeAdded: Bool
+}
+
+/// The Traceway server's base URL by the rules every SDK shares: trimmed;
+/// `https://` added when there is no scheme (`http://` for `localhost`,
+/// `127.0.0.1`, `10.0.2.2` and `[::1]`); a query or fragment dropped, then
+/// trailing slashes; a trailing `/api/report`, else `/api`, dropped, then
+/// trailing slashes again. Any other path is kept, so a server under a
+/// sub-path stays reachable. Lowercase scheme and host and no default port,
+/// the form request URLs take (`isOwn` compares them). Throws, without
+/// trapping on any input, when the result is not an HTTP(S) URL with a host.
+func normalizeBaseUrlDetailed(_ raw: String) throws -> NormalizedBaseUrl {
+    var url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    var schemeAdded = false
+    if !url.isEmpty, !url.contains("://") {
+        let authority = url.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        let host: Substring
+        if authority.hasPrefix("["), let close = authority.firstIndex(of: "]") {
+            host = authority[...close]
+        } else {
+            host = authority.prefix { $0 != ":" }
+        }
+        url = (localHosts.contains(host.lowercased()) ? "http://" : "https://") + url
+        schemeAdded = true
     }
-    // In the form request URLs take (lowercase scheme and host), so isOwn
-    // recognises the SDK's own requests.
+    if let hash = url.firstIndex(of: "#") { url = String(url[..<hash]) }
+    if let query = url.firstIndex(of: "?") { url = String(url[..<query]) }
+    url = trimmingTrailingSlashes(url)
+    if url.hasSuffix("/api/report") {
+        url.removeLast("/api/report".count)
+    } else if url.hasSuffix("/api") {
+        url.removeLast("/api".count)
+    }
+    url = trimmingTrailingSlashes(url)
+    guard var components = URLComponents(string: url),
+          let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = components.host, !host.isEmpty, host.count <= 255,
+          components.query == nil, components.fragment == nil
+    else {
+        throw ConfigurationError(description:
+            "\"\(shortened(raw))\" is not a Traceway server URL; expected https://host, e.g. \(Traceway.defaultBaseUrl)")
+    }
     components.scheme = scheme
     components.host = host.lowercased()
     if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
         components.port = nil
     }
-    guard let base = components.string,
-          let logs = URL(string: base + "/api/otel/v1/logs"),
+    guard let base = components.string else {
+        throw ConfigurationError(description:
+            "\"\(shortened(raw))\" is not a Traceway server URL; expected https://host, e.g. \(Traceway.defaultBaseUrl)")
+    }
+    return NormalizedBaseUrl(base: base, schemeAdded: schemeAdded)
+}
+
+/// `normalizeBaseUrlDetailed`'s base URL.
+func normalizeBaseUrl(_ raw: String) throws -> String {
+    try normalizeBaseUrlDetailed(raw).base
+}
+
+private func trimmingTrailingSlashes(_ text: String) -> String {
+    var out = Substring(text)
+    while out.hasSuffix("/") { out = out.dropLast() }
+    return String(out)
+}
+
+/// A value the app passed, as a message may quote it: the first 120
+/// characters, without control characters.
+func shortened(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let clean = String(trimmed.unicodeScalars.prefix(120).map {
+        CharacterSet.controlCharacters.contains($0) ? "?" : Character($0)
+    })
+    return trimmed.unicodeScalars.count > 120 ? clean + "…" : clean
+}
+
+/// Every endpoint of the server at `baseUrl`, normalized by
+/// `normalizeBaseUrl` (a 2.0 URL ending in `/api` or `/api/report` works).
+/// With `debug`, a URL that had no scheme says once which one it got.
+func resolveEndpoints(_ baseUrl: String) throws -> TracewayEndpoints {
+    let normalized = try normalizeBaseUrlDetailed(baseUrl)
+    let base = normalized.base
+    if normalized.schemeAdded {
+        Log.debugOnce("baseUrl scheme", "baseUrl \"\(shortened(baseUrl))\" has no scheme; using \(base)")
+    }
+    guard let logs = URL(string: base + "/api/otel/v1/logs"),
           let traces = URL(string: base + "/api/otel/v1/traces"),
           let metrics = URL(string: base + "/api/otel/v1/metrics"),
           let opamp = URL(string: base + "/api/otel/v1/opamp"),
           let recordings = URL(string: base + "/api/recordings")
     else {
-        throw ConfigurationError(description: "Invalid connection string: \(apiUrl)")
+        throw ConfigurationError(description:
+            "\"\(shortened(baseUrl))\" is not a Traceway server URL; expected https://host, e.g. \(Traceway.defaultBaseUrl)")
     }
     return TracewayEndpoints(
         base: base, logs: logs, traces: traces, metrics: metrics, opamp: opamp, recordings: recordings

@@ -97,6 +97,48 @@ final class URLSessionTransport: HTTPTransport {
 /// The name and version the SDK reports itself as.
 enum TracewaySDK {
     static let name = "traceway-ios"
-    static let version = "2.0.0-beta.1"
+    static let version = "2.1.0"
     static let userAgent = "\(name)/\(version)"
+}
+
+/// Passes every request on, and says once per process, whatever `debug`
+/// says, when the Traceway server at `base` rejects the project token or
+/// does not take iOS 2.x telemetry: both leave the dashboard empty, and
+/// nothing else would tell the developer why.
+final class ServerAnswerWatch: HTTPTransport {
+    private let inner: HTTPTransport
+    private let base: String
+
+    init(inner: HTTPTransport, base: String) {
+        self.inner = inner
+        self.base = base
+    }
+
+    func post(
+        url: URL,
+        headers: [String: String],
+        body: Data,
+        timeout: TimeInterval,
+        completion: @escaping (HTTPResult) -> Void
+    ) {
+        let base = self.base
+        inner.post(url: url, headers: headers, body: body, timeout: timeout) { result in
+            if result.statusCode == 401 || result.statusCode == 404 {
+                ServerAnswerWatch.observe(result.statusCode, url: url, base: base)
+            }
+            completion(result)
+        }
+    }
+
+    static func observe(_ status: Int, url: URL, base: String) {
+        let text = url.absoluteString
+        guard text.hasPrefix(base + "/api/") else { return }
+        if status == 401 {
+            Log.once("token rejected", "the server rejected the project token (HTTP 401) at \(base). "
+                + "Copy the token from the project's Connection page.")
+        } else if status == 404, text == base + "/api/otel/v1/logs" {
+            Log.once("no otlp", "\(base) does not accept iOS 2.x telemetry (HTTP 404 on /api/otel/v1/logs): "
+                + "the server needs OTLP support; on an older server stay on 0.1.x.")
+        }
+    }
 }

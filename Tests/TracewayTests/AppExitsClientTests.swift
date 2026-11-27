@@ -59,7 +59,7 @@ final class AppExitsClientTests: XCTestCase {
         options.exportDelayMs = 50
         let bodies = metricBodies ?? Payloads()
         return try TracewayClient.start(
-            connectionString: "token@https://traceway.example.com",
+            token: "token", baseUrl: "https://traceway.example.com",
             options: options,
             overrides: TracewayTestOverrides(
                 logExporter: logs,
@@ -429,6 +429,33 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertTrue(lines("oslog").isEmpty)
     }
 
+    /// IOS2-7: an error storm is one read of the unified log, not one per
+    /// exception queued behind each other.
+    func testManyExceptionsShareOneLogRead() throws {
+        let source = SlowOSLogSource(delay: 0.3)
+        let client = try start(osLog: source)
+        source.add("before the storm", at: Date())
+        struct Storm: Error { let i: Int }
+        for i in 0..<100 { Traceway.captureException(Storm(i: i)) }
+        client.flush(timeout: 5)
+        XCTAssertLessThanOrEqual(source.reads, 2, "100 exceptions while a read runs share it")
+        XCTAssertTrue(eventually { !self.logs.events("exception").isEmpty })
+        XCTAssertEqual(lines("oslog").map { $0.body }, [.string("before the storm")])
+    }
+
+    /// IOS2-7: a read that hangs holds an exception back half a second at
+    /// most; it is recorded (and on disk) without the unread lines.
+    func testAnExceptionIsRecordedWhenTheLogReadHangs() throws {
+        let source = SlowOSLogSource(delay: 5)
+        defer { source.release() }
+        _ = try start(osLog: source)
+        struct Declined: Error {}
+        let started = Date()
+        Traceway.captureException(Declined())
+        XCTAssertTrue(eventually(timeout: 1.5) { !self.logs.events("exception").isEmpty })
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+    }
+
     func testStandardOutputAndErrorLinesAreConsoleLines() throws {
         let client = try start(TracewayOptions(recordAllSessions: true), osLog: FakeOSLogSource())
         client.recordStdLines(["Loaded 12 items", "[Traceway] started"], stream: "stdout")
@@ -441,5 +468,29 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertEqual(lines("stderr").map { $0.body }, [.string("warning: low disk")],
                        "NSLog's copy on standard error is read from the unified log instead")
         XCTAssertEqual(lines("stderr").first?.severity, .error)
+    }
+}
+
+/// A unified log whose reads take `delay` seconds, or until `release`.
+final class SlowOSLogSource: OSLogEntrySource {
+    private let inner = FakeOSLogSource()
+    private let delay: TimeInterval
+    private let released = DispatchSemaphore(value: 0)
+
+    init(delay: TimeInterval) {
+        self.delay = delay
+    }
+
+    var reads: Int { inner.reads }
+
+    func add(_ message: String, at date: Date) { inner.add(message, at: date) }
+
+    func release() {
+        for _ in 0..<8 { released.signal() }
+    }
+
+    func entries(since: Date, _ visit: (CapturedLogLine) -> Void) throws {
+        _ = released.wait(timeout: .now() + delay)
+        try inner.entries(since: since, visit)
     }
 }

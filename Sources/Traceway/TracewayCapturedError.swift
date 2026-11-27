@@ -1,8 +1,9 @@
 import Foundation
 
 /// What `TracewayOptions.beforeCapture` sees of an exception or a message
-/// before it is recorded.
-public struct TracewayCapturedError {
+/// before it is recorded. (`error` is the app's own value, handed on as it
+/// was captured; the rest are values.)
+public struct TracewayCapturedError: @unchecked Sendable {
     /// The error captured, or nil for a message.
     public let error: Error?
     /// The error's type (`NSURLErrorDomain`, `Shop.CheckoutError`); nil for
@@ -23,10 +24,12 @@ public struct TracewayCapturedError {
 /// One entry of `TracewayOptions.ignoreErrors`: text the first line
 /// `Type: message` contains (a string literal), or a regular expression
 /// found anywhere in it.
-public struct TracewayErrorPattern: ExpressibleByStringLiteral {
-    private let test: (String) -> Bool
+public struct TracewayErrorPattern: ExpressibleByStringLiteral, @unchecked Sendable {
+    // `@unchecked`: a pattern holds a compiled `NSRegularExpression`, which
+    // is immutable and safe to share, though not marked `Sendable` everywhere.
+    private let test: @Sendable (String) -> Bool
 
-    private init(_ test: @escaping (String) -> Bool) {
+    private init(_ test: @escaping @Sendable (String) -> Bool) {
         self.test = test
     }
 
@@ -41,8 +44,9 @@ public struct TracewayErrorPattern: ExpressibleByStringLiteral {
 
     /// Matches a line in which `expression` finds a match.
     public static func regex(_ expression: NSRegularExpression) -> TracewayErrorPattern {
-        TracewayErrorPattern { line in
-            expression.firstMatch(in: line, options: [], range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
+        let shared = Unchecked(expression)
+        return TracewayErrorPattern { line in
+            shared.value.firstMatch(in: line, options: [], range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
         }
     }
 
@@ -50,7 +54,7 @@ public struct TracewayErrorPattern: ExpressibleByStringLiteral {
     /// match. A pattern that does not compile matches nothing.
     public static func regex(_ pattern: String, options: NSRegularExpression.Options = []) -> TracewayErrorPattern {
         guard let expression = try? NSRegularExpression(pattern: pattern, options: options) else {
-            Log.warn("ignoreErrors: \(pattern) is not a regular expression")
+            Log.warn("ignoreErrors: \"\(shortened(pattern))\" is not a regular expression; it matches nothing")
             return TracewayErrorPattern { _ in false }
         }
         return regex(expression)

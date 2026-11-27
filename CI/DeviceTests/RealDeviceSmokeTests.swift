@@ -18,9 +18,12 @@ final class RealDeviceSmokeTests: XCTestCase {
     func testStartCaptureFlushOnDevice() {
 
         let dsn = resolvedDSN() ?? "ci-token@http://127.0.0.1:9/api/report"
+        // TRACEWAY_DSN keeps the 2.0 form, token@https://host.
+        let parsed = try? parseConnectionString(dsn)
 
         let client = Traceway.initialize(
-            connectionString: dsn,
+            token: parsed?.token,
+            baseUrl: parsed?.baseUrl,
             options: TracewayOptions(debug: true, version: "ci-device", screenCapture: true)
         )
         XCTAssertNotNil(client, "Traceway.initialize should succeed on-device")
@@ -62,13 +65,11 @@ final class RealDeviceSmokeTests: XCTestCase {
         guard let dsn = resolvedDSN() else {
             throw XCTSkip("no TRACEWAY_DSN configured")
         }
-        let at = dsn.firstIndex(of: "@")!
-        let token = String(dsn[dsn.startIndex..<at])
-        let urlString = String(dsn[dsn.index(after: at)...])
-        let url = try XCTUnwrap(URL(string: urlString))
+        let parsed = try parseConnectionString(dsn)
+        let token = parsed.token
 
         // An empty OTLP logs request: valid protobuf, and nothing to store.
-        var request = URLRequest(url: try resolveEndpoints(url.absoluteString).logs)
+        var request = URLRequest(url: try resolveEndpoints(parsed.baseUrl).logs)
         request.httpMethod = "POST"
         request.setValue("application/x-protobuf", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

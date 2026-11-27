@@ -1,7 +1,7 @@
 import Foundation
 
 // Conversions and products that hold their result to the type's range
-// instead of trapping (CONTRACT §13.4). Used wherever a number that comes
+// instead of trapping. Used wherever a number that comes
 // from outside (the server, a file, the app, the system) becomes an integer.
 
 extension Int64 {

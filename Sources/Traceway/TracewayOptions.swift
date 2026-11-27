@@ -5,7 +5,11 @@ import Foundation
 /// dashboard can lower what is collected but never raise it. `sampleRate`,
 /// `baselineSampleRate` and `recordAllSessions` are defaults a rule can
 /// change either way. The order is the same in every Traceway mobile SDK.
-public struct TracewayOptions {
+///
+/// Sendable, so a `static let` of options is fine in Swift 6: `collection`
+/// must hold JSON values only (strings, numbers, booleans, arrays and
+/// dictionaries of them), which are never mutated once passed.
+public struct TracewayOptions: @unchecked Sendable {
     /// Share of exceptions and messages that are reported (0.0–1.0).
     public var sampleRate: Double
     /// Log SDK activity with `NSLog`.
@@ -37,8 +41,9 @@ public struct TracewayOptions {
     /// Keep SDK state and undelivered telemetry on disk across restarts,
     /// and record hard crashes (signal handlers write them to disk).
     public var persistToDisk: Bool
-    /// Record log lines (signal `console`): `Traceway.log`, and on iOS 15
-    /// and later what the app logs with `NSLog`, `os_log` and `Logger`.
+    /// Record log lines (signal `console`): `Traceway.log`, on iOS 15 and
+    /// later what the app logs with `NSLog`, `os_log` and `Logger`, and
+    /// `print` with `captureStdout`.
     public var captureLogs: Bool
     /// Record URLSession requests as client spans (signal `network`).
     public var captureNetwork: Bool
@@ -73,8 +78,9 @@ public struct TracewayOptions {
     public var remoteConfig: Bool
     /// How long finished records wait to be sent as one batch.
     public var exportDelayMs: Int
-    /// Send ordinary logs and spans to another OTLP/HTTP receiver as well,
-    /// or only there when the SDK runs without a connection string.
+    /// Send ordinary logs, spans and metrics to another OpenTelemetry
+    /// (OTLP/HTTP) receiver as well, or only there when the SDK runs without
+    /// a token.
     public var telemetry: TracewayTelemetry?
     /// URL prefixes whose requests carry a W3C `traceparent` header naming
     /// the request's client span, so backend spans join the app's trace.
@@ -84,14 +90,11 @@ public struct TracewayOptions {
     /// `TracewayOptions.defaultIgnoreErrors`; `[]` reports everything.
     public var ignoreErrors: [TracewayErrorPattern]?
     /// Sees every exception and message before it is recorded; returning
-    /// false drops it. Runs on the thread that captured it. A callback that
+    /// false drops it. Called on the thread that captured the issue, often
+    /// not the main thread (a background task, the hang watchdog's queue),
+    /// so it is `@Sendable` and must not assume an actor. A callback that
     /// throws keeps the record (and logs why with `debug`).
-    public var beforeCapture: ((TracewayCapturedError) throws -> Bool)?
-    /// Report hangs (`app.hang`) while a debugger is attached too. Off by
-    /// default: a breakpoint or a step in the debugger stops the main thread
-    /// exactly like a hang does, and there is no telling them apart. Turn it
-    /// on to test hang reporting from Xcode.
-    public var reportHangsInDebug: Bool
+    public var beforeCapture: (@Sendable (TracewayCapturedError) throws -> Bool)?
     /// Report why earlier runs ended: crashes and watchdog terminations
     /// MetricKit saw that the SDK's own handlers did not record, and
     /// `app.oom` when the last run most likely ran out of memory in the
@@ -105,6 +108,11 @@ public struct TracewayOptions {
     /// How long the main thread must be blocked to be an `AppHang` issue
     /// (250–60,000 ms).
     public var appHangThresholdMs: Int
+    /// Report hangs (`app.hang` and `AppHang` issues) while a debugger is
+    /// attached too. Off by default: a breakpoint or a step in the debugger
+    /// stops the main thread exactly like a hang does, and there is no
+    /// telling them apart. Turn it on to test hang reporting from Xcode.
+    public var reportHangsInDebug: Bool
     /// Record what the app writes to standard output and standard error
     /// (`print`) as log lines (`log.source: stdout` / `stderr`). Off by
     /// default: it redirects the process's file descriptors 1 and 2 through
@@ -145,11 +153,11 @@ public struct TracewayOptions {
         telemetry: TracewayTelemetry? = nil,
         propagateTraceHeaderUrls: [String] = [],
         ignoreErrors: [TracewayErrorPattern]? = nil,
-        beforeCapture: ((TracewayCapturedError) throws -> Bool)? = nil,
-        reportHangsInDebug: Bool = false,
+        beforeCapture: (@Sendable (TracewayCapturedError) throws -> Bool)? = nil,
         captureExitReasons: Bool = true,
         captureAppHangs: Bool = true,
         appHangThresholdMs: Int = 2000,
+        reportHangsInDebug: Bool = false,
         captureStdout: Bool = false
     ) {
         self.sampleRate = sampleRate
@@ -179,10 +187,10 @@ public struct TracewayOptions {
         self.propagateTraceHeaderUrls = propagateTraceHeaderUrls
         self.ignoreErrors = ignoreErrors
         self.beforeCapture = beforeCapture
-        self.reportHangsInDebug = reportHangsInDebug
         self.captureExitReasons = captureExitReasons
         self.captureAppHangs = captureAppHangs
         self.appHangThresholdMs = appHangThresholdMs
+        self.reportHangsInDebug = reportHangsInDebug
         self.captureStdout = captureStdout
     }
 
@@ -206,10 +214,10 @@ public struct TracewayOptions {
 /// Honeycomb, ...). The shared `url` gets `/v1/logs`, `/v1/traces` and
 /// `/v1/metrics` appended; a per-signal endpoint is a complete URL, used as
 /// given. Without a shared `url`, the signals not listed keep their Traceway
-/// destination. With a connection string, exceptions, messages and the SDK's
-/// session and control records still go to Traceway only, as do OpAMP and
-/// screen recordings. The Traceway token is never sent to these receivers.
-public struct TracewayTelemetry {
+/// destination. With a token, exceptions, messages and the SDK's session and
+/// control records still go to Traceway only, as do OpAMP and screen
+/// recordings. The Traceway token is never sent to these receivers.
+public struct TracewayTelemetry: Sendable {
     public var url: String?
     public var headers: [String: String]
     public var logs: TracewayTelemetryEndpoint?
@@ -240,7 +248,7 @@ public struct TracewayTelemetry {
     var coversAllSignals: Bool { baseURL != nil || (logs != nil && traces != nil && metrics != nil) }
 }
 
-public struct TracewayTelemetryEndpoint {
+public struct TracewayTelemetryEndpoint: Sendable {
     /// The complete signal URL; no path is appended.
     public var url: String
     /// Override the shared headers key by key.
@@ -254,7 +262,7 @@ public struct TracewayTelemetryEndpoint {
 
 /// The level of a `Traceway.log` line: its OpenTelemetry severity, and what
 /// the console's `minSeverity` setting compares.
-public enum TracewayLogLevel: String, CaseIterable {
+public enum TracewayLogLevel: String, CaseIterable, Sendable {
     case trace, debug, info, warn, error, fatal
 }
 
@@ -264,7 +272,7 @@ public typealias TracewayLogSeverity = TracewayLogLevel
 /// When the replay records the pictures image views show, ordered
 /// `off < wifi < always`. `wifi` means an unmetered connection: cellular,
 /// a personal hotspot and Low Data Mode count as metered.
-public enum TracewayImagePolicy: String, CaseIterable, Comparable {
+public enum TracewayImagePolicy: String, CaseIterable, Comparable, Sendable {
     case off, wifi, always
 
     private var rank: Int {

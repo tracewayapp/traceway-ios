@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 /// How the wireframe inlines a picture, the same on every Traceway SDK
-/// that does (CONTRACT §14.5): the bitmap an image view shows (never a
+/// that does: the bitmap an image view shows (never a
 /// screenshot of the window), downscaled to its displayed size at one pixel
 /// per point. An opaque picture is a JPEG at quality 0.45, its longest side
 /// at most 384 pixels; one with see-through pixels is always a PNG (as a

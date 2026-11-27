@@ -30,6 +30,9 @@ final class UIViewPath: SelectorPath {
     /// way a browser's target is the element drawn there.
     static func at(_ point: CGPoint, in window: UIWindow) -> UIViewPath? {
         guard let hit = window.hitTest(point, with: nil) else { return nil }
+        if TracewayIdentifierMarkerView.exists, let marker = identifierMarker(at: point, under: hit, in: window) {
+            return UIViewPath(leaf: marker)
+        }
         var leaf = hit
         var depth = 0
         while depth < 64, let child = topmostSubview(of: leaf, at: point, in: window) {
@@ -39,10 +42,36 @@ final class UIViewPath: SelectorPath {
         return UIViewPath(leaf: leaf)
     }
 
+    /// The smallest `tracewayIdentifier` marker under `point` in `root`'s
+    /// subtree (the innermost SwiftUI view named so), looking at no more
+    /// than 2,000 views.
+    private static func identifierMarker(at point: CGPoint, under root: UIView, in window: UIWindow) -> UIView? {
+        var best: UIView?
+        var bestArea = CGFloat.greatestFiniteMagnitude
+        var stack: [UIView] = [root]
+        var visited = 0
+        while let view = stack.popLast(), visited < 2000 {
+            visited += 1
+            if view.isHidden || view.alpha < 0.01 { continue }
+            if view is TracewayIdentifierMarkerView {
+                let rect = view.convert(view.bounds, to: window)
+                let area = rect.width * rect.height
+                if rect.contains(point), area.isFinite, area <= bestArea {
+                    best = view
+                    bestArea = area
+                }
+                continue
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+        return best
+    }
+
     private static func topmostSubview(of view: UIView, at point: CGPoint, in window: UIWindow) -> UIView? {
         // UIKit draws later subviews on top.
         for child in view.subviews.reversed() {
-            if child.isHidden || child.alpha < 0.01 || child is TracewayMaskMarkerView { continue }
+            if child.isHidden || child.alpha < 0.01 || child is TracewayMaskMarkerView
+                || child is TracewayIdentifierMarkerView { continue }
             if child.bounds.contains(child.convert(point, from: window)) { return child }
         }
         return nil

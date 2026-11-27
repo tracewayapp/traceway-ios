@@ -6,7 +6,7 @@ import Glibc
 #endif
 
 /// What a run of the app said about itself, kept for the next run to tell
-/// how it ended (CONTRACT §14.1): the versions it ran, whether it was in the
+/// how it ended: the versions it ran, whether it was in the
 /// foreground last, whether a debugger was attached, whether it shut the
 /// SDK down or was told it terminates.
 struct RunRecord: Equatable {

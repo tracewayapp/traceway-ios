@@ -51,8 +51,9 @@ private let maxHealthDelayMs = 300_000
 /// signal's mode (stream, buffer, off) from the effective settings — the
 /// built-in defaults, the app's `collection`, the server's rules over OpAMP,
 /// clamped to the ceilings the options set — and runs triggers and captures
-/// on every record. All state lives on one serial queue.
-public final class TracewayClient {
+/// on every record. All state lives on one serial queue, so it is safe to
+/// use from any thread or task.
+public final class TracewayClient: @unchecked Sendable {
     private static let queueKey = DispatchSpecificKey<UInt8>()
     private static let sharedLock = NSLock()
     private static var _shared: TracewayClient?
@@ -60,10 +61,26 @@ public final class TracewayClient {
     /// client instead of each starting one on the same files.
     private static let startLock = NSLock()
 
+    private static var _everStarted = false
+
     /// The running client, or nil before `Traceway.initialize`.
     public static var shared: TracewayClient? {
         sharedLock.lock(); defer { sharedLock.unlock() }
         return _shared
+    }
+
+    /// Whether a client was started in this process. A call after a
+    /// `shutdown` was the app's choice; one before any start is a mistake
+    /// worth one line.
+    static var everStarted: Bool {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        return _everStarted
+    }
+
+    private static func markStarted() {
+        sharedLock.lock()
+        _everStarted = true
+        sharedLock.unlock()
     }
 
     let queue = DispatchQueue(label: "app.traceway.client", qos: .utility)
@@ -100,6 +117,9 @@ public final class TracewayClient {
     private let logQueue = DispatchQueue(label: "app.traceway.logs", qos: .utility)
     private var logTimer: DispatchWorkItem?
     private let readsOSLog = Locked(false)
+    /// The work of `afterLogs` calls waiting for the log read queued or
+    /// running now, if any.
+    private let waitingForLogs = Locked(LogWaiters())
     /// Whether console lines are recorded now (`captureLogs` and the
     /// console's mode), read off the client's queue.
     private let consoleCaptured = Locked(false)
@@ -205,20 +225,30 @@ public final class TracewayClient {
 
     // MARK: - Starting
 
-    init(connectionString: String?, options: TracewayOptions, overrides: TracewayTestOverrides? = nil) throws {
+    /// `token` is the project token (trimmed; a blank one counts as none);
+    /// `baseUrl` the Traceway server, Traceway Cloud when nil or blank.
+    /// Without a token the SDK runs standalone and needs `options.telemetry`.
+    init(token: String?, baseUrl: String?, options: TracewayOptions, overrides: TracewayTestOverrides? = nil) throws {
         self.options = options
         self.overrides = overrides
-        standalone = connectionString == nil
-        if let connectionString = connectionString {
-            let parsed = try parseConnectionString(connectionString)
-            token = parsed.token
-            endpoints = try resolveEndpoints(parsed.apiUrl)
+        let given = token?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = given.flatMap { $0.isEmpty ? nil : $0 }
+        standalone = token == nil
+        if let token = token {
+            self.token = token
+            let server = baseUrl.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            endpoints = try resolveEndpoints(server ?? Traceway.defaultBaseUrl)
         } else {
             guard options.telemetry?.coversAllSignals == true else {
-                throw ConfigurationError(description:
-                    "Without a connection string, TracewayOptions.telemetry needs a url or all three signal endpoints")
+                throw ConfigurationError(description: given == nil
+                    ? "there is no token. Pass the project token from the Connection page, "
+                        + "Traceway.initialize(token: \"YOUR_TOKEN\"), or TracewayOptions.telemetry with a url "
+                        + "(or all three signal endpoints) to run without Traceway"
+                    : "the token is empty. Pass the project token from the Connection page: "
+                        + "Traceway.initialize(token: \"YOUR_TOKEN\"). With Traceway.xcconfig, check that "
+                        + "TRACEWAY_TOKEN is set and Info.plist has TracewayToken = $(TRACEWAY_TOKEN).")
             }
-            token = nil
+            self.token = nil
             endpoints = nil
         }
         routes = try TelemetryRoutes.resolve(endpoints: endpoints, token: token, telemetry: options.telemetry)
@@ -244,6 +274,9 @@ public final class TracewayClient {
             }
         }
         let screenCapture = options.screenCapture && !standalone
+        if options.screenCapture, standalone, options.debug {
+            Log.debug("screenCapture is off without a token (standalone)")
+        }
         control = ControlState(
             defaults: defaults,
             ceilings: ceilingsFrom(
@@ -266,7 +299,8 @@ public final class TracewayClient {
         )
         triggers = TriggerEngine(random: overrides?.random ?? { Double.random(in: 0..<1) })
         triggers.setTriggers(settings.triggers)
-        transport = overrides?.transport ?? URLSessionTransport.shared
+        let network = overrides?.transport ?? URLSessionTransport.shared
+        transport = endpoints.map { ServerAnswerWatch(inner: network, base: $0.base) } ?? network
         recordings = RecordingsTransport(url: endpoints?.recordings, token: token ?? "", transport: transport)
         // A streamed segment must leave before the frame ring wraps.
         let fps = min(max(options.fps, 1), 15)
@@ -377,7 +411,8 @@ public final class TracewayClient {
     /// on the client's queue.
     @discardableResult
     static func start(
-        connectionString: String?,
+        token: String?,
+        baseUrl: String? = nil,
         options: TracewayOptions,
         overrides: TracewayTestOverrides? = nil
     ) throws -> TracewayClient {
@@ -385,14 +420,20 @@ public final class TracewayClient {
         startLock.lock()
         defer { startLock.unlock() }
         if let existing = shared {
-            if !existing.isShutdown, !existing.isStopping { return existing }
+            if !existing.isShutdown, !existing.isStopping {
+                if options.debug || Log.debugEnabled {
+                    Log.warn("already running: the options of this initialize call are ignored; call shutdown() first")
+                }
+                return existing
+            }
             // `shutdown` was called and has not finished: the new client
             // waits for it briefly, then takes over its files.
             existing.awaitStopped(timeout: 2)
             existing.supersede()
         }
         Log.debugEnabled = options.debug
-        let client = try TracewayClient(connectionString: connectionString, options: options, overrides: overrides)
+        let client = try TracewayClient(token: token, baseUrl: baseUrl, options: options, overrides: overrides)
+        markStarted()
         if overrides == nil {
             client.vitals?.watchColdStart(sdkStartMs: sdkStartMs, processStartMs: AppVitals.processStartMonotonicMs())
         }
@@ -524,7 +565,35 @@ public final class TracewayClient {
         }
         outbox?.schedule(afterMs: 2000)
         tracewayOutbox?.schedule(afterMs: 2000)
-        Log.debug("started, instance \(Ids.uuidString(instanceUid))")
+        if Log.debugEnabled { Log.debug(startDescription()) }
+    }
+
+    /// What the SDK does from now on, for the `debug` start line.
+    private func startDescription() -> String {
+        func list(_ names: [String]) -> String {
+            guard names.count > 1, let last = names.last else { return names.first ?? "" }
+            return names.dropLast().joined(separator: ", ") + " and " + last
+        }
+        var streamed: [String] = [], buffered: [String] = [], off: [String] = []
+        for signal in ["errors", "messages", "console", "network", "navigation", "userActions", "custom"] {
+            switch control.modeFor(signal) {
+            case .stream: streamed.append(signal)
+            case .buffer: buffered.append(signal)
+            case .off: off.append(signal)
+            }
+        }
+        var parts: [String] = []
+        if !streamed.isEmpty { parts.append("\(list(streamed)) \(streamed.count == 1 ? "streams" : "stream")") }
+        if !buffered.isEmpty {
+            parts.append("\(list(buffered)) \(buffered.count == 1 ? "waits" : "wait") on the device for an error or a "
+                + "capture (recordAllSessions: true streams them)")
+        }
+        if !off.isEmpty { parts.append("\(list(off)) off") }
+        let replay = options.screenCapture && !standalone
+            ? "replay on, \(min(max(options.fps, 1), 15)) fps"
+            : "replay off"
+        let server = endpoints?.base ?? "standalone (telemetry only)"
+        return "started (\(TracewaySDK.version)) for \(server): \(parts.joined(separator: "; ")); \(replay)"
     }
 
     private var remoteConfigEnabled: Bool { options.remoteConfig && !standalone }
@@ -674,11 +743,9 @@ public final class TracewayClient {
             .setInstrumentationVersion(TracewaySDK.version)
             .build()
         tracer = tracerProvider.get(instrumentationName: TracewaySDK.name, instrumentationVersion: TracewaySDK.version)
-        // An app without OpenTelemetry of its own gets the SDK's providers as
-        // the global ones, so its spans and logs join the session; an app
-        // with its own keeps them. Registered once per process, they reach
-        // whichever client runs, also one started after a shutdown.
-        if overrides == nil { CurrentClientProviders.registerGlobally() }
+        // Traceway's providers stay its own: never the global ones
+        // (`OpenTelemetry.instance`), so an app's own OpenTelemetry setup,
+        // and what libraries record through it, stay the app's.
     }
 
     /// Queues of receivers no longer configured: nothing would send them.
@@ -884,7 +951,11 @@ public final class TracewayClient {
     /// first line.
     private func ignored(type: String?, message: String) -> Bool {
         let line = ignoreLine(type: type, message: message)
-        return (options.ignoreErrors ?? TracewayOptions.defaultIgnoreErrors).contains { $0.matches(line) }
+        guard (options.ignoreErrors ?? TracewayOptions.defaultIgnoreErrors).contains(where: { $0.matches(line) })
+        else { return false }
+        Log.debug("dropped \(shortened(line)): it matches ignoreErrors"
+            + (options.ignoreErrors == nil ? " (defaultIgnoreErrors)" : "") + "; pass ignoreErrors: [] to report it")
+        return true
     }
 
     private static let inBeforeCapture = "app.traceway.beforeCapture"
@@ -900,7 +971,12 @@ public final class TracewayClient {
         if thread[TracewayClient.inBeforeCapture] != nil { return true }
         thread[TracewayClient.inBeforeCapture] = true
         defer { thread.removeObject(forKey: TracewayClient.inBeforeCapture) }
-        return guarded("beforeCapture", fallback: true) { try before(captured) }
+        let kept = guarded("beforeCapture", fallback: true) { try before(captured) }
+        if !kept {
+            Log.debug("dropped \(shortened(ignoreLine(type: captured.type, message: captured.message))): "
+                + "beforeCapture returned false")
+        }
+        return kept
     }
 
     private static func strings(_ attributes: [String: AttributeValue]) -> [String: String] {
@@ -1036,7 +1112,7 @@ public final class TracewayClient {
         }
     }
 
-    /// Names the current screen by its route template (`/orders/{id}`):
+    /// Names the current screen by its route template (`/orders/:id`):
     /// issues and navigation records carry it as `app.screen.route`, and
     /// metrics group by it instead of by the path with its ids folded, until
     /// the app reaches another screen. Nil removes it.
@@ -2000,11 +2076,13 @@ public final class TracewayClient {
         client?.shutdown()
         sharedLock.lock()
         _shared = nil
+        _everStarted = false
         sharedLock.unlock()
+        Log.resetForTesting()
     }
 }
 
-// MARK: - Exit reasons, app hangs and log capture (CONTRACT §14)
+// MARK: - Exit reasons, app hangs and log capture
 
 extension TracewayClient {
     // MARK: Exit reasons
@@ -2251,19 +2329,53 @@ extension TracewayClient {
         }
     }
 
+    /// How long an exception waits for the unified log to be read before it
+    /// is recorded (and written to disk) without the lines still unread.
+    static let logReadWaitSeconds: TimeInterval = 0.5
+
     /// Runs `work` on the client's queue once the lines logged so far are
-    /// recorded, so an exception's breadcrumbs include them.
+    /// recorded, so an exception's breadcrumbs include them; at most
+    /// `logReadWaitSeconds` later, whether the read is done or not (lines it
+    /// finds later still go out as breadcrumbs). Calls made while a read is
+    /// queued or running share it: an error storm is one read, not hundreds.
     func afterLogs(_ work: @escaping () -> Void) {
         guard readsOSLog.value else {
             onQueue(work)
             return
         }
         let job = Unchecked(work)
+        let read: Int? = waitingForLogs.withValue { waiting in
+            if waiting.read != nil {
+                waiting.jobs.append(job)
+                return nil
+            }
+            waiting.lastRead += 1
+            waiting.read = waiting.lastRead
+            waiting.jobs = [job]
+            return waiting.lastRead
+        }
+        guard let read = read else { return }
+        queue.asyncAfter(deadline: .now() + TracewayClient.logReadWaitSeconds) { [weak self] in
+            self?.releaseLogWaiters(read)
+        }
         logQueue.async { [weak self] in
             guard let self = self else { return }
             self.pollLogs()
-            self.onQueue(job.value)
+            self.releaseLogWaiters(read)
         }
+    }
+
+    /// Hands the work waiting for log read `read` to the client's queue,
+    /// once: after the lines the read found, or at its deadline.
+    private func releaseLogWaiters(_ read: Int) {
+        let jobs = waitingForLogs.withValue { waiting -> [Unchecked<() -> Void>] in
+            guard waiting.read == read else { return [] }
+            let taken = waiting.jobs
+            waiting.read = nil
+            waiting.jobs = []
+            return taken
+        }
+        for job in jobs { onQueue(job.value) }
     }
 
     /// The lines logged so far, read within `timeout` seconds (a crash is
@@ -2361,11 +2473,13 @@ extension TracewayClient: RouterHooks {
         let now = Clock.nowMs()
         if key == lastErrorKey, now - lastErrorMs < duplicateErrorWindowMs {
             suppressedErrors += 1
+            Log.debug("dropped \(shortened(key)): the same error within a second")
             return false
         }
         errorTimes.removeAll { now - $0 > 60_000 }
         if errorTimes.count >= maxErrorsPerMinute {
             suppressedErrors += 1
+            Log.debug("dropped \(shortened(key)): suppressed (more than \(maxErrorsPerMinute) errors a minute)")
             return false
         }
         errorTimes.append(now)
@@ -2427,6 +2541,14 @@ extension TracewayClient: RouterHooks {
         if !fired.isEmpty { router?.sendIfStreaming(observed) }
         if observed.signal == "errors" || observed.signal == "messages" { flushSoon() }
     }
+}
+
+/// The `afterLogs` work waiting for one unified-log read.
+struct LogWaiters {
+    /// The read queued or running now.
+    var read: Int?
+    var lastRead = 0
+    var jobs: [Unchecked<() -> Void>] = []
 }
 
 /// Hands a value the SDK synchronizes itself to another queue.

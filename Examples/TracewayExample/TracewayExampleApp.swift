@@ -7,9 +7,13 @@ struct TracewayExampleApp: App {
         let isRunningTests = NSClassFromString("XCTestCase") != nil
         guard !isRunningTests else { return }
 
-        // `python3 Examples/mock_server.py` stands in for a Traceway server.
+        // The project token (and, off Traceway Cloud, the server) come from
+        // Traceway.xcconfig through Info.plist, as the Connection page shows
+        // it. See Examples/README.md.
+        let info = Bundle.main.infoDictionary
         Traceway.initialize(
-            connectionString: "demo-token@http://localhost:8080",
+            token: info?["TracewayToken"] as? String ?? "",
+            baseUrl: info?["TracewayURL"] as? String ?? "",
             options: TracewayOptions(
                 debug: true,
                 version: "1.0.0",

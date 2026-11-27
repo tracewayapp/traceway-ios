@@ -373,7 +373,7 @@ final class WireframeCapture {
         if visited.contains(key) { return }
         visited.insert(key)
         budget -= 1
-        if view.isHidden { return }
+        if view.isHidden || view is TracewayIdentifierMarkerView { return }
         let layer = view.layer.presentation() ?? view.layer
         if layer.isHidden || layer.opacity < 0.01 { return }
         guard let wrapper = wrapperTransform(view.layer, scope) else { return }

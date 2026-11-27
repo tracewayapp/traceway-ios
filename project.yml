@@ -33,10 +33,18 @@ targets:
     dependencies:
       - package: Traceway
         product: Traceway
+    # TRACEWAY_TOKEN / TRACEWAY_URL, and the git-ignored Traceway.xcconfig
+    # next to it with the real values (see Examples/README.md).
+    configFiles:
+      Debug: Examples/TracewayExample/Example.xcconfig
+      Release: Examples/TracewayExample/Example.xcconfig
     info:
       path: CI/Generated/Example-Info.plist
       properties:
         CFBundleDisplayName: Traceway Example
+        # Read by TracewayExampleApp, as the dashboard's start snippet does.
+        TracewayToken: "$(TRACEWAY_TOKEN)"
+        TracewayURL: "$(TRACEWAY_URL)"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

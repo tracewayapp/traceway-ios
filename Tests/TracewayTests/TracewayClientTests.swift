@@ -26,7 +26,7 @@ final class TracewayClientTests: XCTestCase {
     @discardableResult
     func start(
         _ options: TracewayOptions = TracewayOptions(),
-        connectionString: String? = "token@https://traceway.example.com",
+        token: String? = "token",
         stateDirectory: URL? = nil,
         replay: ReplaySource? = nil,
         random: (() -> Double)? = nil,
@@ -35,7 +35,8 @@ final class TracewayClientTests: XCTestCase {
         var options = options
         options.exportDelayMs = 50
         return try TracewayClient.start(
-            connectionString: connectionString,
+            token: token,
+            baseUrl: "https://traceway.example.com",
             options: options,
             overrides: TracewayTestOverrides(
                 logExporter: logs,
@@ -63,6 +64,11 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(resource["deployment.environment.name"], .string("prod"))
         XCTAssertEqual(resource["service.instance.id"], .string(client.instanceId))
         XCTAssertEqual(resource["traceway.sdk.name"], .string("traceway-ios"))
+        XCTAssertEqual(resource["traceway.sdk.version"], .string("2.1.0"))
+        // OpenTelemetry's own version, not the SDK's.
+        XCTAssertNotNil(resource["telemetry.sdk.version"])
+        XCTAssertNotEqual(resource["telemetry.sdk.version"], .string("2.1.0"))
+        XCTAssertEqual(started.instrumentationScopeInfo.version, "2.1.0")
         XCTAssertEqual(resource["telemetry.sdk.language"], .string("swift"))
         XCTAssertEqual(resource["device.model"], .string("iPhone15,2"))
         XCTAssertEqual(started.instrumentationScopeInfo.name, "traceway-ios")
@@ -75,9 +81,11 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(logs.events("session.end").first?.string("session.id"), session)
     }
 
+    @available(*, deprecated)
     func testAnInvalidConnectionStringDoesNotStart() {
         XCTAssertNil(Traceway.initialize(connectionString: "no-at-sign"))
         XCTAssertNil(Traceway.initialize(connectionString: "token@ftp://example.com"))
+        XCTAssertNil(Traceway.initialize(token: "token", baseUrl: "ftp://example.com"))
         XCTAssertNil(TracewayClient.shared)
     }
 
@@ -242,10 +250,10 @@ final class TracewayClientTests: XCTestCase {
     // MARK: - Standalone
 
     func testStandaloneNeedsADestinationAndNeverPolls() throws {
-        XCTAssertThrowsError(try TracewayClient.start(connectionString: nil, options: TracewayOptions()))
+        XCTAssertThrowsError(try TracewayClient.start(token: nil, options: TracewayOptions()))
         let client = try start(
             TracewayOptions(telemetry: TracewayTelemetry(url: "https://collector.example.com/otlp")),
-            connectionString: nil
+            token: nil
         )
         Traceway.captureMessage("standalone")
         client.flush(timeout: 5)
@@ -644,6 +652,28 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "search" && $0.status.isError } })
     }
 
+    /// A failed interaction goes with the exception that failed it, as on
+    /// Android, Flutter and in the browser, so the issue links to its trace
+    /// (it ends after the exception's flush took the buffer); one that
+    /// succeeds waits in the buffer like other spans.
+    func testAFailedInteractionIsSentWithItsException() throws {
+        let client = try start()
+        let checkout = Traceway.startInteraction("checkout")
+        struct Declined: Error {}
+        checkout.captureException(Declined())
+        checkout.end()
+        let search = Traceway.startInteraction("search")
+        search.end()
+        let browse = Traceway.startInteraction("browse")
+        browse.end(failed: true)
+        client.flush(timeout: 5)
+        XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "checkout" } },
+                      "the failed interaction is sent with its exception")
+        XCTAssertTrue(spans.spans.contains { $0.name == "browse" && $0.status.isError })
+        XCTAssertFalse(spans.spans.contains { $0.name == "search" }, "a successful one waits in the buffer")
+        XCTAssertEqual(logs.events("exception").first?.spanContext?.traceId.hexString, checkout.traceId)
+    }
+
     func testAnInteractionBeforeStartRecordsNothing() {
         let interaction = Traceway.startInteraction("early")
         XCTAssertNil(interaction.traceId)
@@ -877,7 +907,7 @@ final class TracewayClientTests: XCTestCase {
     func testAbsurdNumericOptionsAreClamped() throws {
         let client = try start(TracewayOptions(fps: .max, maxBufferFrames: .max))
         XCTAssertNotNil(client.currentSessionId)
-        let other = try TracewayClient(connectionString: "token@https://traceway.example.com",
+        let other = try TracewayClient(token: "token", baseUrl: "https://traceway.example.com",
                                        options: TracewayOptions(fps: .min, maxBufferFrames: .min, exportDelayMs: .max))
         XCTAssertFalse(other.isShutdown)
     }
@@ -951,8 +981,8 @@ final class TracewayClientTests: XCTestCase {
     }
 
     /// IOS-12: what is installed once per process (the URLSession
-    /// instrumentation, the global providers) kept the first client's
-    /// tracer and logger, dead after its shutdown.
+    /// instrumentation) kept the first client's tracer, dead after its
+    /// shutdown.
     func testOncePerProcessHooksRecordForTheClientRunningNow() throws {
         let first = try start(TracewayOptions(recordAllSessions: true))
         let kept = try XCTUnwrap(first.tracer)
@@ -960,22 +990,43 @@ final class TracewayClientTests: XCTestCase {
         let second = try start(TracewayOptions(recordAllSessions: true))
         kept.spanBuilder(spanName: "lost").startSpan().end()
         CurrentClientTracer { TracewayClient.shared?.tracer }.spanBuilder(spanName: "network").startSpan().end()
-        CurrentClientTracerProvider().get(instrumentationName: "app", instrumentationVersion: "1")
-            .spanBuilder(spanName: "app span").startSpan().end()
-        CurrentClientLoggerProvider().loggerBuilder(instrumentationScopeName: "app").setInstrumentationVersion("1")
-            .build().logRecordBuilder().setBody(.string("app line")).setSeverity(.warn).emit()
+        try XCTUnwrap(Traceway.tracer).spanBuilder(spanName: "app span").startSpan().end()
         struct Boom: Error {}
         Traceway.captureException(Boom())
         second.flush(timeout: 5)
         XCTAssertTrue(eventually { Set(self.spans.spans.map(\.name)).isSuperset(of: ["network", "app span"]) })
         XCTAssertFalse(spans.spans.contains { $0.name == "lost" }, "a stopped client's tracer records nothing")
-        let line = try XCTUnwrap(logs.consoleLines.first { $0.body == .string("app line") })
-        XCTAssertEqual(line.instrumentationScopeInfo.name, "app")
-        XCTAssertEqual(line.string("session.id"), second.currentSessionId)
-        // With no client running, they record nothing and do not fail.
+        // With no client running, it records nothing and does not fail.
         second.shutdown()
         CurrentClientTracer { TracewayClient.shared?.tracer }.spanBuilder(spanName: "none").startSpan().end()
-        CurrentClientLoggerProvider().get(instrumentationScopeName: "app").logRecordBuilder().emit()
+        XCTAssertNil(Traceway.tracer)
+    }
+
+    /// IOS2-14: Traceway never becomes the global OpenTelemetry, as on
+    /// Android, Flutter and the browser: the app's own setup, and what
+    /// libraries record through `OpenTelemetry.instance`, stay the app's.
+    /// `Traceway.tracer` is how the app makes spans that go to Traceway.
+    func testTheGlobalProvidersStayTheApps() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        XCTAssertTrue(OpenTelemetry.instance.tracerProvider is DefaultTracerProvider)
+        XCTAssertTrue(OpenTelemetry.instance.loggerProvider is DefaultLoggerProvider)
+        OpenTelemetry.instance.tracerProvider.get(instrumentationName: "library", instrumentationVersion: nil)
+            .spanBuilder(spanName: "library span").startSpan().end()
+        try XCTUnwrap(Traceway.tracer).spanBuilder(spanName: "own span").startSpan().end()
+        client.flush(timeout: 5)
+        XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "own span" } })
+        XCTAssertFalse(spans.spans.contains { $0.name == "library span" })
+        // The source no longer registers anything globally.
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/Traceway")
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(text.contains("registerTracerProvider") || text.contains("registerLoggerProvider"),
+                           file.lastPathComponent)
+        }
     }
 }
 
@@ -1038,7 +1089,7 @@ final class WireframeReplayIntegrationTests: XCTestCase {
         let server = FakeServer()
         let recorder = WireframeRecorder(maxFrames: 50, fps: 4)
         let client = try TracewayClient.start(
-            connectionString: "token@https://traceway.example.com",
+            token: "token", baseUrl: "https://traceway.example.com",
             options: TracewayOptions(screenCapture: true, exportDelayMs: 50),
             overrides: TracewayTestOverrides(
                 logExporter: logs, spanExporter: MemorySpanExporter(), transport: server, replaySource: recorder

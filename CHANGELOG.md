@@ -1,11 +1,61 @@
 # Changelog
 
-## 2.0.0-beta.1 — unreleased
+## 2.1.0 — unreleased
 
-Rebuilt on the official OpenTelemetry Swift SDK, at parity with the browser
-SDK 2.x and the Flutter and Android SDKs 2.0: OTLP logs, spans and metrics, a
-ring buffer on the device, remote config over OpAMP, captures, recording
-triggers, taps, wireframe session replay and app performance metrics.
+Rebuilt on the official OpenTelemetry Swift SDK, at parity with the browser,
+Flutter and Android SDKs 2.1: OTLP logs, spans and metrics, a ring buffer on
+the device, remote config over OpAMP, captures, recording triggers, taps,
+wireframe session replay and app performance metrics. The SDK leaves beta with
+this release.
+
+- **Start with a token**: `Traceway.initialize(token:baseUrl:options:)`;
+  `baseUrl` defaults to `https://cloud.tracewayapp.com`
+  (`Traceway.defaultBaseUrl`), so Traceway Cloud apps pass only the token, as
+  the dashboard's Connection page shows it (`Traceway.xcconfig`, `Info.plist`,
+  `TracewayToken`). A blank token or `baseUrl` counts as none; no token runs
+  standalone (`Traceway.initialize(options:)`). `initialize(connectionString:options:)`
+  and `start` are deprecated; every form of an old connection string still
+  works, with one warning per process.
+- **One reading of a server URL**, the same as the other SDKs: whitespace
+  trimmed, `https://` added without a scheme (`http://` for local hosts), a
+  query or fragment and trailing slashes dropped, then `/api/report` or `/api`.
+  `token@cloud.tracewayapp.com`, `token@localhost:8082` and a token with spaces
+  around it no longer keep the SDK off or get a 401, and a URL with a query no
+  longer sends everything to `/api/report?…`. No request ever goes to
+  `/api/report`.
+- **The console says why nothing arrives**: once per process and without
+  `debug`, a call before `initialize`, a rejected token (HTTP 401) and a
+  server without OTLP for iOS (HTTP 404); warnings such as a bad
+  `ignoreErrors` pattern regardless of `debug`. With `debug`: what the SDK
+  does at start, issues dropped by `ignoreErrors`, `beforeCapture`, sampling
+  or the rate limit, `screenCapture` off standalone, a second `initialize`.
+- **Traceway no longer becomes the global OpenTelemetry provider**, as on
+  Android, Flutter and the browser; use `Traceway.tracer`.
+- **A failed interaction is sent with its exception**, as on the other SDKs,
+  so the issue links to its trace (it waited in the buffer).
+- **SwiftUI**: `.tracewayIdentifier(_:)` names a view for taps and click steps
+  (`#pay`); `.tracewayScreen(_:route:)` records `pop` when a screen comes back,
+  takes the route template, and wins over hosting controllers, which are no
+  longer screens once a view is named this way.
+- **Swift 6**: the public types are `Sendable`, `beforeCapture` is
+  `@Sendable` (called on the thread that captured the issue), and the async
+  `run` of an interaction stays on the caller's actor; README snippets compile
+  in Swift 6 language mode without `@preconcurrency`.
+- **Privacy manifest**: `PrivacyInfo.xcprivacy` declares no tracking, the
+  file timestamp (`C617.1`) and boot time (`35F9.1`) APIs, and the data
+  collected; the README lists it for the App Privacy details.
+- **Unified-log reads are bounded** while they run (the newest 1,000 lines,
+  16 KiB each), exceptions captured during a read share it, and an exception
+  waits at most 0.5 s for it.
+- **dSYM upload script**: Xcode warnings (`warning: traceway: …`) for a
+  missing token, no dSYM or a failed upload with its HTTP status;
+  `TRACEWAY_UPLOAD_DEBUG=YES` uploads Debug builds; `TRACEWAY_URL` is read by
+  the same rules (Traceway Cloud when unset). The README walks through the
+  build phase, User Script Sandboxing and Debug dSYMs.
+- `TracewayOptions`: `reportHangsInDebug` comes after `appHangThresholdMs`, in
+  Android's order.
+- Route templates are written `/orders/:id` in every doc, as on the other
+  SDKs.
 
 - **Breaking**: requires a server with OTLP/OpAMP support for iOS projects; the
   1.x `/api/report` protocol is gone. Options `debounceMs`, `retryDelayMs`,
@@ -14,9 +64,8 @@ triggers, taps, wireframe session replay and app performance metrics.
 - **OpenTelemetry**: records are made with `opentelemetry-swift-core` 2.6
   (`LoggerProviderSdk`, `TracerProviderSdk`) and sent by the
   `OtlpHttpLogExporter` / `OtlpHttpTraceExporter` of `opentelemetry-swift` 2.6
-  as gzipped protobuf. When the app has not set up OpenTelemetry itself,
-  Traceway's providers become the global ones. `Traceway.tracer` is the SDK's
-  tracer.
+  as gzipped protobuf. `Traceway.tracer` is the SDK's tracer; the global
+  OpenTelemetry stays the app's.
 - **Exceptions** are OpenTelemetry `exception` log events (`exception.type`,
   `exception.message`, `exception.stacktrace` with the binary-image wire trace
   the server symbolicates, `traceway.exception.id`). Messages are
@@ -43,7 +92,7 @@ triggers, taps, wireframe session replay and app performance metrics.
 - **App performance metrics** (`captureMetrics`, on by default), with the
   Android and Flutter SDKs' names, dimensions and thresholds:
   `app.start.duration` (`start_type` cold / warm / hot, from the process start
-  read with `kinfo_proc`, or from `Traceway.start` when iOS prewarmed the
+  read with `kinfo_proc`, or from `Traceway.initialize` when iOS prewarmed the
   process), `app.screen.ttid` and `app.screen.ttfd`
   (`Traceway.reportFullyDisplayed()`), `app.frames.slow` and
   `app.frames.frozen` from a `CADisplayLink` (frozen at 700 ms), `app.hang` and
@@ -83,7 +132,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   15 minutes of inactivity or one hour at most; a restart within the window
   continues the session.
 - **Other OpenTelemetry backends** with `TracewayOptions.telemetry`, next to
-  Traceway or standalone without a connection string.
+  Traceway or standalone without a token.
 - **Outbox**: batches that fail for a reason that may pass are kept on disk per
   destination (24 hours, 200 batches) and sent again later.
 - Unsent 1.x reports and crash records are sent once over OTLP on the first
@@ -101,9 +150,8 @@ triggers, taps, wireframe session replay and app performance metrics.
     line has no event name any more (it was `browser.console`) and no
     `log.severity` attribute: its severity is the record's, and it carries
     `log.source: api` and the caller's attributes.
-  - `Traceway.initialize(connectionString:options:)` starts the SDK (the
-    other SDKs' `init`, which Swift keeps for initializers); `start` is a
-    deprecated alias.
+  - `Traceway.initialize(token:baseUrl:options:)` starts the SDK (the
+    other SDKs' `init`, which Swift keeps for initializers).
   - `recordNavigation(_:action:from:route:)` and `setRoute(_:)`: navigation
     records and issues carry `app.screen.route` while a route template is
     set.
@@ -148,7 +196,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   and the recorder hands the controller a `SessionRecordingPayload` (it was
   `RecordingClip`). [Docs/Wireframe.md](Docs/Wireframe.md) describes the
   pipeline.
-- **Crash safety** (CONTRACT §13): the SDK never takes the app down. One
+- **Crash safety** (new in 2.1.0): the SDK never takes the app down. One
   `guarded` helper contains what throws in the app's control flow (hooks,
   observers, the app's callbacks), and the sources keep no traps: no `try!`,
   force unwraps or unchecked conversions of numbers from the server, files or
@@ -183,8 +231,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   `siginfo` and context, the stack walk cannot fault on a smashed stack, the
   main thread gets its own signal stack, and crash metadata updates reuse two
   buffers instead of leaking one each.
-- URLSession spans and the global OpenTelemetry providers record for the
-  client started after a `shutdown`.
+- URLSession spans record for the client started after a `shutdown`.
 - A trigger that streams on every record extends its stream instead of
   adding one per record.
 - The wireframe keeps at most 2,000 characters of text per node, and at most
@@ -196,7 +243,7 @@ triggers, taps, wireframe session replay and app performance metrics.
 - Timestamps the app sets that no clock reaches, and absurd view sizes, no
   longer trap; `maxBufferFrames` is held to 10,000 and `exportDelayMs` to a
   minute.
-- **Exit reasons** (CONTRACT §14.1, option `captureExitReasons`, on by
+- **Exit reasons** (new in 2.1.0, option `captureExitReasons`, on by
   default): a MetricKit subscriber (iOS 14+) reports the crashes its
   `MXCrashDiagnostic`s describe that the signal and `NSException` handlers did
   not record (same signal within a minute) as `NativeCrash` issues with the
@@ -209,7 +256,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   never an issue). The signal handler keeps a thread's own alternate stack
   and gives the main thread and the starting thread a 64 KiB one, so stack
   overflows are recorded.
-- **App hangs as issues** (§14.2, options `captureAppHangs`, on, and
+- **App hangs as issues** (new in 2.1.0, options `captureAppHangs`, on, and
   `appHangThresholdMs`, 2000): the hang watchdog suspends the main thread
   once it has been blocked that long, takes its stack (`thread_get_state`, a
   checked frame-pointer walk of at most 128 frames, nothing allocated while it
@@ -218,7 +265,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   reported at the next start with `app.hang.fatal: true`. Not in the
   background, not under a debugger. With `captureMetrics: false` the watchdog
   runs for the issues alone.
-- **Log capture** (§14.3): on iOS 15+ the app's `NSLog`, `os_log` and `Logger`
+- **Log capture** (new in 2.1.0): on iOS 15+ the app's `NSLog`, `os_log` and `Logger`
   lines are read from `OSLogStore(scope: .currentProcessIdentifier)` every 10
   seconds and before an exception is recorded (`log.source: oslog`); option
   `captureStdout` (off) tees standard output and error into console lines
@@ -226,7 +273,7 @@ triggers, taps, wireframe session replay and app performance metrics.
   descriptor first and never holding the writer up. The remote
   `signals.console` mode, `minSeverity` and `sampleRate` apply as to
   `Traceway.log`.
-- **Replay images are smaller** (§14.5): one pixel per point; opaque pictures
+- **Replay images are smaller** (new in 2.1.0): one pixel per point; opaque pictures
   JPEG at 0.45 up to 384 px a side, see-through ones always PNG (never a JPEG,
   which replayed them as a black or white box) up to 192 px; at most 48 KiB
   after one retry at half size; up to 128 pictures per capture, and a

@@ -5,8 +5,8 @@ import SwiftUI
 #endif
 
 /// How a traceway mask hides a view in session replays. The app itself shows
-/// no change.
-public enum TracewayMaskMode {
+/// no change. (`@unchecked Sendable`: a `UIColor` is immutable.)
+public enum TracewayMaskMode: @unchecked Sendable {
     /// The layout stays; text becomes `*` and images placeholders.
     case blur
     /// A box of this color; nothing inside the view is recorded.
@@ -81,7 +81,57 @@ final class TracewayMaskMarkerView: UIView {
     required init?(coder: NSCoder) { nil }
 }
 
+/// The view a SwiftUI `tracewayIdentifier` modifier puts over its content:
+/// a tap inside its frame is a tap on a view with that
+/// `accessibilityIdentifier` (`#pay`), since SwiftUI controls have no views
+/// of their own and their `.accessibilityIdentifier` cannot be read. Draws
+/// nothing, takes no touches, is no accessibility element and is left out
+/// of the wireframe.
+final class TracewayIdentifierMarkerView: UIView {
+    /// Whether one was ever made: until then taps never look for one. Main
+    /// thread.
+    static var exists = false
+
+    init(identifier: String) {
+        super.init(frame: .zero)
+        accessibilityIdentifier = identifier
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        isAccessibilityElement = false
+        TracewayIdentifierMarkerView.exists = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+}
+
 #if canImport(SwiftUI)
+@available(iOS 13.0, *)
+private struct TracewayIdentifierMarker: UIViewRepresentable {
+    let identifier: String
+
+    func makeUIView(context: Context) -> TracewayIdentifierMarkerView {
+        TracewayIdentifierMarkerView(identifier: identifier)
+    }
+
+    func updateUIView(_ view: TracewayIdentifierMarkerView, context: Context) {
+        view.accessibilityIdentifier = identifier
+    }
+}
+
+@available(iOS 13.0, *)
+public extension View {
+    /// Names this view for recorded taps and click steps: a tap on it is
+    /// recorded as `#<identifier>` and matches `#<identifier>` and
+    /// `[identifier="<identifier>"]`, as an `accessibilityIdentifier` does
+    /// on a UIKit view. (SwiftUI's own `.accessibilityIdentifier` cannot be
+    /// read from the view hierarchy.) The innermost named view under the
+    /// finger is the one tapped.
+    func tracewayIdentifier(_ identifier: String) -> some View {
+        overlay(TracewayIdentifierMarker(identifier: identifier).allowsHitTesting(false))
+    }
+}
+
 @available(iOS 13.0, *)
 private struct TracewayMaskMarker: UIViewRepresentable {
     let mode: TracewayMaskMode

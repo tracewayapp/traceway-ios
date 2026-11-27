@@ -6,7 +6,7 @@ import Glibc
 #endif
 
 /// Tees a file descriptor (standard output or error) into the SDK
-/// (CONTRACT §14.3, `captureStdout`): the descriptor is pointed at a pipe,
+/// (`captureStdout`): the descriptor is pointed at a pipe,
 /// and a thread of its own reads the pipe, writes every byte to the
 /// original destination first, then cuts lines. The reader never waits for
 /// the SDK: lines are handed over on another queue, at most `maxPending` of
@@ -152,7 +152,7 @@ final class StreamTee {
 }
 
 /// The process's standard output and error tees, set up once: a restarted
-/// SDK only gets the lines (CONTRACT §14.3).
+/// SDK only gets the lines.
 enum StdoutCapture {
     private static let lock = NSLock()
     private static var tees: [StreamTee] = []

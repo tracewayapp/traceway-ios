@@ -1,6 +1,6 @@
 import Foundation
 
-/// A main-thread hang for an `AppHang` issue (CONTRACT §14.2).
+/// A main-thread hang for an `AppHang` issue.
 struct AppHangReport {
     /// How long the main thread was blocked; for a fatal hang, as long as
     /// it was seen blocked before the process died.

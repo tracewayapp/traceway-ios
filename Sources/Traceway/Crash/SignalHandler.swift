@@ -201,8 +201,8 @@ private func twRaisedByHardware(_ signo: Int32, _ info: UnsafeMutablePointer<sig
 /// The alternate signal stack: 64 KiB, at least what Darwin requires.
 private let twAltStackSize = max(64 * 1024, Int(MINSIGSTKSZ))
 
-/// Gives the calling thread a stack of its own for the handler (CONTRACT
-/// §14.1), so a stack overflow on it can still be recorded: the overflowing
+/// Gives the calling thread a stack of its own for the handler, so a stack
+/// overflow on it can still be recorded: the overflowing
 /// stack has no room left for the handler's frames. Each thread needs its
 /// own. One the thread already has (the app's, another crash reporter's)
 /// is kept.

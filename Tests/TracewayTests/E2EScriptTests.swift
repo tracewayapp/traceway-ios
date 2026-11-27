@@ -103,8 +103,11 @@ final class E2EScript {
 
     private func start(_ options: TracewayOptions, dsn: String?) throws -> TracewayClient {
         let replay: ReplaySource = gallery.flatMap { try? GalleryReplaySource(directory: $0) } ?? SyntheticScreenSource()
+        // TRACEWAY_E2E_DSN keeps the 2.0 form: token@http://host.
+        let parsed = try dsn.map(parseConnectionString)
         return try TracewayClient.start(
-            connectionString: dsn,
+            token: parsed?.token,
+            baseUrl: parsed?.baseUrl,
             options: options,
             overrides: TracewayTestOverrides(
                 stateDirectory: stateDirectory,

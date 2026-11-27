@@ -168,7 +168,7 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   quality 0.45, the longest side at most 384; one with see-through pixels is
   always a PNG (a JPEG would replay it as a black or white box), the longest
   side at most 192. An encoding over 48 KiB is tried once more at half size,
-  then dropped (CONTRACT §14.5).
+  then dropped.
   Encoding runs off the main thread: the first frame shows the placeholder,
   a later one the picture.
 - **DOM**: one `style` node per picture in the screen node,

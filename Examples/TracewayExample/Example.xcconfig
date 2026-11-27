@@ -1,0 +1,12 @@
+// Build settings of the example app (project.yml). Put your project token in
+// Traceway.xcconfig next to this file; it is git-ignored and included below:
+//
+//   TRACEWAY_TOKEN = YOUR_TOKEN
+//
+// For the local mock server (python3 Examples/mock_server.py) add its URL. In
+// an .xcconfig "//" starts a comment, so it is written http:/$()/localhost:
+//
+//   TRACEWAY_URL = http:/$()/localhost:8080
+TRACEWAY_TOKEN =
+TRACEWAY_URL =
+#include? "Traceway.xcconfig"

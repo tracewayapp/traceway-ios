@@ -145,7 +145,7 @@ backend serves its embedded dashboard) with the seeded `iOS App` project of
 
 1. moves the events in time so the run ends a few seconds ago, opens a session
    with an OTLP/HTTP JSON `session.start` log (scope `traceway-ios`
-   `2.0.0-beta.1`, `session.id`, `traceway.session.started_at`), uploads the
+   `2.1.0`, `session.id`, `traceway.session.started_at`), uploads the
    events with `POST /api/recordings` (gzip, one segment per Meta + full snapshot,
    increasing `segmentIndex`) and ends the session with `session.end`;
 2. waits until the session reports its recording, logs into the dashboard and
@@ -226,7 +226,7 @@ Optional:
 
 | Secret | Description |
 | --- | --- |
-| `TRACEWAY_DSN` | `token@https://…`. Baked into the test bundle's `Info.plist` at build time and read by `RealDeviceSmokeTests`. If unset, the device test sends to an unreachable endpoint and only asserts the SDK stays healthy. |
+| `TRACEWAY_DSN` | `token@https://host` (the 2.0 connection-string form; the test splits it into the token and `baseUrl`). Baked into the test bundle's `Info.plist` at build time and read by `RealDeviceSmokeTests`. If unset, the device test sends to an unreachable endpoint and only asserts the SDK stays healthy. |
 
 > **Why `Info.plist` and not an env var?** `gcloud firebase test ios run`
 > cannot inject environment variables into the XCTest process, so the DSN is

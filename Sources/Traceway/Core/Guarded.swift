@@ -1,6 +1,6 @@
 import Foundation
 
-// The SDK never takes the app down (CONTRACT §13). Everything it runs in the
+// The SDK never takes the app down. Everything it runs in the
 // app's control flow (public API, swizzled methods, observers, callbacks the
 // app hands it, timers) contains its own failures with `guarded`, and the
 // app's operation goes on unchanged.

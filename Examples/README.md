@@ -5,31 +5,74 @@ errors, `NSError`, messages, breadcrumbs (logs, actions, custom events, a
 network request, screens), a privacy-masked view in the wireframe replay, and
 the four hard-crash classes.
 
-There is no checked-in `.xcodeproj` (to avoid drift). Create one in a minute:
+## 1. Open the project
 
-## 1. Create the app target
+The repository's `project.yml` defines the app (target `TracewayExample`), and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) turns it into a project, as
+CI does:
 
-1. Xcode → **File → New → Project… → iOS → App**.
-   - Interface: **SwiftUI**, Language: **Swift**.
-   - Save it inside this `Examples/` folder (e.g. `TracewayExample`).
-2. Delete the generated `ContentView.swift` and the `…App.swift`, then **add**
-   the two files in `Examples/TracewayExample/`
-   (`TracewayExampleApp.swift`, `ContentView.swift`) to the target.
+```sh
+brew install xcodegen
+xcodegen generate
+open TracewayCI.xcodeproj    # scheme TracewayExample
+```
 
-## 2. Add the SDK
+<details>
+<summary>Without XcodeGen</summary>
 
-**File → Add Package Dependencies… → Add Local…** and select the repository
-root (the folder with `Package.swift`). Add the `Traceway` library to the app
-target.
+1. Xcode → **File → New → Project… → iOS → App** (SwiftUI, Swift), saved inside
+   this `Examples/` folder.
+2. Replace its `ContentView.swift` and `…App.swift` with the two files in
+   `Examples/TracewayExample/`.
+3. **File → Add Package Dependencies… → Add Local…**, select the repository root
+   (the folder with `Package.swift`) and add the `Traceway` library to the app
+   target.
+4. Set `Examples/TracewayExample/Example.xcconfig` as the target's configuration
+   file (Project → Info → Configurations) and add the two Info.plist keys of
+   step 2.
 
-## 3. Point at a backend
+</details>
 
-Edit the connection string in `TracewayExampleApp.swift`. For a local round-trip,
-start the mock server first:
+## 2. Point it at Traceway
+
+The app starts the SDK the way the project's Connection page shows it: the
+token is a build setting in `Traceway.xcconfig`, which `Info.plist` hands to the
+app (`TracewayToken = $(TRACEWAY_TOKEN)`, `TracewayURL = $(TRACEWAY_URL)`), and
+`TracewayExampleApp.swift` reads it:
+
+```swift
+let info = Bundle.main.infoDictionary
+Traceway.initialize(
+    token: info?["TracewayToken"] as? String ?? "",
+    baseUrl: info?["TracewayURL"] as? String ?? "",
+    options: TracewayOptions(debug: true, version: "1.0.0", screenCapture: true)
+)
+```
+
+Create `Examples/TracewayExample/Traceway.xcconfig` (git-ignored; the committed
+`Example.xcconfig` includes it) with the token from the Connection page:
+
+```
+TRACEWAY_TOKEN = YOUR_TOKEN
+```
+
+That sends to Traceway Cloud (`https://cloud.tracewayapp.com`). For a
+self-hosted server add `TRACEWAY_URL = https:/$()/traceway.mycompany.com` (in an
+`.xcconfig`, `//` starts a comment; `$()` expands to nothing). Without a token
+the app runs and the console says why the SDK is off.
+
+### Or a local mock server
+
+For a round trip without a Traceway account, start the mock server and point
+the app at it:
 
 ```sh
 python3 Examples/mock_server.py --save recordings/
-# then use: demo-token@http://localhost:8080
+```
+
+```
+TRACEWAY_TOKEN = demo-token
+TRACEWAY_URL = http:/$()/localhost:8080
 ```
 
 The mock server answers the 2.x endpoints: it prints each OpAMP poll, decodes
@@ -42,7 +85,7 @@ rule would, e.g. `{"signals": {"console": {"mode": "stream"}}}`.
 > physical device, use your Mac's LAN IP and allow the cleartext HTTP exception,
 > or point at a real `https://…` server.
 
-## 4. Run and verify
+## 3. Run and verify
 
 - **Issues** (Swift error / NSError / message): tap a button. The exception
   arrives right away, with the breadcrumbs recorded before it and a replay

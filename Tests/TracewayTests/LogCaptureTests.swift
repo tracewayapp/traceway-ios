@@ -27,16 +27,18 @@ final class FakeOSLogSource: OSLogEntrySource {
         lock.unlock()
     }
 
-    func entries(since: Date) throws -> [CapturedLogLine] {
+    func entries(since: Date, _ visit: (CapturedLogLine) -> Void) throws {
         struct Unreadable: Error {}
         lock.lock()
-        defer { lock.unlock() }
         reads += 1
         if failures > 0 {
             failures -= 1
+            lock.unlock()
             throw Unreadable()
         }
-        return lines.filter { $0.date >= since }.sorted { $0.date < $1.date }
+        let found = lines.filter { $0.date >= since }.sorted { $0.date < $1.date }
+        lock.unlock()
+        for line in found { visit(line) }
     }
 }
 
@@ -72,6 +74,21 @@ final class LogCaptureTests: XCTestCase {
         let next = reader.read()
         XCTAssertEqual(next.map { $0.message }, ["two as well", "three"])
         XCTAssertEqual(next.last?.level, .error)
+    }
+
+    /// IOS2-7: the cap and the clip hold while the entries are read, so a
+    /// burst never sits in memory whole.
+    func testAHugeReadKeepsOnlyTheNewestLines() {
+        let source = FakeOSLogSource()
+        for i in 0..<100_000 { source.add("line \(i)", at: t0.addingTimeInterval(Double(i) / 1000)) }
+        source.add(String(repeating: "x", count: 3_000_000), at: t0.addingTimeInterval(200))
+        let reader = OSLogReader(source: source, since: t0)
+        let lines = reader.read()
+        XCTAssertEqual(lines.count, OSLogReader.maxLinesPerRead)
+        XCTAssertLessThanOrEqual(reader.lastReadPeak, OSLogReader.maxLinesPerRead)
+        XCTAssertEqual(lines.first?.message, "line 99001")
+        XCTAssertEqual(lines.last?.message.utf8.count, OSLogReader.maxMessageBytes)
+        XCTAssertEqual(reader.read(), [], "nothing new")
     }
 
     func testTheSDKsOwnLinesAndTheSystemsAreLeftOut() {
