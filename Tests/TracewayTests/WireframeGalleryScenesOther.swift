@@ -221,16 +221,14 @@ extension GalleryScenes {
             view.subviews.forEach(force)
         }
 
-        /// A label works out its natural alignment when it gets its text:
-        /// once the screen is in the window, right to left all through, the
-        /// labels get theirs again.
+        /// In a right-to-left app a label's natural alignment is the right
+        /// edge. This test app runs left to right, and UIKit does not always
+        /// resolve natural alignment by a direction forced on the views, so
+        /// the labels state it (the wireframe's own mapping of natural
+        /// alignment is `UIKitWireframeTests.test10`).
         static func refreshLabels(_ view: UIView) {
-            if let label = view as? UILabel {
-                let text = label.attributedText, alignment = label.textAlignment
-                label.attributedText = nil
-                label.textAlignment = alignment == .natural ? .left : .natural
-                label.attributedText = text
-                label.textAlignment = alignment
+            if let label = view as? UILabel, label.textAlignment == .natural {
+                label.textAlignment = .right
             }
             view.subviews.forEach(refreshLabels)
         }
