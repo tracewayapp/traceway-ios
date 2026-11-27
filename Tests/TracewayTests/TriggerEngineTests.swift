@@ -42,11 +42,15 @@ final class TriggerEngineTests: XCTestCase {
         engine.setTriggers([trigger])
         XCTAssertTrue(engine.observe(event(0, "other")).isEmpty)
         XCTAssertEqual(engine.observe(event(1000, "exception")).count, 1)
+        XCTAssertTrue(engine.skipped.isEmpty)
         XCTAssertTrue(engine.observe(event(2000, "exception")).isEmpty)
         XCTAssertEqual(engine.skipped[defaultExceptionTriggerId], "cooldown")
         XCTAssertEqual(engine.observe(event(7000, "exception")).count, 1)
         XCTAssertTrue(engine.observe(event(20000, "exception")).isEmpty)
         XCTAssertEqual(engine.skipped[defaultExceptionTriggerId], "session_clip_limit")
+        // Skips describe the last observe call only.
+        _ = engine.observe(event(20001, "other"))
+        XCTAssertTrue(engine.skipped.isEmpty)
         engine.resetSession()
         XCTAssertEqual(engine.observe(event(30000, "exception")).count, 1)
         XCTAssertNil(engine.skipped[defaultExceptionTriggerId])
@@ -80,6 +84,10 @@ final class TriggerEngineTests: XCTestCase {
         XCTAssertTrue(engine.observe(event(20000, "e")).isEmpty)
         XCTAssertTrue(engine.observe(event(21000, "e")).isEmpty)
         XCTAssertEqual(engine.observe(event(22000, "e")).count, 1)
+        // The count starts over after a fire.
+        XCTAssertTrue(engine.observe(event(22001, "e")).isEmpty)
+        XCTAssertTrue(engine.observe(event(22002, "e")).isEmpty)
+        XCTAssertEqual(engine.observe(event(22003, "e")).count, 1)
     }
 
     func testSampleRateUsesTheInjectedRandom() {
@@ -89,9 +97,13 @@ final class TriggerEngineTests: XCTestCase {
         engine.setTriggers([trigger])
         XCTAssertTrue(engine.observe(event(0, "exception")).isEmpty)
         XCTAssertEqual(engine.skipped[defaultExceptionTriggerId], "sampled_out")
-        let lucky = TriggerEngine(random: { 0.1 })
+        let lucky = TriggerEngine(random: { 0.49 })
         lucky.setTriggers([trigger])
         XCTAssertEqual(lucky.observe(event(0, "exception")).count, 1)
+        trigger.sampleRate = 0
+        let never = TriggerEngine(random: { 0 })
+        never.setTriggers([trigger])
+        XCTAssertTrue(never.observe(event(0, "exception")).isEmpty)
     }
 
     func testSetTriggersDropsDisabledAndReportsNewOrChangedOnes() {
@@ -104,12 +116,19 @@ final class TriggerEngineTests: XCTestCase {
         XCTAssertEqual(engine.setTriggers([disabled, a]), ["a"])
         XCTAssertEqual(engine.triggers.map(\.id), ["a"])
         _ = engine.observe(event(0, "a"))
-        // Unchanged: progress kept, nothing new.
-        XCTAssertEqual(engine.setTriggers([a]), [])
+        // Unchanged steps and actions: progress kept, nothing new, whatever
+        // else changed.
+        var renamed = a
+        renamed.name = "renamed"
+        renamed.cooldownSeconds = 9
+        XCTAssertEqual(engine.setTriggers([renamed]), [])
         XCTAssertEqual(engine.observe(event(1, "b")).count, 1)
+        _ = engine.observe(event(2, "a"))
         var changed = a
         changed.actions = [TriggerAction(type: "emit", eventName: "y")]
-        XCTAssertEqual(engine.setTriggers([changed]), ["a"])
+        XCTAssertEqual(engine.setTriggers([changed, defaultExceptionTrigger()]), ["a", defaultExceptionTriggerId])
+        // A changed rule starts over.
+        XCTAssertTrue(engine.observe(event(3, "b")).isEmpty)
     }
 
     func testAChangedTriggerKeepsItsFireCount() {
@@ -123,44 +142,172 @@ final class TriggerEngineTests: XCTestCase {
         engine.setTriggers([changed])
         XCTAssertTrue(engine.observe(event(1, "a")).isEmpty)
         XCTAssertEqual(engine.skipped["once"], "session_clip_limit")
+        // Removed and added back within the session: the session's limits
+        // still apply.
+        engine.setTriggers([])
+        engine.setTriggers([once])
+        XCTAssertTrue(engine.observe(event(2, "a")).isEmpty)
     }
 
-    // MARK: event sequences
-
-    func testRestoresAClickAcrossAnAppRestartFiresOnceAndIgnoresUnrelatedLogs() {
-        let first = TriggerEngine()
-        first.setTriggers([journey])
-        _ = first.observe(observed(1000, [keyPointerAction: "click"], targetMatches: { $0 == "#users .open" }))
-        let next = TriggerEngine()
-        next.setTriggers([journey])
-        next.restoreProgress(roundTrip(first.snapshotProgress()), nowMs: 2000)
-        XCTAssertTrue(next.observe(observed(2000, [
-            "event.name": "browser.navigation",
-            "attributes.url.full": "https://app.test/users/42?secret=hidden",
-        ])).isEmpty)
-        XCTAssertTrue(next.observe(observed(2100, ["event.name": "browser.console", "body": "other"])).isEmpty)
-        XCTAssertEqual(next.observe(observed(2200, ["event.name": "browser.console", "body": "loaded"])).count, 1)
-        XCTAssertTrue(next.observe(observed(2300, ["event.name": "browser.console", "body": "loaded"])).isEmpty)
-    }
-
-    func testRejectsExpiredAndChangedRuleProgress() {
+    func testAFiredTriggerCarriesTheEventThatCompletedIt() {
         let engine = TriggerEngine()
-        engine.setTriggers([journey])
-        _ = engine.observe(observed(1000, [keyPointerAction: "click"], targetMatches: { _ in true }))
-        var changed = journey
-        changed.actions = [TriggerAction(type: "startReplay", durationSeconds: 10)]
-        for (rule, now) in [(journey, Int64(12000)), (changed, Int64(2000))] {
-            let restored = TriggerEngine()
-            restored.setTriggers([rule])
-            restored.restoreProgress(engine.snapshotProgress(), nowMs: now)
-            _ = restored.observe(observed(now, [
-                "event.name": "browser.navigation", "attributes.url.full": "/users/42",
-            ]))
-            XCTAssertTrue(restored.observe(observed(now + 1, [
-                "event.name": "browser.console", "body": "loaded",
-            ])).isEmpty)
-        }
+        engine.setTriggers([defaultExceptionTrigger()])
+        let cause = observed(5, ["event.name": "exception", "attributes.traceway.exception.id": "e1"])
+        let fired = engine.observe(cause)
+        XCTAssertEqual(fired.count, 1)
+        XCTAssertEqual(fired.first?.trigger.id, defaultExceptionTriggerId)
+        XCTAssertEqual(fired.first?.cause.timeMs, 5)
+        XCTAssertEqual(fired.first?.cause.lookup("attributes.traceway.exception.id"), "e1")
     }
+
+    func testCooldownIsMeasuredFromTheLastFireNotTheLastAttempt() {
+        let engine = TriggerEngine()
+        engine.setTriggers([defaultExceptionTrigger()])
+        XCTAssertEqual(engine.observe(event(0, "exception")).count, 1)
+        XCTAssertTrue(engine.observe(event(4000, "exception")).isEmpty)
+        XCTAssertEqual(engine.observe(event(5000, "exception")).count, 1)
+    }
+
+    func testACountedStepWithoutAPeriodCountsEveryHit() {
+        let engine = TriggerEngine()
+        engine.setTriggers([parseTrigger([
+            "id": "t",
+            "steps": [["match": named("e"), "count": 2]],
+            "actions": [["type": "emit", "eventName": "x"]],
+        ])])
+        XCTAssertTrue(engine.observe(event(0, "e")).isEmpty)
+        XCTAssertEqual(engine.observe(event(80_000_000, "e")).count, 1)
+    }
+
+    func testASampledOutFireDoesNotCountTowardsTheLimits() {
+        var roll = 0.9
+        var trigger = defaultExceptionTrigger()
+        trigger.sampleRate = 0.5
+        let engine = TriggerEngine(random: { roll })
+        engine.setTriggers([trigger])
+        XCTAssertTrue(engine.observe(event(0, "exception")).isEmpty)
+        XCTAssertEqual(engine.snapshotSessionLimits(), [:])
+        roll = 0.1
+        XCTAssertEqual(engine.observe(event(1, "exception")).count, 1)
+        XCTAssertEqual(engine.snapshotSessionLimits(), [defaultExceptionTriggerId: ["fires": 1, "lastFireMs": 1]])
+    }
+
+    func testDisabledAndEmptyTriggersAreLeftOut() {
+        var disabled = defaultExceptionTrigger()
+        disabled.enabled = false
+        let emit = [TriggerAction(type: "emit", eventName: "x")]
+        let exists = TriggerStep(match: .condition(Condition(key: "a", op: "exists")))
+        let engine = TriggerEngine()
+        let created = engine.setTriggers([
+            disabled,
+            Trigger(id: "no-steps", steps: [], actions: emit),
+            Trigger(id: "no-actions", steps: [exists], actions: []),
+            Trigger(id: "ok", steps: [exists], actions: emit),
+        ])
+        XCTAssertEqual(engine.triggers.map(\.id), ["ok"])
+        XCTAssertEqual(created, ["ok"])
+        XCTAssertTrue(engine.observe(event(0, "exception")).isEmpty)
+    }
+
+    func testProgressVersionChangesWithProgressAndWithSettings() {
+        let engine = TriggerEngine()
+        let v0 = engine.progressVersion
+        engine.setTriggers([defaultExceptionTrigger()])
+        let v1 = engine.progressVersion
+        XCTAssertNotEqual(v1, v0)
+        // A single-step trigger has no progress to save.
+        _ = engine.observe(event(0, "exception"))
+        XCTAssertEqual(engine.progressVersion, v1)
+        XCTAssertEqual(engine.snapshotProgress(), [])
+        engine.resetSession()
+        XCTAssertNotEqual(engine.progressVersion, v1)
+    }
+
+    func testEventKindsCollectsTheEventTypesAMatcherNames() {
+        let matcher = Matcher.all([
+            .event(EventMatcher(type: "click", value: "#a")),
+            .any([.not(.event(EventMatcher(type: "hover", value: "#b"))), .condition(Condition(key: "x", op: "exists"))]),
+            .event(EventMatcher(type: "click", value: "#c")),
+        ])
+        XCTAssertEqual(eventKinds(matcher), ["click", "hover"])
+        XCTAssertTrue(eventKinds(.condition(Condition(key: "x", op: "exists"))).isEmpty)
+    }
+
+    func testSessionLimitsRoundTripThroughJSONAndIgnoreMalformedEntries() throws {
+        let engine = TriggerEngine()
+        engine.setTriggers([defaultExceptionTrigger()])
+        _ = engine.observe(event(1000, "exception"))
+        let saved = roundTrip(engine.snapshotSessionLimits())
+        XCTAssertEqual(saved, [defaultExceptionTriggerId: ["fires": 1, "lastFireMs": 1000]])
+
+        let next = TriggerEngine()
+        next.setTriggers([defaultExceptionTrigger()])
+        next.restoreSessionLimits(saved)
+        XCTAssertEqual(next.snapshotSessionLimits(), saved)
+        XCTAssertTrue(next.observe(event(2000, "exception")).isEmpty)
+        XCTAssertEqual(next.skipped[defaultExceptionTriggerId], "cooldown")
+
+        let other = TriggerEngine()
+        other.restoreSessionLimits(try JSON.parse(
+            #"{"a":{"fires":-1,"lastFireMs":0},"b":{"fires":1.5,"lastFireMs":0},"c":{"fires":1},"d":"x","e":{"fires":2,"lastFireMs":5}}"#
+        ))
+        other.restoreSessionLimits([1, 2])
+        other.restoreSessionLimits(nil)
+        XCTAssertEqual(other.snapshotSessionLimits(), ["e": ["fires": 2, "lastFireMs": 5]])
+        // Limits restored before the trigger is known apply once it is.
+        var e = defaultExceptionTrigger()
+        e.id = "e"
+        other.setTriggers([e])
+        XCTAssertTrue(other.observe(event(6, "exception")).isEmpty)
+        XCTAssertEqual(other.skipped["e"], "cooldown")
+    }
+
+    func testRestoreProgressAcceptsOnlyItsOwnFormat() throws {
+        let ab = parseTrigger([
+            "id": "ab",
+            "steps": [["match": named("a")], ["match": named("b")]],
+            "actions": [["type": "emit", "eventName": "x"]],
+        ])
+        let engine = TriggerEngine()
+        engine.setTriggers([ab])
+        _ = engine.observe(event(50, "a"))
+        let good = engine.snapshotProgress()
+        XCTAssertEqual(good.array?.count, 1)
+        let item = try XCTUnwrap(good.array?.first?.object)
+        XCTAssertEqual(item["id"], "ab")
+        XCTAssertEqual(item["v"], 2)
+        XCTAssertEqual(item["signature"]?.string, ab.signature)
+
+        func restoredFires(_ saved: JSON?, only: Set<String>? = nil) -> Int {
+            let next = TriggerEngine()
+            next.setTriggers([ab])
+            next.restoreProgress(saved, nowMs: 100, only: only)
+            return next.observe(event(100, "b")).count
+        }
+        func with(_ key: String, _ value: JSON) -> JSON {
+            var changed = item
+            changed[key] = value
+            return [.object(changed)]
+        }
+        XCTAssertEqual(restoredFires(good), 1)
+        XCTAssertEqual(restoredFires(roundTrip(good)), 1)
+        XCTAssertEqual(restoredFires(good, only: ["ab"]), 1)
+        XCTAssertEqual(restoredFires(good, only: ["other"]), 0)
+        XCTAssertEqual(restoredFires(nil), 0)
+        XCTAssertEqual(restoredFires(["x": 1]), 0)
+        XCTAssertEqual(restoredFires(with("v", 1)), 0)
+        XCTAssertEqual(restoredFires(with("v", 2.0)), 1)
+        XCTAssertEqual(restoredFires(with("signature", "other")), 0)
+        XCTAssertEqual(restoredFires(with("id", "zz")), 0)
+        XCTAssertEqual(restoredFires(with("steps", [item["steps"]!])), 0)
+        XCTAssertEqual(restoredFires(with("steps", "x")), 0)
+        // An anchor in the future, or with a fractional start, is not progress.
+        XCTAssertEqual(restoredFires(with("steps", [["anchors": [], "hits": []], ["anchors": [[150, 0]], "hits": []]])), 0)
+        XCTAssertEqual(restoredFires(with("steps", [[:], ["anchors": [[50, 0.5]]]])), 0)
+        XCTAssertEqual(restoredFires(with("steps", [[:], ["anchors": ["junk", [50.9, 0]]]])), 1)
+    }
+
+    // MARK: progress
 
     func testRestoreHonoursOnly() {
         let first = TriggerEngine()
@@ -193,168 +340,6 @@ final class TriggerEngineTests: XCTestCase {
             ["anchors": [], "hits": []],
             ["anchors": [[1000, 0]], "hits": [2000]],
         ])
-    }
-
-    // MARK: overlapping sequences
-
-    func testKeepsProgressWhenTheFirstStepHappensAgain() {
-        XCTAssertEqual(
-            run([["match": named("a")], ["match": named("b")], ["match": named("c")]],
-                [(1, "a"), (2, "b"), (3, "a"), (4, "c")]),
-            [0, 0, 0, 1]
-        )
-    }
-
-    func testFiresAnActionAfterAnErrorStormThatKeepsGoing() {
-        XCTAssertEqual(
-            run([["match": named("err"), "count": 3, "periodSeconds": 10],
-                 ["match": named("retry"), "withinSeconds": 5]],
-                [(0, "err"), (100, "err"), (200, "err"), (300, "err"), (400, "retry")]),
-            [0, 0, 0, 0, 1]
-        )
-    }
-
-    func testMeasuresATimeoutFromTheLatestEarlierStep() {
-        let steps: [JSON] = [["match": named("a")], ["match": named("b"), "withinSeconds": 5]]
-        XCTAssertEqual(run(steps, [(0, "a"), (4000, "a"), (8000, "b")]), [0, 0, 1])
-        XCTAssertEqual(run(steps, [(0, "a"), (6000, "b")]), [0, 0])
-    }
-
-    func testCountsALaterStepOnlyFromTheMomentTheEarlierOneCompleted() {
-        XCTAssertEqual(
-            run([["match": named("a")], ["match": named("b"), "count": 2, "withinSeconds": 10]],
-                [(0, "b"), (1, "a"), (2, "b"), (3, "a"), (3, "b")]),
-            [0, 0, 0, 0, 1]
-        )
-    }
-
-    func testDoesNotLetOneEventCompleteTwoSteps() {
-        XCTAssertEqual(
-            run([["match": named("a")], ["match": named("a")]], [(0, "a"), (0, "a"), (0, "a"), (0, "a")]),
-            [0, 1, 0, 1]
-        )
-    }
-
-    func testCarriesACountOnTheFirstStepAcrossAppStarts() {
-        let counted = parseTrigger([
-            "id": "burst",
-            "steps": [["match": named("err"), "count": 3, "periodSeconds": 60]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])
-        let first = TriggerEngine()
-        first.setTriggers([counted])
-        _ = first.observe(event(1000, "err"))
-        _ = first.observe(event(2000, "err"))
-        let next = TriggerEngine()
-        next.setTriggers([counted])
-        next.restoreProgress(roundTrip(first.snapshotProgress()), nowMs: 3000)
-        XCTAssertEqual(next.observe(event(3000, "err")).count, 1)
-    }
-
-    func testRestoredHitsOutsideThePeriodAreDropped() {
-        let counted = parseTrigger([
-            "id": "burst",
-            "steps": [["match": named("err"), "count": 3, "periodSeconds": 60]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])
-        let first = TriggerEngine()
-        first.setTriggers([counted])
-        _ = first.observe(event(1000, "err"))
-        _ = first.observe(event(2000, "err"))
-        let next = TriggerEngine()
-        next.setTriggers([counted])
-        next.restoreProgress(first.snapshotProgress(), nowMs: 61_500)
-        XCTAssertTrue(next.observe(event(61_500, "err")).isEmpty)
-        XCTAssertEqual(next.observe(event(61_600, "err")).count, 1)
-    }
-
-    func testKeepsAStepWithoutATimeoutForAsLongAsTheSession() {
-        let open = parseTrigger([
-            "id": "open",
-            "steps": [["match": named("a")], ["match": named("b")]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])
-        let first = TriggerEngine()
-        first.setTriggers([open])
-        _ = first.observe(event(0, "a"))
-        let next = TriggerEngine()
-        next.setTriggers([open])
-        next.restoreProgress(first.snapshotProgress(), nowMs: 3_600_000)
-        XCTAssertEqual(next.observe(event(3_600_000, "b")).count, 1)
-    }
-
-    func testMatchesATapOnlyAgainstStepsThatNameAClick() {
-        let engine = TriggerEngine()
-        engine.setTriggers([
-            parseTrigger([
-                "id": "negated",
-                "steps": [["match": ["not": named("exception")]]],
-                "actions": [["type": "emit", "eventName": "x"]],
-            ]),
-            parseTrigger([
-                "id": "pro-click",
-                "steps": [["match": ["all": [
-                    ["event": ["type": "click", "value": "#buy"]],
-                    ["key": "global.plan", "op": "eq", "value": "pro"],
-                ]]]],
-                "actions": [["type": "emit", "eventName": "x"]],
-            ]),
-        ])
-        let fired = engine.observe(observed(
-            0, [keyPointerAction: "click", "global.plan": "pro"], sequence: "click", targetMatches: { _ in true }
-        ))
-        XCTAssertEqual(fired.map(\.trigger.id), ["pro-click"])
-        XCTAssertEqual(eventKinds(engine.triggers[1].steps[0].match), ["click"])
-    }
-
-    func testOnlyReportsAChangeOfProgressWhenThereIsOne() {
-        let engine = TriggerEngine()
-        engine.setTriggers([parseTrigger([
-            "id": "t",
-            "steps": [["match": named("a")], ["match": named("b")]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])])
-        let before = engine.progressVersion
-        _ = engine.observe(event(0, "other"))
-        XCTAssertEqual(engine.progressVersion, before)
-        _ = engine.observe(event(1, "a"))
-        XCTAssertNotEqual(engine.progressVersion, before)
-    }
-
-    func testASnapshotDoesNotChangeWithLaterProgress() {
-        let engine = TriggerEngine()
-        engine.setTriggers([parseTrigger([
-            "id": "burst",
-            "steps": [["match": named("a")], ["match": named("err"), "count": 5, "periodSeconds": 1]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])])
-        _ = engine.observe(event(0, "a"))
-        _ = engine.observe(event(100, "err"))
-        let snapshot = engine.snapshotProgress()
-        let saved = snapshot.encoded(sortedKeys: true)
-        for t in stride(from: Int64(2000), to: 2600, by: 100) {
-            _ = engine.observe(event(t, "err"))
-        }
-        XCTAssertEqual(snapshot.encoded(sortedKeys: true), saved)
-    }
-
-    func testFireCountsSurviveARestartWithinTheSession() {
-        let once = parseTrigger([
-            "id": "once",
-            "maxPerSession": 1,
-            "steps": [["match": named("a")]],
-            "actions": [["type": "emit", "eventName": "x"]],
-        ])
-        let first = TriggerEngine()
-        first.setTriggers([once])
-        XCTAssertEqual(first.observe(event(0, "a")).count, 1)
-        let limits = roundTrip(first.snapshotSessionLimits())
-        XCTAssertEqual(limits, ["once": ["fires": 1, "lastFireMs": 0]])
-        let next = TriggerEngine()
-        next.setTriggers([once])
-        next.restoreSessionLimits(limits)
-        XCTAssertTrue(next.observe(event(1, "a")).isEmpty)
-        XCTAssertEqual(next.skipped["once"], "session_clip_limit")
     }
 
     func testSessionLimitsRestoredBeforeTheTriggersArrive() {

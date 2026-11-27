@@ -30,6 +30,16 @@ final class RingBufferTests: XCTestCase {
         XCTAssertEqual(buffer.totalBytes, 0)
     }
 
+    func testTakeHonoursTheEndOfTheWindow() {
+        let buffer = RingBuffer<String>(maxBytes: 1000, maxAgeMs: 100_000, now: { 10000 })
+        buffer.push(BufferEntry(timeMs: 1000, signal: "console", bytes: 1, item: "a"))
+        buffer.push(BufferEntry(timeMs: 2000, signal: "console", bytes: 1, item: "b"))
+        buffer.push(BufferEntry(timeMs: 3000, signal: "console", bytes: 1, item: "c"))
+        XCTAssertEqual(buffer.take(sinceMs: 0, signals: nil, untilMs: 2000).map(\.item), ["a", "b"])
+        XCTAssertEqual(buffer.snapshot().map(\.item), ["c"])
+        XCTAssertEqual(buffer.totalBytes, 1)
+    }
+
     func testConfigureTrimsRetainFiltersAndClearEmpties() {
         let buffer = RingBuffer<Int>(maxBytes: 100, maxAgeMs: 100_000, now: { 0 })
         for i in 0..<5 {

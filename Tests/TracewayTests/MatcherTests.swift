@@ -61,6 +61,42 @@ final class MatcherTests: XCTestCase {
         XCTAssertFalse(m("missing", "eq", "x"))
     }
 
+    func testOperatorsAcrossTypesAndAbsentValues() {
+        let event = observed(0, [
+            "event.name": "checkout_failed",
+            "attributes.status": 503,
+            "attributes.ratio": 0.5,
+            "attributes.flag": true,
+            "attributes.empty": "",
+            "body": "Payment FAILED hard",
+        ])
+        func m(_ key: String, _ op: String, _ value: JSON? = nil, values: [JSON]? = nil) -> Bool {
+            matches(.condition(Condition(key: key, op: op, value: value, values: values)), event)
+        }
+        // An empty string is absent.
+        XCTAssertFalse(m("attributes.empty", "exists"))
+        XCTAssertTrue(m("attributes.empty", "not_exists"))
+        XCTAssertFalse(m("attributes.empty", "contains", ""))
+        XCTAssertTrue(m("attributes.flag", "eq", true))
+        XCTAssertTrue(m("attributes.flag", "eq", "true"))
+        XCTAssertTrue(m("attributes.ratio", "eq", " 0.5 "))
+        XCTAssertTrue(m("attributes.ratio", "lt", "1e0"))
+        XCTAssertTrue(m("attributes.status", "contains", 50))
+        // Numbers are compared as numbers only when both sides are decimal numbers.
+        XCTAssertFalse(m("attributes.status", "gt", "0x10"))
+        XCTAssertFalse(m("attributes.status", "gt", "1d"))
+        XCTAssertFalse(m("attributes.status", "gt", "Infinity"))
+        XCTAssertFalse(m("event.name", "gt", 1))
+        XCTAssertFalse(m("missing", "eq", "x"))
+        XCTAssertTrue(m("missing", "neq", "x"))
+        XCTAssertTrue(m("missing", "eq", .null))
+        XCTAssertFalse(m("missing", "in"))
+        XCTAssertTrue(m("missing", "not_in"))
+        XCTAssertFalse(m("body", "contains"))
+        XCTAssertFalse(m("body", "regex", ".*"))
+        XCTAssertFalse(m("missing", "version", ">=1"))
+    }
+
     func testVersions() {
         XCTAssertEqual(compareVersions("v1.2", "1.2.0"), 0)
         XCTAssertEqual(compareVersions("1.10", "1.9"), 1)
@@ -88,6 +124,24 @@ final class MatcherTests: XCTestCase {
         XCTAssertFalse(globMatch("abc", "a?"))
         XCTAssertTrue(globMatch("aaab", "*a*b"))
         XCTAssertFalse(globMatch("ab", "*c*"))
+    }
+
+    func testGlobIsCaseInsensitiveWithStarAndQuestionMark() {
+        XCTAssertTrue(globMatch("Hello", "h*O"))
+        XCTAssertTrue(globMatch("", "*"))
+        XCTAssertTrue(globMatch("abc", "a?c"))
+        XCTAssertFalse(globMatch("ac", "a?c"))
+        XCTAssertTrue(globMatch("aXbXc", "*b*c"))
+        XCTAssertFalse(globMatch("abc", "ab"))
+        XCTAssertTrue(globMatch("a*b", "a*b"))
+        XCTAssertTrue(globMatch("mississippi", "m*iss*ppi"))
+        XCTAssertFalse(globMatch("mississippi", "m*iss*ppx"))
+        // Linear-ish even on adversarial input.
+        XCTAssertFalse(globMatch(String(repeating: "a", count: 4096), "*a*a*a*a*a*a*a*b"))
+        XCTAssertTrue(matches(
+            .condition(Condition(key: "body", op: "glob", value: "a*")),
+            observed(0, ["body": .string(String(repeating: "a", count: 5000) + "needle")])
+        ))
     }
 
     func testAllAnyAndNotCombine() {
@@ -130,6 +184,66 @@ final class MatcherTests: XCTestCase {
             .event(EventMatcher(type: "navigation", value: "/caf%C3%A9")),
             observed(0, ["event.name": "browser.navigation", "attributes.url.full": "/café"])
         ))
+    }
+
+    /// Expected paths computed with Dart's
+    /// `Uri.parse('https://traceway.invalid/').resolve(url).path`, as the
+    /// Flutter SDK reads them.
+    func testPathOfReadsThePathAsTheFlutterSDKDoes() {
+        let cases: [(String, String)] = [
+            ("https://app.test/users/42?secret=hidden", "/users/42"),
+            ("/users/42?tab=1", "/users/42"),
+            ("users/42", "/users/42"),
+            ("https://app.test", ""),
+            ("https://app.test/", "/"),
+            ("?tab=1", "/"),
+            ("#x", "/"),
+            ("../x", "/x"),
+            ("/a/./b/../c", "/a/c"),
+            ("a/../../b", "/b"),
+            ("/café", "/caf%C3%A9"),
+            ("/caf%c3%a9", "/caf%C3%A9"),
+            ("/%7Euser", "/~user"),
+            ("/a%41b", "/aAb"),
+            ("/a%2fb", "/a%2Fb"),
+            ("/a b", "/a%20b"),
+            ("/a%zzb", "/a%25zzb"),
+            ("/a%2", "/a%252"),
+            ("/%", "/%25"),
+            ("mailto:x", "x"),
+            ("myapp://users/42", "/42"),
+            ("MainActivity", "/MainActivity"),
+            ("com.example.MainActivity", "/com.example.MainActivity"),
+            ("//host/p", "/p"),
+            ("/a\\b", "/a/b"),
+            ("/a|b{c}", "/a%7Cb%7Bc%7D"),
+            ("/x:y@z!$&'()*+,;=", "/x:y@z!$&'()*+,;="),
+            (" /users", "/%20/users"),
+            ("a:b/c", "b/c"),
+            ("/\u{1F600}", "/%F0%9F%98%80"),
+            ("/a//b", "/a//b"),
+            ("https://h/a/../../b", "/b"),
+            ("myapp:a/../b", "/b"),
+            ("/a/..", "/"),
+            ("/a/.", "/a/"),
+            (".", "/"),
+            ("..", "/"),
+            ("file:///x", "/x"),
+            ("FILE:x", "/x"),
+            ("x:", ""),
+            ("C:\\path", "/path"),
+            ("a/b:c", "/a/b:c"),
+            ("/users/42;x", "/users/42;x"),
+            ("/%%41", "/%25A"),
+        ]
+        for (url, expected) in cases {
+            XCTAssertEqual(pathOf(.string(url)), expected, url)
+        }
+        XCTAssertNil(pathOf(nil))
+        XCTAssertNil(pathOf(""))
+        XCTAssertNil(pathOf("1abc:x"))
+        XCTAssertNil(pathOf(":x"))
+        XCTAssertEqual(pathOf(42), "/42")
     }
 
     func testDistinguishesExactAndContainsLogs() {

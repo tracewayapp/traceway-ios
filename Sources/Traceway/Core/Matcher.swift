@@ -270,7 +270,12 @@ private func removeDotSegments(_ path: String) -> String {
         case ".":
             if isLast { output.append("") }
         case "..":
-            if !output.isEmpty { output.removeLast() }
+            if !output.isEmpty {
+                output.removeLast()
+                // A rootless path that loses its first segment keeps the
+                // slash that followed it, as RFC 3986 does.
+                if output.isEmpty && !absolute { output.append("") }
+            }
             if isLast { output.append("") }
         default:
             output.append(segment)
@@ -287,28 +292,30 @@ func pathOf(_ url: JSON?) -> String? {
     guard let url = url, !url.isNull else { return nil }
     let text = url.text
     if text.isEmpty { return nil }
+    // Dart reads a backslash as a slash, as browsers do for http(s) URLs.
+    var rest = Substring(text.replacingOccurrences(of: "\\", with: "/"))
     // Up to the query or fragment.
-    var rest = Substring(text)
     if let cut = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) {
         rest = rest[rest.startIndex..<cut]
     }
     var hasAuthority = false
-    // A scheme: letters first, then letters, digits, `+`, `-` or `.`.
-    if let colon = rest.firstIndex(of: ":"), colon != rest.startIndex {
+    // A colon before the first slash ends a scheme: letters first, then
+    // letters, digits, `+`, `-` or `.`; with any other scheme the text is
+    // not a URL.
+    if let colon = rest.firstIndex(of: ":"), rest.firstIndex(of: "/").map({ colon < $0 }) ?? true {
         let scheme = rest[rest.startIndex..<colon]
-        let valid = scheme.first!.isASCII && scheme.first!.isLetter && scheme.allSatisfy {
+        guard let first = scheme.first, first.isASCII, first.isLetter, scheme.allSatisfy({
             $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == ".")
+        }) else { return nil }
+        rest = rest[rest.index(after: colon)...]
+        if rest.hasPrefix("//") {
+            rest = rest.dropFirst(2)
+            let slash = rest.firstIndex(of: "/") ?? rest.endIndex
+            rest = rest[slash...]
         }
-        if valid {
-            rest = rest[rest.index(after: colon)...]
-            hasAuthority = true
-            if rest.hasPrefix("//") {
-                rest = rest.dropFirst(2)
-                let slash = rest.firstIndex(of: "/") ?? rest.endIndex
-                rest = rest[slash...]
-            }
-            return removeDotSegments(encodePath(String(rest)))
-        }
+        var path = String(rest)
+        if scheme.lowercased() == "file" && !path.hasPrefix("/") { path = "/" + path }
+        return removeDotSegments(encodePath(path))
     }
     if rest.hasPrefix("//") {
         rest = rest.dropFirst(2)

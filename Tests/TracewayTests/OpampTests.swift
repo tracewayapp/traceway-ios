@@ -126,6 +126,41 @@ final class OpampCodecTests: XCTestCase {
         XCTAssertEqual(try decodeServerToAgent(fromHex(longest)).flags, UInt64.max)
     }
 
+    func testRejectsTruncatedAndUnsupportedFields() {
+        // instance_uid claims 16 bytes, carries 2.
+        XCTAssertThrowsError(try decodeServerToAgent(fromHex("0a100102")))
+        // A varint that never ends.
+        XCTAssertThrowsError(try decodeServerToAgent(fromHex("3080")))
+        // Wire type 3 (start group) cannot be skipped.
+        XCTAssertThrowsError(try decodeServerToAgent(fromHex("fb01")))
+        // A huge length must not overflow the bounds check.
+        XCTAssertThrowsError(try decodeServerToAgent(fromHex("0a" + "ffffffffffffffff7f" + "00")))
+    }
+
+    func testAFieldOfTheWrongWireTypeIsSkippedNotMisread() throws {
+        // flags (6) as length-delimited, then capabilities (7) = 5.
+        let msg = try decodeServerToAgent(fromHex("32020101" + "3805"))
+        XCTAssertEqual(msg.flags, 0)
+        XCTAssertEqual(msg.capabilities, 5)
+    }
+
+    func testVarintsRoundTripAtTheirEdges() throws {
+        for value: UInt64 in [0, 1, 127, 128, 300, 16_383, 16_384, 1 << 35, UInt64(Int64.max), UInt64.max] {
+            let w = ProtoWriter()
+            w.varint(value)
+            XCTAssertEqual(try ProtoReader(w.buffer).varint(), value)
+        }
+        let w = ProtoWriter()
+        w.varint(300)
+        XCTAssertEqual(hex(w.buffer), "ac02")
+    }
+
+    func testDoublesAreLittleEndianFixed64() {
+        let w = ProtoWriter()
+        w.float64(4, 0.25)
+        XCTAssertEqual(hex(w.buffer), "21000000000000d03f")
+    }
+
     func testEncodeServerToAgentRoundTripsThroughTheDecoder() throws {
         let msg = try decodeServerToAgent(encodeServerToAgent(
             remoteConfig: RemoteConfig(
@@ -229,29 +264,34 @@ final class OpampClientTests: XCTestCase {
     }
 
     private func makeClient(
-        _ server: FakeOpampServer,
+        _ server: HTTPTransport,
+        headers: [String: String] = ["Authorization": "Bearer tok"],
+        describe: (() -> AgentDescription)? = nil,
         appliedConfigHash: [UInt8]? = nil,
         onRemoteConfig: ((RemoteConfig) -> ApplyResult)? = nil,
         onInstanceUidChange: (([UInt8]) -> Void)? = nil,
-        onStopped: ((Int) -> Void)? = nil
+        onStopped: ((Int) -> Void)? = nil,
+        defaultPollIntervalMs: Int64 = 300_000,
+        requestTimeout: TimeInterval = 2
     ) -> OpampClient {
         let client = OpampClient(
             endpoint: URL(string: "https://traceway.test/api/otel/v1/opamp")!,
-            headers: ["Authorization": "Bearer tok"],
+            headers: headers,
             instanceUid: uid,
             capabilities: 0x3003,
             customCapabilities: [],
-            describe: {
+            describe: describe ?? {
                 AgentDescription(identifying: ["service.name": "app"], nonIdentifying: [:])
             },
             onRemoteConfig: onRemoteConfig ?? { _ in .applied },
             appliedConfigHash: appliedConfigHash,
             onInstanceUidChange: onInstanceUidChange,
             onStopped: onStopped,
+            defaultPollIntervalMs: defaultPollIntervalMs,
             minPollIntervalMs: 50,
             transport: server,
             queue: queue,
-            requestTimeout: 2
+            requestTimeout: requestTimeout
         )
         clients.append(client)
         return client
@@ -519,5 +559,258 @@ final class OpampClientTests: XCTestCase {
         pollAndWait(client)
         XCTAssertEqual(server.requests.count, 0)
         XCTAssertFalse(queue.sync { client.isRunning })
+    }
+
+    func testTheProtocolHeadersWinOverTheCallers() {
+        let server = FakeOpampServer { _, _ in ok(encodeServerToAgent(heartbeatIntervalSeconds: 300)) }
+        let client = makeClient(server, headers: [
+            "Content-Type": "text/plain",
+            "OpAMP-Instance-UID": "nope",
+            "X-Extra": "1",
+        ])
+        startAndWait(client)
+        XCTAssertEqual(server.requests[0].headers, [
+            "X-Extra": "1",
+            "Content-Type": "application/x-protobuf",
+            "OpAMP-Instance-UID": "0195f2a0-0000-7000-8000-000000000001",
+        ])
+    }
+
+    func testTakesTheRetryDelayFromTheErrorResponseWhenThereIsNoHeader() {
+        // Without the error response's 1.2 s the client would wait 30 s.
+        let server = FakeOpampServer { _, index in
+            index == 0
+                ? HTTPResult(statusCode: 503, body: Data(opampErrorAnswer(
+                    type: ServerErrorTypes.unavailable, retryAfterMs: 1200
+                )))
+                : ok(encodeServerToAgent(heartbeatIntervalSeconds: 300))
+        }
+        let client = makeClient(server)
+        startAndWait(client)
+        pollAndWait(client)
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(server.requests.count, 1)
+        waitForRequests(server, 2)
+        XCTAssertEqual(server.requests.count, 2)
+    }
+
+    func testTheRetryAfterHeaderWinsOverTheErrorResponse() {
+        let server = FakeOpampServer { _, index in
+            index == 0
+                ? HTTPResult(statusCode: 429, headers: ["retry-after": "1"], body: Data(opampErrorAnswer(
+                    type: ServerErrorTypes.unavailable, retryAfterMs: 60_000
+                )))
+                : ok(encodeServerToAgent(heartbeatIntervalSeconds: 300))
+        }
+        let client = makeClient(server)
+        startAndWait(client)
+        waitForRequests(server, 2)
+        XCTAssertEqual(server.requests.count, 2)
+    }
+
+    func testABadRequestBacksOffThenAGoodAnswerResetsTheBackoff() {
+        let rejected = FakeOpampServer { _, _ in
+            HTTPResult(statusCode: 400, body: Data(opampErrorAnswer(
+                type: ServerErrorTypes.badRequest, message: "instance_uid must be 16 bytes"
+            )))
+        }
+        let first = makeClient(rejected)
+        startAndWait(first)
+        pollAndWait(first)
+        XCTAssertEqual(rejected.requests.count, 1)
+        XCTAssertTrue(queue.sync { first.isRunning })
+
+        let recovering = FakeOpampServer { _, index in
+            index == 0
+                ? HTTPResult(statusCode: 503, headers: ["retry-after": "1"])
+                : ok(encodeServerToAgent(heartbeatIntervalSeconds: 300))
+        }
+        let second = makeClient(recovering)
+        startAndWait(second)
+        waitForRequests(recovering, 2)
+        // Not backing off any more: an explicit poll goes out at once.
+        pollAndWait(second)
+        XCTAssertEqual(recovering.requests.count, 3)
+    }
+
+    func testConcurrentPollsShareOneRequest() {
+        let server = FakeOpampServer { _, _ in ok(encodeServerToAgent(heartbeatIntervalSeconds: 300)) }
+        let client = makeClient(server)
+        let a = expectation(description: "a")
+        let b = expectation(description: "b")
+        queue.async {
+            client.start()
+            client.poll { a.fulfill() }
+            client.poll { b.fulfill() }
+        }
+        wait(for: [a, b], timeout: 3)
+        XCTAssertEqual(server.requests.count, 1)
+    }
+
+    func testTheCompletionRunsWhenThereIsNothingToPoll() {
+        let server = FakeOpampServer { _, _ in HTTPResult(statusCode: 503) }
+        let client = makeClient(server)
+        var done = 0
+        // Not started.
+        queue.sync { client.poll { done += 1 } }
+        XCTAssertEqual(done, 1)
+        startAndWait(client)
+        // Backing off.
+        queue.sync { client.poll { done += 1 } }
+        XCTAssertEqual(done, 2)
+        XCTAssertEqual(server.requests.count, 1)
+    }
+
+    func testAnAnswerThatComesAfterStopIsDropped() {
+        var applied = 0
+        let server = FakeOpampServer { _, _ in configResponse([1]) }
+        let client = makeClient(server, onRemoteConfig: { _ in
+            applied += 1
+            return .applied
+        })
+        let answered = expectation(description: "answered")
+        server.onRequest = { _ in answered.fulfill() }
+        queue.async {
+            client.start()
+            client.stop()
+        }
+        wait(for: [answered], timeout: 3)
+        // The answer is handled on the queue after it arrived.
+        queue.sync {}
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(server.requests.count, 1)
+        XCTAssertEqual(queue.sync { applied }, 0)
+        XCTAssertFalse(queue.sync { client.isRunning })
+    }
+
+    func testARestartWhileAPollIsUnderWayKeepsPolling() {
+        var client: OpampClient!
+        let server = FakeOpampServer { _, index in
+            // Called on the client's queue, while the first poll is out.
+            if index == 0 {
+                client.stop()
+                client.start()
+            }
+            return ok(encodeServerToAgent())
+        }
+        client = makeClient(server, defaultPollIntervalMs: 50)
+        queue.async { client.start() }
+        waitForRequests(server, 3)
+        XCTAssertTrue(queue.sync { client.isRunning })
+    }
+
+    func testCallbacksRunOnTheClientsQueue() {
+        let key = DispatchSpecificKey<Bool>()
+        queue.setSpecific(key: key, value: true)
+        var onQueue: [Bool] = []
+        func note() { onQueue.append(DispatchQueue.getSpecific(key: key) == true) }
+        let server = FakeOpampServer { _, index in
+            index == 0 ? configResponse([7]) : ok(encodeServerToAgent(heartbeatIntervalSeconds: 300))
+        }
+        let client = makeClient(
+            server,
+            describe: {
+                note()
+                return AgentDescription(identifying: ["service.name": "app"], nonIdentifying: [:])
+            },
+            onRemoteConfig: { _ in
+                note()
+                return .applied
+            }
+        )
+        queue.async { client.start() }
+        waitForRequests(server, 2)
+        pollAndWait(client)
+        let done = expectation(description: "completion")
+        queue.async { client.poll { note(); done.fulfill() } }
+        wait(for: [done], timeout: 3)
+        let seen = queue.sync { onQueue }
+        XCTAssertGreaterThanOrEqual(seen.count, 4)
+        XCTAssertTrue(seen.allSatisfy { $0 }, "\(seen)")
+        // remote_config_status{last_remote_config_hash: 07, status: APPLIED}
+        XCTAssertTrue(hex(server.requests[1].body).contains("3a050a01071001"))
+    }
+
+    func testPollsFromManyThreadsNeverOverlapAndEveryCompletionRuns() {
+        let transport = OverlapCountingTransport()
+        let client = makeClient(transport)
+        startAndWait(client)
+        let done = expectation(description: "every completion")
+        done.expectedFulfillmentCount = 8 * 25
+        let callers = (1...8).map { n in
+            Thread {
+                for i in 0..<25 {
+                    self.queue.async {
+                        if (n + i) % 2 == 0 {
+                            client.poll { done.fulfill() }
+                        } else {
+                            client.refresh { done.fulfill() }
+                        }
+                    }
+                }
+            }
+        }
+        callers.forEach { $0.start() }
+        wait(for: [done], timeout: 30)
+        XCTAssertEqual(transport.maxActive, 1)
+        XCTAssertTrue((1...201).contains(transport.sent), "\(transport.sent)")
+        XCTAssertTrue(queue.sync { client.isRunning })
+    }
+
+    func testATransportThatNeverAnswersEndsThePollAfterItsTimeout() {
+        let silent = SilentTransport()
+        let client = makeClient(silent, requestTimeout: 0.1)
+        let done = expectation(description: "poll ended")
+        queue.async {
+            client.start()
+            client.poll { done.fulfill() }
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertTrue(queue.sync { client.isRunning })
+        // No answer counts as an error: the client backs off.
+        pollAndWait(client)
+        XCTAssertEqual(silent.count, 1)
+    }
+}
+
+/// Answers every poll after a moment and counts how many requests are out at
+/// once.
+private final class OverlapCountingTransport: HTTPTransport {
+    private let lock = NSLock()
+    private var active = 0
+    private var _maxActive = 0
+    private var _sent = 0
+
+    var maxActive: Int { lock.lock(); defer { lock.unlock() }; return _maxActive }
+    var sent: Int { lock.lock(); defer { lock.unlock() }; return _sent }
+
+    func post(url: URL, headers: [String: String], body: Data, timeout: TimeInterval,
+              completion: @escaping (HTTPResult) -> Void) {
+        lock.lock()
+        active += 1
+        _maxActive = max(_maxActive, active)
+        _sent += 1
+        lock.unlock()
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(2)) {
+            self.lock.lock()
+            self.active -= 1
+            self.lock.unlock()
+            completion(ok(encodeServerToAgent(heartbeatIntervalSeconds: 300)))
+        }
+    }
+}
+
+/// Takes every request and never answers.
+private final class SilentTransport: HTTPTransport {
+    private let lock = NSLock()
+    private var _count = 0
+
+    var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
+
+    func post(url: URL, headers: [String: String], body: Data, timeout: TimeInterval,
+              completion: @escaping (HTTPResult) -> Void) {
+        lock.lock()
+        _count += 1
+        lock.unlock()
     }
 }

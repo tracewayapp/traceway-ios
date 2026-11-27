@@ -275,10 +275,11 @@ gzipped, to `/api/recordings`; an exception's clip carries its
 
 ## Testing
 
-- `WireframeTests.swift` and `WireframeStylesheetTests.swift` (every
-  platform): the diff replayed by a strict rrweb mirror, node serialization,
-  CSS builders, the recorder's clips and pointers, glyph PNGs, the shared
-  stylesheet and the fixed ids.
+- `WireframeDiffTests.swift`, `WireframeCssTests.swift`,
+  `WireframeRecorderTests.swift`, `WireframeGlyphsTests.swift` and
+  `WireframeStylesheetTests.swift` (every platform): the diff replayed by a
+  strict rrweb mirror, node serialization, CSS builders, the recorder's clips
+  and pointers, glyph PNGs, the shared stylesheet and the fixed ids.
 - `ReplayImagesTests.swift` (every platform): the images policy, encoding
   sizes, the picture rule and placements, the per-session allowance.
 - `UIKitWireframeTests.swift` (iOS Simulator): what each kind of view becomes,

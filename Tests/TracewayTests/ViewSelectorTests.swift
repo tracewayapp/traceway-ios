@@ -18,6 +18,10 @@ final class FakeView {
     let content: Bool
     let masked: Bool
     let boundary: Bool
+    /// Hidden or fully transparent: its text is not shown.
+    let hidden: Bool
+    /// Plumbing a tap handler sits in (a SwiftUI modifier wrapper).
+    let primitive: Bool
     var children: [FakeView] = []
     /// Strong, so a test can hold only the leaf; the cycles only live as
     /// long as the test.
@@ -34,7 +38,9 @@ final class FakeView {
         handler: Bool = false,
         content: Bool = false,
         masked: Bool = false,
-        boundary: Bool = false
+        boundary: Bool = false,
+        hidden: Bool = false,
+        primitive: Bool = false
     ) {
         self.type = type
         var values = values
@@ -49,6 +55,8 @@ final class FakeView {
         self.content = content
         self.masked = masked
         self.boundary = boundary
+        self.hidden = hidden
+        self.primitive = primitive
     }
 
     @discardableResult
@@ -64,7 +72,7 @@ final class FakeView {
         if let own = ownText.flatMap(cleanShownText) { return own }
         var parts: [String] = []
         func visit(_ view: FakeView) {
-            if parts.count >= 3 || view.input { return }
+            if parts.count >= 3 || view.input || view.hidden { return }
             if !includeMasked && view.masked { return }
             if let own = view.ownText.flatMap(cleanShownText) {
                 parts.append(own)
@@ -125,6 +133,7 @@ final class FakePath: SelectorPath {
             isBoundary: { $0.boundary },
             isControl: { $0.control },
             isTapHandler: { $0.handler },
+            isPrimitive: { $0.primitive },
             isContent: { $0.content },
             isMasked: { index in self.views[index...].contains { $0.masked } },
             shownText: { $0.shownText(includeMasked: false) }
@@ -169,6 +178,10 @@ final class ViewSelectorSyntaxTests: XCTestCase {
             "#--x",
             "#-a",
             "  UIButton  ",
+            "UIButton#pay",
+            "#toolbar_actions   >   UIButton",
+            "  .textField  ",
+            "[ text = \"Pay\" ]",
         ] {
             XCTAssertNotNil(ViewSelector.parse(valid), valid)
         }
@@ -192,6 +205,12 @@ final class ViewSelectorSyntaxTests: XCTestCase {
             String(repeating: "x", count: 257),
             "[text]]",
             "[=x]",
+            "#1abc",
+            "#-",
+            "[text!=\"a\"]",
+            "a >> b",
+            "[text=\"a\"",
+            "1Button",
         ] {
             XCTAssertNil(ViewSelector.parse(invalid), invalid)
         }
@@ -235,9 +254,12 @@ final class ViewSelectorMatchingTests: XCTestCase {
         XCTAssertTrue(sel("[text~=\"now\"]", path))
         XCTAssertTrue(sel("[text$=\"now\"]", path))
         XCTAssertTrue(sel("[text*=\"y n\"]", path))
+        XCTAssertTrue(sel("[text|=\"Pay now\"]", path))
         XCTAssertTrue(sel(".button[text=\"Pay now\"]", path))
         XCTAssertTrue(sel("#cart ElevatedButton", path))
         XCTAssertTrue(sel("#cart #pay", path))
+        XCTAssertTrue(sel("#cart > #pay", path))
+        XCTAssertTrue(sel("[id=\"pay\"]", path))
         XCTAssertTrue(sel("UIStackView ElevatedButton UILabel", path))
         XCTAssertTrue(sel("UIView > UILabel", path))
         XCTAssertTrue(sel("*", path))
@@ -247,6 +269,9 @@ final class ViewSelectorMatchingTests: XCTestCase {
         XCTAssertFalse(sel("ElevatedButton[text=\"Pay\"]", path))
         XCTAssertFalse(sel("ElevatedButton #cart", path))
         XCTAssertFalse(sel("ElevatedButton > UILabel", path), "the label is two views below the button")
+        XCTAssertFalse(sel("[text~=\"no\"]", path))
+        XCTAssertFalse(sel("[text^=\"\"]", path), "an empty prefix matches nothing")
+        XCTAssertFalse(sel("[data-step=\"2\"]", path))
         XCTAssertFalse(sel(".link", path))
     }
 
@@ -292,15 +317,20 @@ final class ViewSelectorMatchingTests: XCTestCase {
 
     func testSiblingCombinatorsFollowTheOrderOfSubviews() {
         let row = screen().add(FakeView("UIStackView"))
-        row.add(FakeView("UILabel", id: "first", text: "first"))
-        row.add(FakeView("UILabel", id: "second", text: "second"))
+        let first = row.add(FakeView("UILabel", id: "first", text: "first"))
+        let second = row.add(FakeView("UILabel", id: "second", text: "second"))
         let third = row.add(FakeView("UILabel", id: "third", text: "third"))
         let path = FakePath(third)
         XCTAssertTrue(sel("#second + #third", path))
         XCTAssertTrue(sel("#first ~ #third", path))
+        XCTAssertTrue(sel("#first + #second + #third", path))
         XCTAssertTrue(sel("UIStackView > #first ~ #third", path))
+        XCTAssertTrue(sel("[text=\"first\"] ~ UILabel", path))
         XCTAssertFalse(sel("#first + #third", path))
         XCTAssertFalse(sel("#third ~ #first", path))
+        XCTAssertFalse(sel("#third + #third", path))
+        XCTAssertFalse(sel("#third ~ #second", FakePath(second)), "siblings come before")
+        XCTAssertFalse(sel("* + #first", FakePath(first)), "the first subview has none")
     }
 
     func testTextInsideInputsIsNeverMatched() {
@@ -321,7 +351,148 @@ final class ViewSelectorMatchingTests: XCTestCase {
         let path = FakePath(leaf)
         let started = Date()
         XCTAssertFalse(sel("A A A A A A A A A Z A", path))
+        XCTAssertTrue(sel(Array(repeating: "A", count: 18).joined(separator: " "), path))
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    func testATapMatchesItsTargetOrAnAncestorNotADescendant() {
+        let row = screen().add(FakeView("UIStackView", id: "row", handler: true))
+        let label = row.add(FakeView("UILabel", text: "Settings", content: true))
+        XCTAssertTrue(sel("#row", FakePath(label)))
+        XCTAssertTrue(sel("#row", FakePath(row)))
+        XCTAssertFalse(sel("UILabel", FakePath(row)), "a tap on the row is not on its text")
+    }
+
+    func testAnIdentifierIsAnIdAndATagIsAKey() {
+        let button = screen().add(FakeView("UIButton", id: "order.42", values: ["key": "7"], control: true))
+        let path = FakePath(button)
+        XCTAssertTrue(sel("[identifier=\"order.42\"]", path))
+        XCTAssertTrue(sel("[id=\"order.42\"]", path))
+        XCTAssertFalse(sel("#order", path), "an id is matched whole")
+        XCTAssertTrue(sel("[key=\"7\"]", path))
+        XCTAssertTrue(sel("[key]", path))
+        XCTAssertFalse(sel("[identifier=\"7\"]", path))
+        XCTAssertFalse(sel("[key=\"order.42\"]", path))
+        XCTAssertFalse(sel("UILabel[key]", path))
+    }
+
+    func testANodeReadsItsLabelAndTextOnceAndOnlyWhenAsked() {
+        var labelReads = 0
+        var textReads = 0
+        let info = ViewNodeInfo(
+            type: "UIButton",
+            ids: ["first", "second"],
+            values: ["key": "1"],
+            label: { labelReads += 1; return "Below" },
+            text: { textReads += 1; return nil }
+        )
+        XCTAssertEqual(info.attribute("type"), "UIButton")
+        XCTAssertEqual(info.attribute("id"), "first", "the first id")
+        XCTAssertEqual(info.attribute("key"), "1")
+        XCTAssertNil(info.attribute("other"))
+        XCTAssertEqual(labelReads + textReads, 0, "other attributes read neither")
+        XCTAssertEqual(info.label, "Below")
+        XCTAssertEqual(info.attribute("label"), "Below")
+        XCTAssertEqual(labelReads, 1)
+        XCTAssertNil(info.text)
+        XCTAssertNil(info.attribute("text"))
+        XCTAssertEqual(textReads, 1, "no text is remembered too")
+        // A label of its own wins over the one below.
+        let own = ViewNodeInfo(type: "UIImageView", values: ["label": "Own"], label: {
+            XCTFail("the label below is not read")
+            return nil
+        })
+        XCTAssertEqual(own.label, "Own")
+    }
+
+    func testSiblingsOfAncestorsWork() {
+        let page = screen().add(FakeView("UIStackView"))
+        page.add(FakeView("UILabel", id: "title", text: "Title"))
+        let body = page.add(FakeView("UIView", id: "body"))
+        let button = body.add(FakeView("UIButton", text: "Go", control: true))
+        let path = FakePath(button)
+        XCTAssertTrue(sel("#title + #body UIButton", path))
+        XCTAssertTrue(sel("#title ~ #body > UIButton", path))
+        XCTAssertFalse(sel("#title + UIButton", path))
+    }
+
+    func testTextIsJoinedFromAtMostThreeShownViews() {
+        let row = screen().add(FakeView("UIStackView", handler: true))
+        row.add(FakeView("UILabel", text: "One"))
+        row.add(FakeView("UILabel", text: "gone", hidden: true))
+        row.add(FakeView("UILabel", text: "  Two \n lines "))
+        let pair = row.add(FakeView("UIView"))
+        pair.add(FakeView("UILabel", text: "Three"))
+        pair.add(FakeView("UILabel", text: "Four"))
+        let path = FakePath(row)
+        XCTAssertEqual(path.info(row).text, "One Two lines Three")
+        XCTAssertTrue(sel("UIStackView[text=\"One Two lines Three\"]", path))
+        XCTAssertFalse(sel("[text*=\"gone\"]", path))
+        XCTAssertFalse(sel("[text*=\"Four\"]", path))
+    }
+
+    func testMaskedTextStillMatchesButIsNeverReported() {
+        let button = screen().add(FakeView("CardButton", control: true, masked: true))
+        let card = button.add(FakeView("UILabel", text: "4242 4242 4242 4242", content: true))
+        let path = FakePath(card)
+        XCTAssertTrue(sel("CardButton[text^=\"4242\"]", path), "a rule still sees the text on the device")
+        XCTAssertNil(path.describe()!.text, "but it is never reported")
+        XCTAssertTrue(path.classifier.isMasked(0))
+        XCTAssertTrue(path.classifier.isMasked(1))
+        XCTAssertFalse(path.classifier.isMasked(2))
+    }
+
+    func testAMaskInsideKeepsItsTextOutOfTheReportedText() {
+        let row = screen().add(FakeView("UIStackView", control: true))
+        row.add(FakeView("UILabel", text: "Ann Smith", masked: true))
+        row.add(FakeView("UILabel", text: "Call"))
+        let path = FakePath(row)
+        XCTAssertEqual(path.info(row).text, "Ann Smith Call")
+        XCTAssertEqual(path.describe()!.text, "Call")
+    }
+
+    func testAttributeOperatorsFollowCSS() {
+        let chip = screen().add(FakeView("Chip", values: ["label": "pay-now", "kind": "primary large"], text: "Pay"))
+        let path = FakePath(chip)
+        XCTAssertTrue(sel("[label|=\"pay\"]", path), "a prefix up to a hyphen")
+        XCTAssertTrue(sel("[label|=\"pay-now\"]", path))
+        XCTAssertFalse(sel("[label|=\"pa\"]", path))
+        XCTAssertTrue(sel("[kind~=\"large\"]", path), "one of the words")
+        XCTAssertFalse(sel("[kind~=\"arge\"]", path))
+        XCTAssertFalse(sel("[kind~=\"\"]", path))
+        XCTAssertFalse(sel("[kind$=\"\"]", path))
+        XCTAssertFalse(sel("[kind*=\"\"]", path))
+        XCTAssertFalse(sel("[kind=primary]", path), "= compares the whole value")
+        XCTAssertTrue(sel("[text=Pay]", path), "an unquoted value")
+        XCTAssertTrue(sel("[kind]", path))
+        XCTAssertFalse(sel("[missing]", path))
+        XCTAssertTrue(sel("CHIP", path), "types match in any case")
+        XCTAssertTrue(sel("*[kind^=\"prim\"]", path))
+    }
+}
+
+private struct PayButton {}
+private struct Box<Content> {}
+
+/// Class names as selectors see them: what `String(describing:)` and
+/// `String(reflecting:)` give for real Swift types.
+final class ViewSelectorTypeNameTests: XCTestCase {
+    fileprivate final class Nested {}
+
+    func testANestedTypeIsNamedByItsOwnName() {
+        XCTAssertEqual(selectorTypeName(String(reflecting: Nested.self)), "Nested")
+        XCTAssertEqual(selectorTypeName(String(describing: Nested.self)), "Nested")
+        XCTAssertEqual(selectorTypeName(String(describing: Box<Int>.self)), "Box")
+        XCTAssertEqual(selectorTypeName(String(reflecting: Box<Nested>.self)), "Box")
+    }
+
+    func testAPrivateTypeIsNamedWithoutItsContext() {
+        let name = String(reflecting: PayButton.self)
+        XCTAssertTrue(name.hasSuffix(".PayButton"), name)
+        XCTAssertEqual(selectorTypeName(name), "PayButton")
+        XCTAssertTrue(SelectorSyntax.isTag(selectorTypeName(name)))
+        XCTAssertFalse(SelectorSyntax.isTag("_UIHostingView"), "a leading underscore is not a tag")
+        XCTAssertTrue(SelectorSyntax.isIdent("_UIHostingView"))
     }
 }
 
@@ -491,6 +662,114 @@ final class DescribeTapTests: XCTestCase {
         XCTAssertEqual(target.selector, "UIButton")
         // Tapping the window itself still names it.
         XCTAssertEqual(FakePath(window).describe()!.tag, "UIWindow")
+    }
+
+    func testAnIdOnTheControlComesFirst() {
+        let cart = screen().add(FakeView("UIStackView", id: "cart"))
+        let pay = cart.add(FakeView("UIButton", id: "pay", text: "Pay now", control: true))
+        cart.add(FakeView("UIButton", text: "Cancel", control: true))
+        let path = FakePath(pay)
+        let target = path.describe()!
+        XCTAssertEqual(target.selector, "UIButton#pay")
+        XCTAssertEqual(target.id, "pay")
+        XCTAssertEqual(target.text, "Pay now")
+        XCTAssertTrue(sel(target.selector, path))
+    }
+
+    func testAnIdInsideTheControlNamesIt() {
+        let row = screen().add(FakeView("UIStackView", handler: true))
+        let title = row.add(FakeView("UILabel", id: "title", text: "Settings", content: true))
+        row.add(FakeView("UILabel", text: "On", content: true))
+        let path = FakePath(title)
+        let target = path.describe()!
+        XCTAssertEqual(target.selector, "UILabel#title")
+        XCTAssertEqual(target.tag, "UIStackView")
+        XCTAssertEqual(target.id, "title")
+        XCTAssertTrue(sel(target.selector, path))
+    }
+
+    func testAnIconButtonInsideAClickableRowIsTheIconButton() {
+        let row = screen().add(FakeView("UIStackView", handler: true))
+        let title = row.add(FakeView("UILabel", text: "Settings", content: true))
+        let more = row.add(FakeView("UIButton", values: ["label": "More"], control: true))
+        let icon = more.add(FakeView("UIImageView", content: true))
+        let button = FakePath(icon).describe()!
+        XCTAssertEqual(button.tag, "UIButton")
+        XCTAssertEqual(button.selector, "UIButton[label=\"More\"]")
+        let target = FakePath(title).describe()!
+        XCTAssertEqual(target.tag, "UIStackView")
+        XCTAssertEqual(target.selector, "UIStackView[text=\"Settings\"]")
+    }
+
+    func testAClickableViewInsideAClickableRowIsNotTheRow() {
+        let row = screen().add(FakeView("UIStackView", handler: true))
+        let inner = row.add(FakeView("UILabel", text: "inner", handler: true))
+        row.add(FakeView("UILabel", text: "other"))
+        let target = FakePath(inner).describe()!
+        XCTAssertEqual(target.tag, "UILabel")
+        XCTAssertEqual(target.selector, "UILabel[text=\"inner\"]")
+    }
+
+    func testAHandlerInsidePlumbingNamesTheOutermostPlumbing() {
+        let card = screen().add(FakeView("Card"))
+        let style = card.add(FakeView("PlainButtonStyle", primitive: true))
+        let modifier = style.add(FakeView("ModifiedContent", primitive: true))
+        let gesture = modifier.add(FakeView("TapGesture", handler: true))
+        let target = FakePath(gesture).describe(includeText: false)!
+        XCTAssertEqual(target.tag, "PlainButtonStyle")
+        XCTAssertEqual(target.selector, "PlainButtonStyle")
+        // A named control above the plumbing is what was tapped.
+        let button = screen().add(FakeView("Button", control: true))
+        let wrapper = button.add(FakeView("ModifiedContent", primitive: true))
+        let tap = wrapper.add(FakeView("TapGesture", handler: true))
+        XCTAssertEqual(FakePath(tap).describe(includeText: false)!.tag, "Button")
+    }
+
+    func testAMaskInsideAControlHidesItsLabel() {
+        let button = screen().add(FakeView("UIButton", control: true))
+        let icon = button.add(FakeView("UIImageView", values: ["label": "Call Ann Smith"], content: true, masked: true))
+        let target = FakePath(icon).describe()!
+        XCTAssertNil(target.label)
+        XCTAssertNil(target.text)
+        XCTAssertEqual(target.selector, "UIButton")
+    }
+
+    func testAMaskInsideAControlHidesOnlyItsText() {
+        let row = screen().add(FakeView("UIStackView", control: true))
+        row.add(FakeView("UILabel", text: "Ann Smith", masked: true))
+        row.add(FakeView("UILabel", text: "Call"))
+        let target = FakePath(row).describe()!
+        XCTAssertEqual(target.text, "Call")
+        XCTAssertFalse(target.selector.contains("Ann"))
+        // The reported text is not what a rule sees, so it cannot name the row.
+        XCTAssertEqual(target.selector, "UIStackView")
+    }
+
+    func testAnUnnameableTypeIsLeftOutOfItsSelector() {
+        let tagged = screen().add(FakeView("a:b", id: "checkout", control: true))
+        XCTAssertEqual(FakePath(tagged).describe()!.selector, "#checkout")
+        let plain = screen().add(FakeView("a:b", control: true))
+        let label = plain.add(FakeView("UILabel", text: "Settings", content: true))
+        let path = FakePath(label)
+        let target = path.describe()!
+        XCTAssertEqual(target.selector, "[text=\"Settings\"]")
+        XCTAssertEqual(target.tag, "a:b")
+        XCTAssertTrue(sel(target.selector, path))
+    }
+
+    func testTextUpToFortyCharactersAndLabelsUpToSixtyNameTheTarget() {
+        let forty = String(repeating: "x", count: 40)
+        let fits = screen().add(FakeView("UIButton", text: forty, control: true))
+        XCTAssertEqual(FakePath(fits).describe()!.selector, "UIButton[text=\"\(forty)\"]")
+        let longer = screen().add(FakeView("UIButton", text: forty + "x", control: true))
+        let target = FakePath(longer).describe()!
+        XCTAssertEqual(target.selector, "UIButton")
+        XCTAssertEqual(target.text, forty + "x", "the text is still reported")
+        let long = String(repeating: "y", count: 61)
+        let labelled = screen().add(FakeView("UIButton", values: ["label": long], control: true))
+        let named = FakePath(labelled).describe()!
+        XCTAssertEqual(named.selector, "UIButton")
+        XCTAssertEqual(named.label, long)
     }
 
     func testAnEmptyPathDescribesNothing() {

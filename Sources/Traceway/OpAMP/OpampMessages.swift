@@ -153,7 +153,9 @@ func encodeAgentToServer(_ msg: AgentToServer) -> [UInt8] {
     w.bytes(1, msg.instanceUid)
     w.uint(2, msg.sequenceNum)
     if let description = msg.agentDescription {
-        w.message(3) { d in
+        // Written even without attributes, as opamp-go marshals a present
+        // description.
+        w.message(3, always: true) { d in
             writeAttributes(d, 1, description.identifying)
             writeAttributes(d, 2, description.nonIdentifying)
         }

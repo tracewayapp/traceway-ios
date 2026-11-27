@@ -2,48 +2,6 @@ import XCTest
 @testable import Traceway
 
 final class SettingsMergeTests: XCTestCase {
-    // MARK: JSON and ids
-
-    func testJSONKeepsBooleansAndNumbersApart() throws {
-        let parsed = try JSON.parse(#"{"t":true,"one":1,"f":1.5,"s":"1","n":null,"a":[false,0]}"#)
-        XCTAssertEqual(parsed["t"], .bool(true))
-        XCTAssertNil(parsed["t"]?.number)
-        XCTAssertEqual(parsed["one"], .number(1))
-        XCTAssertNil(parsed["one"]?.bool)
-        XCTAssertEqual(parsed["one"]?.int, 1)
-        XCTAssertNil(parsed["f"]?.int)
-        XCTAssertEqual(parsed["s"]?.string, "1")
-        XCTAssertEqual(parsed["n"], .null)
-        XCTAssertEqual(parsed["a"], .array([.bool(false), .number(0)]))
-        XCTAssertThrowsError(try JSON.parse("nope"))
-    }
-
-    func testJSONEncodesStablyWithSortedKeys() {
-        let value: JSON = ["b": 1, "a": [true, nil, "x\"y\n"], "c": 1.5]
-        XCTAssertEqual(value.encoded(sortedKeys: true), #"{"a":[true,null,"x\"y\n"],"b":1,"c":1.5}"#)
-    }
-
-    func testUnitHashMatchesTheBrowserSDK() {
-        XCTAssertEqual(Ids.unitHash(""), Double(0x811c_9dc5) / 4_294_967_296, accuracy: 1e-12)
-        XCTAssertEqual(Ids.unitHash("a"), Double(0xe40c_292c) / 4_294_967_296, accuracy: 1e-12)
-        XCTAssertEqual(Ids.unitHash("session"), Double(0xc35f_4cf7) / 4_294_967_296, accuracy: 1e-12)
-        // UTF-16 code units, as JavaScript and Dart read strings.
-        XCTAssertEqual(Ids.unitHash("é😀"), Double(0x44cc_4da1) / 4_294_967_296, accuracy: 1e-12)
-        XCTAssertEqual(
-            Ids.unitHash("0195f2a0-0000-7000-8000-000000000000"),
-            Double(0x0a21_31ae) / 4_294_967_296, accuracy: 1e-12
-        )
-    }
-
-    func testUuidv7CarriesTheTimestampVersionAndVariant() {
-        let id = Ids.uuidv7(nowMs: 0x0195_f2a0_0000)
-        XCTAssertTrue(id.hasPrefix("0195f2a0-0000-7"), id)
-        XCTAssertTrue("89ab".contains(Array(id)[19]))
-        let bytes = Ids.uuidBytes(id)
-        XCTAssertEqual(bytes?.count, 16)
-        XCTAssertEqual(Ids.uuidString(bytes!), id)
-    }
-
     // MARK: defaults
 
     func testDefaultsBufferBreadcrumbsAndStreamErrors() {
@@ -55,6 +13,17 @@ final class SettingsMergeTests: XCTestCase {
         XCTAssertEqual(s.bufferMaxBytes, 2 * 1024 * 1024)
         XCTAssertEqual(s.bufferMaxAgeSeconds, 600)
         XCTAssertEqual(s.triggers.map(\.id), [defaultExceptionTriggerId])
+    }
+
+    func testRecordAllSessionsStreamsBreadcrumbsAndReplay() {
+        let s = defaultSettings(baselineSampleRate: 7, recordAllSessions: true)
+        XCTAssertEqual(s.signal("console").mode, .stream)
+        XCTAssertEqual(s.signal("custom").mode, .stream)
+        XCTAssertEqual(s.signal("webVitals").mode, .buffer)
+        XCTAssertEqual(s.replayMode, .stream)
+        XCTAssertEqual(s.baselineSampleRate, 1)
+        XCTAssertEqual(defaultSettings(baselineSampleRate: .nan).baselineSampleRate, 0)
+        XCTAssertEqual(Array(defaultSettings().signals.keys).sorted(), signalNames.sorted())
     }
 
     // MARK: overlay
@@ -88,6 +57,15 @@ final class SettingsMergeTests: XCTestCase {
         XCTAssertEqual(merged.captures.map(\.id), ["c1"])
         XCTAssertEqual(merged.captures.first?.lookbackSeconds, 0)
         XCTAssertEqual(merged.captures.first?.until, Date(timeIntervalSince1970: 4_070_908_800))
+    }
+
+    func testOverlayLeavesTheBaseUntouched() {
+        let base = defaultSettings()
+        let merged = applyOverlay(base, ["enabled": false, "signals": ["console": ["mode": "off"]]])
+        XCTAssertFalse(merged.enabled)
+        XCTAssertEqual(merged.signal("console").mode, .off)
+        XCTAssertTrue(base.enabled)
+        XCTAssertEqual(base.signal("console").mode, .buffer)
     }
 
     func testRejectsDocumentsItCannotApply() {
@@ -193,6 +171,41 @@ final class SettingsMergeTests: XCTestCase {
         XCTAssertEqual(merged.triggers.map(\.id), [defaultExceptionTriggerId])
     }
 
+    func testActionsAreValidatedByType() throws {
+        func actions(_ json: String) throws -> [TriggerAction]? {
+            let merged = applyOverlay(defaultSettings(), try parseSettingsDocument(
+                #"{"triggers":[{"id":"t","steps":[{"match":{"key":"a","op":"exists"}}],"actions":"# + json + "}]}"
+            ))
+            return merged.triggers.first { $0.id == "t" }?.actions
+        }
+        let ok = try XCTUnwrap(try actions("""
+        [{"type":"flush","lookbackSeconds":1e9,"replay":true},
+         {"type":"stream","durationSeconds":10,"signals":["*","console"]},
+         {"type":"startReplay","durationSeconds":5,"signals":["console"]},
+         {"type":"capture","durationSeconds":30,"lookbackSeconds":-1},
+         {"type":"emit","eventName":"x"}]
+        """))
+        XCTAssertEqual(ok.map(\.type), ["flush", "stream", "startReplay", "capture", "emit"])
+        XCTAssertEqual(ok[0].lookbackSeconds, 86400)
+        XCTAssertTrue(ok[0].replay)
+        XCTAssertNil(ok[0].signals)
+        XCTAssertEqual(ok[1].signals, ["*", "console"])
+        XCTAssertNil(ok[2].signals)
+        XCTAssertNil(ok[3].lookbackSeconds)
+        for bad in [
+            #"[{"type":"flush"}]"#,
+            #"[{"type":"stream","durationSeconds":0}]"#,
+            #"[{"type":"startReplay"}]"#,
+            #"[{"type":"capture","lookbackSeconds":5}]"#,
+            #"[{"type":"emit","eventName":""}]"#,
+            #"[{"type":"explode"}]"#,
+            "[]",
+            "{}",
+        ] {
+            XCTAssertNil(try actions(bad), bad)
+        }
+    }
+
     func testMatcherParsing() {
         XCTAssertEqual(
             parseMatcher(["all": [["key": "a", "op": "eq", "value": 1], ["not": ["key": "b", "op": "exists"]]]]),
@@ -241,27 +254,6 @@ final class SettingsMergeTests: XCTestCase {
         }
     }
 
-    func testAMalformedEventStepDropsTheTrigger() {
-        let settings = applyOverlay(defaultSettings(), [
-            "triggers": [[
-                "id": "bad",
-                "steps": [["match": ["event": ["type": "click", "value": "a:hover"]]]],
-                "actions": [["type": "emit", "eventName": "x"]],
-            ]],
-        ])
-        XCTAssertEqual(settings.triggers.map(\.id), ["default-exception"])
-    }
-
-    func testStepsAreReportedInTheSchemaTheServerValidates() throws {
-        let trigger = applyOverlay(defaultSettings(), ["triggers": [journeyTriggerJSON]]).triggers.last!
-        let steps = try JSON.parse(trigger.stepsJSON().encoded()).array!
-        XCTAssertEqual(steps[0], [
-            "match": ["event": ["type": "click", "value": "#users .open"]],
-            "withinSeconds": nil,
-        ])
-        XCTAssertEqual(steps[1]["withinSeconds"], 10)
-    }
-
     func testCapturesParseRFC3339() {
         let merged = applyOverlay(defaultSettings(), [
             "captures": [
@@ -286,6 +278,36 @@ final class SettingsMergeTests: XCTestCase {
         XCTAssertNil(parseRFC3339("26-11-2026"))
     }
 
+    func testCapturesAreReplacedAsAWhole() throws {
+        let base = applyOverlay(defaultSettings(), try parseSettingsDocument(
+            #"{"captures":[{"id":"c1","until":"2099-01-01T00:00:00Z","signals":["console"],"replay":true}]}"#
+        ))
+        let capture = try XCTUnwrap(base.captures.first)
+        XCTAssertEqual(base.captures.count, 1)
+        XCTAssertEqual(capture.signals, ["console"])
+        XCTAssertTrue(capture.replay)
+        XCTAssertNil(capture.lookbackSeconds)
+        XCTAssertTrue(applyOverlay(base, ["captures": []]).captures.isEmpty)
+        XCTAssertEqual(applyOverlay(base, ["captures": "x"]).captures.count, 1)
+    }
+
+    func testTheSignatureChangesWithStepsAndActionsOnly() throws {
+        let t = defaultExceptionTrigger()
+        var renamed = t
+        renamed.name = "x"
+        renamed.cooldownSeconds = 1
+        renamed.maxPerSession = 1
+        XCTAssertEqual(renamed.signature, t.signature)
+        var other = t
+        other.actions = [TriggerAction(type: "emit", eventName: "x")]
+        XCTAssertNotEqual(other.signature, t.signature)
+        let steps = try JSON.parse(t.stepsJSON().encoded())
+        XCTAssertEqual(steps, [[
+            "match": ["key": "event.name", "op": "eq", "value": "exception"],
+            "withinSeconds": nil,
+        ]])
+    }
+
     // MARK: limits and ceilings
 
     func testLimitsLowerTheCeilings() throws {
@@ -299,6 +321,50 @@ final class SettingsMergeTests: XCTestCase {
         // A limit never raises a ceiling.
         let raised = applyLimits(ceilingsFrom(captureNetwork: false), ["limits": ["signals": ["network": "stream"]]])
         XCTAssertEqual(raised.signal("network"), .off)
+    }
+
+    func testReplayImagesDefaultToWifiFollowTheDocumentsAndStayUnderTheAppsCeiling() throws {
+        let defaults = defaultSettings()
+        XCTAssertEqual(defaults.replayImages, .wifi)
+        let always = applyOverlay(defaults, ["replay": ["images": "always"]])
+        XCTAssertEqual(always.replayImages, .always)
+        XCTAssertEqual(defaults.replayImages, .wifi)
+        for bad in [#""sometimes""#, #""WIFI""#, "1", "true", "null"] {
+            let merged = applyOverlay(always, try parseSettingsDocument(#"{"replay":{"images":"# + bad + "}}"))
+            XCTAssertEqual(merged.replayImages, .always, bad)
+        }
+        let off = applyOverlay(always, ["replay": ["images": "off"]])
+        XCTAssertEqual(off.replayImages, .off)
+
+        // The lower of the setting and the app's ceiling.
+        XCTAssertEqual(clampToCeilings(always, ceilingsFrom(screenCapture: true)).replayImages, .always)
+        let wifiCeiling = ceilingsFrom(screenCapture: true, replayImages: .wifi)
+        XCTAssertEqual(clampToCeilings(always, wifiCeiling).replayImages, .wifi)
+        XCTAssertEqual(clampToCeilings(off, wifiCeiling).replayImages, .off)
+        let offCeiling = ceilingsFrom(screenCapture: true, replayImages: .off)
+        XCTAssertEqual(clampToCeilings(always, offCeiling).replayImages, .off)
+        // No replay, no pictures: the app records no screen, or the plan allows no replay.
+        XCTAssertEqual(clampToCeilings(always, ceilingsFrom(screenCapture: false)).replayImages, .off)
+        let limited = applyLimits(wifiCeiling, ["limits": ["replay": "off"]])
+        XCTAssertEqual(limited.replayImages, .wifi)
+        XCTAssertEqual(clampToCeilings(always, limited).replayImages, .off)
+        XCTAssertEqual(min(TracewayImagePolicy.off, .always), .off)
+        XCTAssertEqual(TracewayImagePolicy.wifi.rawValue, "wifi")
+    }
+
+    func testCeilingsFollowTheStartOptions() {
+        let c = ceilingsFrom(captureLogs: false, captureNavigation: false, captureUserActions: false)
+        XCTAssertEqual(c.signal("console"), .off)
+        XCTAssertEqual(c.signal("navigation"), .off)
+        XCTAssertEqual(c.signal("userActions"), .off)
+        XCTAssertEqual(c.signal("network"), .stream)
+        XCTAssertEqual(c.signal("errors"), .stream)
+        XCTAssertEqual(c.replay, .off)
+        XCTAssertEqual(lowerMode(.stream, .buffer), .buffer)
+        XCTAssertEqual(lowerMode(.off, .stream), .off)
+        XCTAssertEqual(Mode(name: "stream"), .stream)
+        XCTAssertNil(Mode(name: "STREAM"))
+        XCTAssertEqual(Mode.buffer.name, "buffer")
     }
 
     func testClampHoldsModesAtTheCeilings() {

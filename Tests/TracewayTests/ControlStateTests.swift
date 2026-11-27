@@ -85,6 +85,27 @@ final class ControlStateTests: XCTestCase {
         XCTAssertEqual(control.modeFor("resourceTiming"), .off)
     }
 
+    func testAnOverrideNeverGoesPastTheAppsCeiling() {
+        let control = ControlState(defaults: defaultSettings(), ceilings: ceilingsFrom(captureLogs: false))
+        control.addOverride(StreamOverride(signals: ["console", "*"], untilMs: 1 << 50, includeOff: true))
+        XCTAssertEqual(control.modeFor("console"), .off)
+        XCTAssertFalse(control.canExport("console"))
+    }
+
+    func testReplayImagesFollowARuleOverTheLocalDocument() throws {
+        let local = applyOverlay(defaultSettings(), ["replay": ["images": "always"]])
+        let control = ControlState(defaults: local, ceilings: ceilingsFrom(screenCapture: true))
+        XCTAssertEqual(control.settings.replayImages, .always)
+        control.applyRemote(try parseSettingsDocument(#"{"replay":{"images":"wifi"}}"#))
+        XCTAssertEqual(control.settings.replayImages, .wifi)
+        // A rule that leaves images out keeps the local document's policy.
+        control.applyRemote(try parseSettingsDocument(#"{"replay":{"mode":"stream"}}"#))
+        XCTAssertEqual(control.settings.replayImages, .always)
+        // A plan without replay has no pictures either.
+        control.applyRemote(try parseSettingsDocument(#"{"limits":{"replay":"off"}}"#))
+        XCTAssertEqual(control.settings.replayImages, .off)
+    }
+
     func testKillSwitchTurnsEverythingOff() throws {
         let control = ControlState(defaults: defaultSettings(), ceilings: ceilingsFrom(screenCapture: true))
         control.applyRemote(try parseSettingsDocument(#"{"enabled":false}"#))
