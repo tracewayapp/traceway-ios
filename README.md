@@ -27,10 +27,15 @@ device, without a release.
   device (a journey of taps, screens and log lines)
 - **Wireframe session replay**: the view hierarchy recorded as an HTML
   wireframe and replayed in the dashboard's rrweb player; small, cheap, and
-  never a screenshot
+  never a screenshot. The pictures image views show can be included, on
+  Wi-Fi only or always, set from the dashboard
 - **Taps that name the view**: every tap is recorded with a CSS-like selector
   (`UIButton#pay`, `UIButton[text="Delete"]`) that click steps of recording
   triggers match
+- **Issues with their screen**: exceptions and messages carry the screen, its
+  route template, the screen before it and the window size
+- **Interactions**: a span for one user action (`checkout`) that the requests
+  and issues inside it belong to
 - Network requests as client spans with the official URLSession
   instrumentation, and W3C `traceparent` propagation to your backend
 - Sessions, with the breadcrumb timeline of each one
@@ -47,7 +52,9 @@ device, without a release.
   the `swift-log` release SwiftPM resolves for them needs the Swift 6.3
   compiler.
 
-## Installation (Swift Package Manager)
+## Installation
+
+With the Swift Package Manager:
 
 ```swift
 .package(url: "https://github.com/tracewayapp/traceway-ios.git", from: "2.0.0-beta.1"),
@@ -89,29 +96,111 @@ and the app runs without the SDK.
 
 ## Manual capture
 
+### Errors and messages
+
 ```swift
 do {
     try checkout()
 } catch {
-    Traceway.capture(error, attributes: ["order": order.id])
+    Traceway.captureException(error, attributes: ["order": order.id])
 }
 
-Traceway.capture(message: "User completed checkout")
+Traceway.captureMessage("User completed checkout")
+```
 
+Both are issues (signals `errors` and `messages`) and stream at once. Each
+carries the screen it happened on: `app.screen.name`, `app.screen.route` (see
+[Naming screens](#naming-screens)), `app.screen.previous`,
+`app.screen.duration_ms` (how long the screen had been shown) and `viewport`
+(the window size in points, `390x844`). An exception carries the stack of the
+caller.
+
+Network noise is not reported: `TracewayOptions.defaultIgnoreErrors` drops URL
+errors -1001 (timed out), -1003 (host not found), -1004 (cannot connect),
+-1005 (connection lost) and -1009 (offline), "The network connection was
+lost", "The Internet connection appears to be offline", and anything matching
+`/timeout/i`, `/status code (of )?4\d{2}/` or `/failed: 4\d{2}/`. Patterns
+match the first line `Type: message` (an `NSError` is
+`NSURLErrorDomain: The request timed out. (code -1001)`), never the stack.
+`ignoreErrors` replaces the list; `beforeCapture` sees every issue and drops
+it by returning false:
+
+```swift
+TracewayOptions(
+    ignoreErrors: TracewayOptions.defaultIgnoreErrors + ["CancellationError", .regex(#"^Shop\.Retry"#)],
+    beforeCapture: { captured in
+        // captured.error, .type, .message, .isMessage, .attributes, .stackTrace
+        captured.attributes["app.screen.name"] != "/debug"
+    }
+)
+```
+
+A string matches as a substring, `.regex` with search semantics. A
+`beforeCapture` that throws keeps the issue (and logs why with `debug`). Crashes
+the signal handler recorded are always reported.
+
+### Logs
+
+```swift
+Traceway.log("Loaded 12 items")
+Traceway.log("Cache miss", level: .warn, attributes: ["cache": "images"])
+```
+
+A log line is an OpenTelemetry log record without an event name (signal
+`console`), with the severity of its `TracewayLogLevel` (`trace`, `debug`,
+`info`, `warn`, `error`, `fatal`), `log.source: api` and your attributes. The
+console's `minSeverity` setting (`info` by default) drops lines below it.
+
+### Actions and events
+
+```swift
 // A named product event; triggers can match it by name.
 Traceway.track("checkout_failed", attributes: ["reason": "card_declined"])
 
-// Breadcrumbs for the session timeline.
-Traceway.log("Loaded 12 items")
+// A breadcrumb for the session timeline.
 Traceway.recordAction(category: "cart", name: "add_item", data: ["sku": "SKU-123"])
+```
 
+`track` values that are strings, booleans and numbers keep their type.
+`recordAction` sends `traceway.action.category`, `traceway.action.name` and
+`traceway.action.data` (the data as JSON).
+
+### Attributes and users
+
+```swift
 // Attached to every later record, and usable to target this user from the
 // dashboard.
 Traceway.setAttribute("user.id", user.id)
+Traceway.setAttributes(["plan": "pro", "cohort": "beta"])
+Traceway.removeAttribute("cohort")
+Traceway.clearAttributes()
 
 // Send what is ready now.
 Traceway.flush(timeout: 5)
 ```
+
+There is no `setUser`: `user.id` is an attribute like any other. At most 64
+attributes are kept. `Traceway.instanceId` (`service.instance.id`) and
+`Traceway.currentSessionId` (`session.id`) name this installation and session.
+
+### Interactions
+
+```swift
+let checkout = Traceway.startInteraction("checkout", attributes: ["cart.items": cart.count])
+do {
+    try checkout.run { try api.placeOrder(cart) }
+} catch {
+    checkout.captureException(error)
+}
+checkout.end()
+```
+
+An interaction is a span (`traceway.interaction: true`, signal `custom`).
+Requests started in its `run` are its child spans, and the exceptions,
+messages and logs recorded there carry its trace and span id. An exception
+captured through it, or `end(failed: true)`, marks it failed. One started
+inside another's `run` is its child; `traceId` and `spanId` name it. Before
+`start` it records nothing and `run` still runs its code.
 
 For spans of your own, `Traceway.tracer` is the SDK's OpenTelemetry tracer.
 If your app has not set up OpenTelemetry itself, Traceway's providers are also
@@ -130,24 +219,31 @@ Every record belongs to a *signal*, and each signal has a mode:
 
 | Signal | Source | Default |
 |--------|--------|---------|
-| `errors` | crashes, uncaught `NSException`s, `Traceway.capture` | stream |
-| `messages` | `Traceway.capture(message:)` | stream |
+| `errors` | crashes, uncaught `NSException`s, `Traceway.captureException` | stream |
+| `messages` | `Traceway.captureMessage` | stream |
 | `console` | `Traceway.log` | buffer |
 | `network` | URLSession requests (client spans) | buffer |
 | `navigation` | view controllers appearing, `Traceway.recordNavigation`, `.tracewayScreen` | buffer |
 | `userActions` | taps (`browser.user_action.click`) | buffer |
-| `custom` | `Traceway.recordAction`, `Traceway.track`, your own spans | buffer |
+| `custom` | `Traceway.recordAction`, `Traceway.track`, interactions, your own spans | buffer |
 | replay | wireframe screen recording | buffer |
 
 The built-in trigger fires on every exception: it uploads the buffered
 breadcrumbs of the last 10 minutes and the replay clip. An app that never
 throws sends only its session start and end. Clips are rationed to one per 5
 seconds and 20 per session; breadcrumbs are still sent for the exceptions in
-between.
+between. Identical errors within a second collapse into one, and at most 60
+errors a minute are sent; the next one carries `traceway.error.suppressed_count`.
 
 `recordAllSessions: true` streams every breadcrumb signal and the replay
 instead. The signal names, modes, triggers and limits are the browser and
 Flutter SDKs', so one rule can target all of them.
+
+When the SDK drops data (the session's replay budget is used up, errors were
+suppressed, replay segments failed to upload) it sends a
+`traceway.collection.health` record with the counts, at most once a second at
+first and backing off to once every five minutes; the session's first one
+also updates the session.
 
 ## Remote config
 
@@ -155,13 +251,13 @@ The SDK polls the server over OpAMP (plain HTTP, protobuf): at start, every 5
 minutes by default (the server sets the interval), when the app returns to the
 foreground, and about 2 seconds after `Traceway.setAttribute` or a new session.
 It applies the collection settings defined under **Project → Data Collection**:
-signal modes and sample rates, buffer sizes, extra triggers and on-demand
-captures of one user or device.
+signal modes and sample rates, buffer sizes, replay settings, extra triggers
+and on-demand captures of one user or device.
 
-- The `capture*` options, `screenCapture` and `sessions` are **ceilings**:
-  remote settings can lower what is collected but never raise it. With
-  `captureNetwork: false` no rule can turn network capture on, and without
-  `screenCapture: true` nothing is recorded. `sampleRate`,
+- The `capture*` options, `screenCapture`, `replayImages` and `sessions` are
+  **ceilings**: remote settings can lower what is collected but never raise
+  it. With `captureNetwork: false` no rule can turn network capture on, and
+  without `screenCapture: true` nothing is recorded. `sampleRate`,
   `baselineSampleRate` and `recordAllSessions` are defaults a rule can change
   either way.
 - The last applied settings are cached, so they are in effect from the first
@@ -180,9 +276,9 @@ Traceway.start(
     connectionString: "...",
     options: TracewayOptions(
         screenCapture: true,
-        remoteConfig: false,
         collection: [
             "signals": ["network": ["mode": "stream"]],
+            "replay": ["images": "always"],
             "buffer": ["maxAgeSeconds": 300],
             "triggers": [[
                 "id": "checkout-failed-twice",
@@ -194,7 +290,8 @@ Traceway.start(
                     "type": "capture", "durationSeconds": 300, "lookbackSeconds": 120, "replay": true,
                 ]],
             ]],
-        ]
+        ],
+        remoteConfig: false
     )
 )
 ```
@@ -205,7 +302,8 @@ An invalid document is ignored with a console warning, and the defaults apply.
 
 A capture uploads what the device holds from its lookback window and then
 streams the selected signals, and the replay when it asks for it, until it
-ends. Records sent under a capture carry its id (`traceway.capture.ids`).
+ends. Records sent while a capture from the dashboard runs carry its id
+(`traceway.capture.ids`).
 
 - **From the dashboard**: the Capture button on a session or issue targets one
   installation (`service.instance.id`, see `Traceway.instanceId`), user
@@ -218,26 +316,30 @@ While a capture streams replay, the recording leaves as consecutive segments
 that each start with a full snapshot. An exception during a streaming capture
 still gets a clip of its own.
 
-### Recording triggers: journeys of taps, screens and logs
+### Recording triggers
+
+Journeys of taps, screens and logs:
 
 | Step | Matches |
 |------|---------|
 | `{"event": {"type": "click", "value": "<selector>"}}` | a tap on a view the selector matches, or inside one |
 | `{"event": {"type": "navigation", "value": "/orders/{id}"}}` | arriving at a screen; `{id}` is one non-empty segment |
-| `{"event": {"type": "log", "value": "Profile loaded", "mode": "contains"}}` | a `Traceway.log` line or a `capture(message:)` (`exact` by default) |
+| `{"event": {"type": "log", "value": "Profile loaded", "mode": "contains"}}` | a `Traceway.log` line or a `captureMessage` (`exact` by default) |
 
 Hover steps never match on iOS. Steps match in order, each within its
 `withinSeconds` of the previous one; progress survives an app restart within
 the session.
 
-#### Naming views
+### Naming views
 
 A click step takes a selector in CSS syntax. When a finger lifts, the SDK finds
 the view it touched (the view UIKit's hit-testing returns and, below it, the
 topmost visible subview under the finger, since labels and image views do not
 take touches) and runs the selector over that view and its superviews up to the
 window. A tap matches when the view under the finger or any superview matches,
-the way a browser click matches its target or an ancestor.
+the way a browser click matches its target or an ancestor. A tap lifts within
+10 points of where it went down and before UIKit's long-press duration of
+0.5 seconds.
 
 | Selector | Matches a view that |
 |----------|---------------------|
@@ -287,11 +389,12 @@ finger. Its selector is the first of these that exists and matches: an
 inside it), its `tag`, the text it shows (up to 40 characters), its label, a
 role, the class with the nearest identified superview in front
 (`#cart UIButton`), and the class alone. The record also carries
-`app.widget.name`, `app.widget.id`, `app.widget.text`, `app.widget.label` and
+`browser.tag_name`, `app.widget.name`, `app.widget.id`, `app.widget.text`,
+`app.widget.label`, `app.screen.coordinate.x`, `app.screen.coordinate.y` and
 `app.screen.name`. Text and labels inside a privacy mask or a secure text field
 are never sent.
 
-#### Naming screens
+### Naming screens
 
 A view controller that appears is recorded as `/` and its class name
 (`/CheckoutViewController`); a hosting controller as its SwiftUI root view
@@ -304,8 +407,16 @@ CheckoutView()
     .tracewayScreen("/checkout")
 
 // or anywhere:
-Traceway.recordNavigation("/orders/\(order.id)")
+Traceway.recordNavigation("/orders/\(order.id)", action: "push", from: "/orders")
+
+// the route template of the current screen, until the next screen:
+Traceway.setRoute("/orders/{id}")
 ```
+
+A navigation is a `browser.navigation` record with `url.full`,
+`navigation.action` (`push` or `pop`), `browser.navigation.type`,
+`navigation.to`, `navigation.from`, `app.screen.name` and, while a route
+template is set, `app.screen.route`. Issues carry the route too.
 
 ## Session replay
 
@@ -313,27 +424,29 @@ Traceway.recordNavigation("/orders/\(order.id)")
 TracewayOptions(screenCapture: true)
 ```
 
-Instead of pictures, the SDK records the view hierarchy. Up to `fps` times a
-second (4 by default) it walks the app's windows and turns what they show into
-HTML: views with their background colors, gradients, corners, borders,
-shadows, opacity, clipping, transforms and scroll positions; labels with their
-font size, weight, style and color, alignment, line breaking and rich text
-runs; buttons, text fields and text views; switches, sliders, segmented
-controls, steppers, progress views, page controls and activity indicators drawn
-from their state; shape and text layers. SF Symbols and template images keep
-their shape (monochrome symbols in their tint, palette and multicolor symbols in
-their own colors). iOS 26's Liquid Glass bars, buttons, alerts and sheets are
-drawn as frosted shapes. What changes from one frame to the next becomes an
-rrweb mutation, so the dashboard replays the session with the same player as a
-browser session, taps and drags included. A frame is kept only when the screen
-changed.
+### Wireframe
 
-- **Small and cheap.** No pixels are read or encoded: a segment is a few
-  kilobytes of JSON.
-- **Not pixel-exact.** Text is drawn in the browser's system font, photos and
-  other images are placeholders, views that draw themselves (`draw(_:)`) are
-  dashed outlines, and web views, maps, video, camera and Metal views are
-  labeled placeholders.
+The replay is a wireframe only: no screenshot and no video of the screen is
+ever recorded. Up to `fps` times a second (4 by default) the SDK walks the
+app's windows and turns what they show into HTML: views with their background
+colors, gradients, corners, borders, shadows, opacity, clipping, transforms
+and scroll positions; labels with their font size, weight, style and color,
+alignment, line breaking and rich text runs; buttons, text fields and text
+views; switches, sliders, segmented controls, steppers, progress views, page
+controls and activity indicators drawn from their state; shape and text
+layers. SF Symbols and template images keep their shape (monochrome symbols
+in their tint, palette and multicolor symbols in their own colors). iOS 26's
+Liquid Glass bars, buttons, alerts and sheets are drawn as frosted shapes.
+What changes from one frame to the next becomes an rrweb mutation, so the
+dashboard replays the session with the same player as a browser session,
+taps and drags included. A frame is kept only when the screen changed.
+
+- **Small and cheap.** No screen pixels are read: a segment is a few
+  kilobytes of JSON, plus the pictures when they are included.
+- **Not pixel-exact.** Text is drawn in the browser's system font, images are
+  placeholders unless pictures are included, views that draw themselves
+  (`draw(_:)`) are dashed outlines, and web views, maps, video, camera and
+  Metal views are labeled placeholders.
 - **SwiftUI** draws most of its content without views of its own. Its colors,
   shapes, gradients and symbols are recorded from its layers, and the UIKit
   controls it hosts as UIKit. Its text is readable only through accessibility,
@@ -345,11 +458,37 @@ changed.
   bullets. The keyboard is a plain box, never its keys.
 
 How well each kind of view converts is checked on every CI run by the
-wireframe gallery (see [Testing](#testing)).
+wireframe gallery (see [Testing](#testing)). [Docs/Wireframe.md](Docs/Wireframe.md)
+describes the pipeline, node ids, stylesheet and limits.
 
 Clips follow the same rules as breadcrumbs: the last `maxBufferFrames` frames
 stay on the device, an exception uploads the clip of the last 30 seconds, and
-captures stream the session as segments.
+captures stream the session as segments. A session uploads at most 50 MiB and
+10,000 rrweb events of replay.
+
+### Images
+
+The pictures `UIImageView`s show, and the image layers SwiftUI uses for
+photos, can be part of the replay. Never a screenshot of the window: only the
+bitmap the view shows, downscaled to its displayed size (1.5 pixels per
+point, at most 512 pixels a side), as JPEG at quality 0.6 (PNG for small
+see-through images), at most 96 KiB each and 4 MiB per session. A picture
+seen for the first time is encoded off the main thread: the frame that first
+shows it has the placeholder, a later one the picture. The same picture in
+many cells is sent once.
+
+| `replay.images` (setting) | Pictures |
+|---|---|
+| `off` | never: images are placeholders |
+| `wifi` (default) | on an unmetered connection: not cellular, a personal hotspot or Low Data Mode |
+| `always` | on any connection |
+
+Set it in a rule's Signals tab on the dashboard, or in `collection`
+(`"replay": ["images": "always"]`). `TracewayOptions.replayImages` (`.always`
+by default) is the ceiling: `.off` keeps every image a placeholder whatever
+the rules say. The connection is checked for each frame. Images under a
+privacy mask are never included. Session events carry `traceway.replay.images`
+(the policy at session start) and `traceway.replay.image_bytes`.
 
 ### Privacy masks
 
@@ -384,6 +523,12 @@ TracewayOptions(propagateTraceHeaderUrls: ["https://api.example.com/"])
 It is empty by default, because a header a server does not expect can break a
 strict CORS or request-signature check.
 
+## App performance metrics
+
+Not on iOS yet. The Android and Flutter SDKs send `app.*` metrics (start
+time, frames, hangs, memory); the iOS SDK will send the same names in a later
+release.
+
 ## Setups
 
 ### Everything on Traceway
@@ -401,11 +546,11 @@ Traceway.start(
 Traceway.start(
     connectionString: "your-token@https://traceway.example.com",
     options: TracewayOptions(
+        collection: ["signals": ["network": ["mode": "stream"]]],
         telemetry: TracewayTelemetry(
             url: "https://collector.example.com/otlp",
             headers: ["x-ingest-key": "app-ingest-key"]
-        ),
-        collection: ["signals": ["network": ["mode": "stream"]]]
+        )
     )
 )
 ```
@@ -435,6 +580,9 @@ with the event name `exception`, sent to your collector.
 
 ## Options
 
+In the order of `TracewayOptions(...)`, the same order as the other Traceway
+mobile SDKs.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sampleRate` | `1.0` | Share of exceptions and messages that are reported |
@@ -444,6 +592,7 @@ with the event name `exception`, sent to your collector.
 | `environment` | — | Sent as `deployment.environment.name` |
 | `attributes` | `[:]` | Attributes attached to every record |
 | `screenCapture` | `false` | Record a wireframe replay |
+| `replayImages` | `.always` | Most the replay may do with pictures: `.off`, `.wifi`, `.always` (see [Images](#images)) |
 | `fps` | `4` | Most wireframe frames captured per second (1–15) |
 | `maxBufferFrames` | `150` | Frames in the replay ring; the upper bound of every clip |
 | `persistToDisk` | `true` | Keep state and undelivered telemetry on disk; record hard crashes |
@@ -452,15 +601,17 @@ with the event name `exception`, sent to your collector.
 | `captureNavigation` | `true` | Record screens |
 | `captureUserActions` | `true` | Record taps and feed them to recording triggers |
 | `recordAllSessions` | `false` | Stream breadcrumbs and replay all the time |
-| `baselineSampleRate` | `0` | Share of sessions whose breadcrumbs stream continuously |
-| `sessions` | `true` | Send session records (`session.start` / `session.end`) |
-| `remoteConfig` | `true` | Poll for collection settings over OpAMP |
 | `collection` | — | Local collection settings (see [Local config](#local-config)) |
+| `sessions` | `true` | Send session records (`session.start` / `session.end`) |
+| `baselineSampleRate` | `0` | Share of sessions whose breadcrumbs stream continuously |
+| `remoteConfig` | `true` | Poll for collection settings over OpAMP |
 | `exportDelayMs` | `1000` | How long finished records wait to be sent as one batch |
-| `propagateTraceHeaderUrls` | `[]` | URL prefixes whose requests carry `traceparent` |
 | `telemetry` | — | Another OTLP/HTTP receiver (see [Setups](#setups)) |
+| `propagateTraceHeaderUrls` | `[]` | URL prefixes whose requests carry `traceparent` |
+| `ignoreErrors` | `nil` (`defaultIgnoreErrors`) | Issues not reported, matched against `Type: message` (see [Errors and messages](#errors-and-messages)) |
+| `beforeCapture` | `nil` | Sees every exception and message; returning false drops it |
 
-## Crashes
+## Crashes and symbolication
 
 After `start`, the SDK records:
 
@@ -478,6 +629,31 @@ When the **debugger is attached**, lldb catches these signals first, so test
 crash capture without it: install from Xcode, stop, and launch the app from
 the home screen, then relaunch after the crash.
 
+## What gets captured automatically
+
+| What | Record | Signal |
+|------|--------|--------|
+| Uncaught `NSException`s, fatal signals | `exception` (`traceway.crash: true`) | `errors` |
+| View controllers appearing | `browser.navigation` | `navigation` |
+| Taps | `browser.user_action.click` | `userActions` |
+| URLSession requests | client spans | `network` |
+| Sessions | `session.start`, `traceway.session.update`, `session.end` | always sent |
+| Remote config, triggers, captures, dropped data | `traceway.config.applied`, `traceway.trigger.fired`, `traceway.capture.started`, `traceway.collection.health` | always sent |
+| The screen, with `screenCapture: true` | wireframe replay clips and segments | replay |
+
+Every record carries `session.id`; the resource carries `service.name`,
+`service.version`, `service.instance.id`, `os.*`, `device.*` (model,
+manufacturer, locale, form factor, physical or simulator), `screen.resolution`
+and `screen.density`.
+
+## Platform support
+
+| Platform | Support |
+|----------|---------|
+| iOS 13+ (UIKit, SwiftUI) | everything above |
+| iPadOS | as iOS; a trackpad pointer is replayed as a mouse |
+| macOS, Linux | builds and runs the platform-neutral parts (tests, the e2e harness); no UIKit hooks, replay or URLSession instrumentation |
+
 ## Migrating from 1.x
 
 - **Server**: 2.0 sends OTLP to `/api/otel/v1/logs` and `/api/otel/v1/traces`,
@@ -489,11 +665,16 @@ the home screen, then relaunch after the crash.
   sent once over OTLP on the first 2.0 start.
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`,
   `maxLocalFiles`, `localFileMaxAgeHours`.
-- **API**: `Traceway.start`, `capture(_:)`, `capture(error:)`,
-  `capture(message:)` and `flush(timeout:)` are unchanged. New:
-  `track`, `log`, `recordAction`, `recordNavigation`, `setAttribute(s)`,
-  `removeAttribute`, `clearAttributes`, `shutdown`, `refreshConfig`,
-  `instanceId`, `sessionId`, `tracer`, privacy masks and `.tracewayScreen`.
+- **API**: `Traceway.start` and `flush(timeout:)` are unchanged.
+  `capture(_:)`, `capture(error:)` and `capture(message:)` still work and are
+  deprecated in favor of `captureException(_:attributes:)` and
+  `captureMessage(_:attributes:)`; `sessionId` in favor of
+  `currentSessionId`; `log(_:severity:)` and `TracewayLogSeverity` in favor of
+  `log(_:level:attributes:)` and `TracewayLogLevel`. New: `track`, `log`,
+  `recordAction`, `recordNavigation`, `setRoute`, `startInteraction`,
+  `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `shutdown`,
+  `refreshConfig`, `instanceId`, `currentSessionId`, `tracer`, privacy masks
+  and `.tracewayScreen`.
 - **Issues regroup once**: 2.0 reports exceptions as OpenTelemetry `exception`
   events (`exception.type`, `exception.message`, `exception.stacktrace`).
 
@@ -526,6 +707,15 @@ via Firebase Test Lab. See [CI/README.md](CI/README.md).
   trigger, a capture from the dashboard, a remote rule built from a recorded
   selector, and a session that survives a kill with an earlier crash reported.
   `--gallery DIR` replays a wireframe gallery as the app's screen.
+
+## Links
+
+- [Docs/Wireframe.md](Docs/Wireframe.md): how the wireframe replay works
+- [CHANGELOG.md](CHANGELOG.md)
+- [CI/README.md](CI/README.md): test layers, running them locally, the
+  wireframe gallery, the e2e harness
+- [Scripts/upload_symbols.sh](Scripts/upload_symbols.sh): dSYM upload
+- [Traceway documentation](https://docs.tracewayapp.com), [Traceway](https://tracewayapp.com)
 
 ## License
 

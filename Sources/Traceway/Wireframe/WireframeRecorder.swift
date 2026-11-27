@@ -45,6 +45,7 @@ final class WireframeRecorder: ReplaySource {
     private var running = false
     private var paused = false
     private var maskInputs = true
+    private var images: TracewayImagePolicy = .off
     private var resetRequested = false
 
     static let maxPointers = 4000
@@ -69,6 +70,10 @@ final class WireframeRecorder: ReplaySource {
     var windows: (() -> [UIWindow])?
     #endif
 
+    /// Counts the bytes of the pictures inlined per session. Set once, on
+    /// the main thread, before the recorder starts.
+    var imageBudget: CollectionBudget?
+
     init(maxFrames: Int = 150, fps: Int = 4, debug: Bool = false, now: @escaping () -> Int64 = Clock.nowMs) {
         self.maxFrames = max(2, maxFrames)
         self.fps = min(max(fps, 1), 15)
@@ -90,6 +95,20 @@ final class WireframeRecorder: ReplaySource {
                 maskInputs = newValue
                 resetRequested = true
             }
+        }
+    }
+
+    /// When the pictures of image views are inlined (`replay.images` held at
+    /// `TracewayOptions.replayImages`). Off by default: the client sets it
+    /// from the settings. Decided at each capture.
+    var imagePolicy: TracewayImagePolicy {
+        get {
+            lock.lock(); defer { lock.unlock() }
+            return images
+        }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            images = newValue
         }
     }
 
@@ -229,7 +248,7 @@ final class WireframeRecorder: ReplaySource {
         }
     }
 
-    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> RecordingClip? {
+    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload? {
         lock.lock()
         let frames = self.frames
         let pointers = self.pointers
@@ -311,7 +330,7 @@ final class WireframeRecorder: ReplaySource {
             NSLog("[Traceway] wireframe clip of %ld events, %ldKB, %.1fs", events.count, bytes / 1024,
                   Double(end - start) / 1000)
         }
-        return RecordingClip(clipId: clipId, events: events, startedAtMs: start, endedAtMs: end, approxBytes: bytes)
+        return SessionRecordingPayload(clipId: clipId, events: events, startedAtMs: start, endedAtMs: end, approxBytes: bytes)
     }
 
     /// The index of the frame showing at `at`: the last one taken at or
@@ -387,7 +406,7 @@ final class WireframeRecorder: ReplaySource {
             tag: "div",
             attributes: [
                 "id": "tw",
-                "style": "width:\(Int(width.rounded()))px;height:\(Int(height.rounded()))px;background:#1e1e1e",
+                "style": screenNodeStyle(width: width.rounded(), height: height.rounded()) + "background:#1e1e1e",
             ],
             children: [
                 VNode(
@@ -477,6 +496,7 @@ final class WireframeRecorder: ReplaySource {
         lock.lock()
         let active = running && !paused
         let mask = maskInputs
+        let policy = images
         let reset = resetRequested
         resetRequested = false
         lock.unlock()
@@ -485,6 +505,8 @@ final class WireframeRecorder: ReplaySource {
         self.capture = capture
         if reset { capture.reset() }
         capture.maskAllInputs = mask
+        capture.imagePolicy = policy
+        if capture.images.budget == nil { capture.images.budget = imageBudget }
         let started = CFAbsoluteTimeGetCurrent()
         let frame: WireframeFrame?
         if let windows = windows?() {
@@ -520,8 +542,7 @@ final class WireframeRecorder: ReplaySource {
             case .ended:
                 var tap = false
                 if let start = touchStarts.removeValue(forKey: pointer) {
-                    let dx = x - start.x, dy = y - start.y
-                    tap = dx * dx + dy * dy <= 100 && now() - start.ms < 600
+                    tap = TapGesture.isTap(dx: x - start.x, dy: y - start.y, durationMs: now() - start.ms)
                 }
                 pointerUp(pointer: pointer, x: x, y: y, touch: isTouch, tap: tap)
             case .cancelled:

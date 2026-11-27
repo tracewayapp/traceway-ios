@@ -54,6 +54,8 @@ final class RecordingsTransport {
     private var idleWaiters: [() -> Void] = []
     private var _failedSegments = 0
     private var _sentSegments = 0
+    /// Called on the transport's queue whenever segments are given up.
+    var onFailure: (() -> Void)?
 
     init(
         url: URL?,
@@ -82,7 +84,7 @@ final class RecordingsTransport {
             while self.queuedBytes > self.maxQueuedBytes, self.batches.count > 1 {
                 let dropped = self.batches.removeFirst()
                 self.queuedBytes -= dropped.bytes
-                self._failedSegments += dropped.segments.count
+                self.failed(dropped.segments.count)
             }
             self.schedule(afterMs: 0)
         }
@@ -173,89 +175,18 @@ final class RecordingsTransport {
             return nil
         }
         if RecordingsTransport.permanentFailures.contains(result.statusCode) {
-            _failedSegments += batch.segments.count
+            failed(batch.segments.count)
             return nil
         }
         if batch.attempts > retryDelaysMs.count {
-            _failedSegments += batch.segments.count
+            failed(batch.segments.count)
             return nil
         }
         return result.retryAfterMs.map { Int($0) } ?? retryDelaysMs[batch.attempts - 1]
     }
-}
 
-/// Bounds what replay uploads per session, as the browser SDK does: 50 MiB
-/// and 10,000 segments. A streaming capture that runs for hours stops
-/// uploading once a session has used its budget; the counts are reported on
-/// the session's lifecycle events. Used on the client's queue.
-final class CollectionBudget {
-    let maxBytes: Int
-    let maxEvents: Int
-    var store: StateStore?
-    private var sessionId: String?
-    private var bytes = 0
-    private var events = 0
-    private var dropped = 0
-    private var loaded = false
-
-    init(maxBytes: Int = 50 * 1024 * 1024, maxEvents: Int = 10_000, store: StateStore? = nil) {
-        self.maxBytes = maxBytes
-        self.maxEvents = maxEvents
-        self.store = store
-    }
-
-    func admit(_ sessionId: String?, bytes: Int, events count: Int = 1) -> Bool {
-        switchTo(sessionId)
-        if bytes + self.bytes > maxBytes || events + count > maxEvents {
-            dropped += count
-            save()
-            return false
-        }
-        self.bytes += bytes
-        events += count
-        save()
-        return true
-    }
-
-    /// Whether `sessionId` has uploaded any replay.
-    func hasUploaded(_ sessionId: String) -> Bool {
-        switchTo(sessionId)
-        return events > 0
-    }
-
-    func snapshot(_ sessionId: String?) -> [String: Int] {
-        switchTo(sessionId)
-        return [
-            "traceway.collection.bytes": bytes,
-            "traceway.collection.events": events,
-            "traceway.collection.dropped": dropped,
-            "traceway.collection.max_bytes": maxBytes,
-            "traceway.collection.max_events": maxEvents,
-        ]
-    }
-
-    private func switchTo(_ sessionId: String?) {
-        if loaded, sessionId == self.sessionId { return }
-        loaded = true
-        self.sessionId = sessionId
-        bytes = 0
-        events = 0
-        dropped = 0
-        if let sessionId = sessionId, let saved = store?.get("budget")?.object,
-           saved["sessionId"]?.string == sessionId {
-            bytes = max(0, saved["bytes"]?.int ?? 0)
-            events = max(0, saved["events"]?.int ?? 0)
-            dropped = max(0, saved["dropped"]?.int ?? 0)
-        }
-    }
-
-    private func save() {
-        guard let sessionId = sessionId else { return }
-        store?.set("budget", [
-            "sessionId": .string(sessionId),
-            "bytes": JSON(bytes),
-            "events": JSON(events),
-            "dropped": JSON(dropped),
-        ])
+    private func failed(_ count: Int) {
+        _failedSegments += count
+        onFailure?()
     }
 }

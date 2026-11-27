@@ -23,6 +23,10 @@ private let maxGlobalAttributes = 64
 /// A rule may answer the event of another rule's `emit` action this many
 /// deep; a rule that emits what it matches would otherwise never return.
 private let maxEmitDepth = 4
+/// The first health report waits this long; each next one twice as long, up
+/// to `maxHealthDelayMs`, as the browser SDK does.
+private let healthDelayMs = 1000
+private let maxHealthDelayMs = 300_000
 
 /// The Traceway SDK. Start it with `Traceway.start`; `TracewayClient.shared`
 /// is the running instance.
@@ -101,6 +105,13 @@ public final class TracewayClient {
     private var lastErrorKey: String?
     private var lastErrorMs: Int64 = 0
     private var suppressedErrors = 0
+    /// Errors suppressed in this run, reported on session and health events.
+    private var suppressedErrorsTotal = 0
+    private var healthTimer: DispatchWorkItem?
+    private var nextHealthDelayMs = healthDelayMs
+    private var healthReported = false
+    /// The images policy in effect when the current session started.
+    private var sessionImages: (id: String, policy: TracewayImagePolicy)?
     /// Sessions whose start (or resumption) was reported in this run: their
     /// end is reported too, and only theirs.
     private var reportedSessions: Set<String> = []
@@ -117,8 +128,10 @@ public final class TracewayClient {
     /// Clips flushed so far; an exception compares it before and after its
     /// triggers run.
     private var replayFlushes = 0
+    /// Where the app is, for the records that name the screen.
+    let screen = ScreenState()
     /// The path of the screen on top, as the last navigation reported it.
-    private(set) var currentScreen: String?
+    var currentScreen: String? { screen.name }
     /// Event types (`click`, `navigation`, ...) the triggers name.
     private var sequenceKinds: Set<String> = []
     private var screenObservedForSequences = false
@@ -176,7 +189,8 @@ public final class TracewayClient {
                 captureUserActions: options.captureUserActions,
                 // Standalone, nothing receives the session rows; the session
                 // id still correlates records and samples.
-                sessions: options.sessions && !standalone
+                sessions: options.sessions && !standalone,
+                replayImages: options.replayImages
             )
         )
         let settings = control.settings
@@ -235,6 +249,8 @@ public final class TracewayClient {
         store = StateStore(directory: stateDir, destination: routes.traceway?.key ?? bufferDestination)
         store.load()
         replay.budget.store = store
+        replay.onBudgetDrop = { [weak self] in self?.scheduleHealth() }
+        recordings.onFailure = { [weak self] in self?.onQueue { self?.scheduleHealth() } }
 
         if let saved = store.get("instanceUid")?.string, let uid = Ids.uuidBytes(saved) {
             instanceUid = uid
@@ -560,7 +576,8 @@ public final class TracewayClient {
         onQueueSync { sessions?.currentId }
     }
 
-    /// Captures an error with the stack of the caller.
+    /// Reports an error as an issue, with the stack of the caller and the
+    /// screen it happened on.
     @inline(never)
     public func captureException(_ error: Error, attributes: [String: String] = [:]) {
         let stack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
@@ -568,7 +585,11 @@ public final class TracewayClient {
     }
 
     func captureException(_ error: Error, callStack: [UInt], attributes: [String: String] = [:]) {
+        let spanContext = OpenTelemetry.instance.contextProvider.activeSpan?.context
         let (type, message) = StackTraceFormatter.errorTypeAndMessage(error)
+        var attrs = screen.context(nowMs: Clock.nowMs())
+        for (key, value) in attributes { attrs[key] = .string(value) }
+        guard !ignored(type: type, message: message ?? "") else { return }
         let header = StackTraceFormatter.format(type: type, message: message, frames: [])
         let trace = CrashRecordStore.renderWireTrace(
             header: header,
@@ -576,34 +597,43 @@ public final class TracewayClient {
             images: BinaryImages.capture(),
             addresses: callStack
         )
-        var attrs: [String: AttributeValue] = [:]
-        for (key, value) in attributes { attrs[key] = .string(value) }
+        guard reports(TracewayCapturedError(
+            error: error, type: type, message: message ?? "", isMessage: false,
+            attributes: TracewayClient.strings(attrs), stackTrace: trace
+        )) else { return }
         attrs["exception.type"] = .string(type)
         if let message = message { attrs["exception.message"] = .string(message) }
         attrs["exception.stacktrace"] = .string(trace)
         attrs[Attr.exceptionId] = .string(Ids.uuidv4())
         let now = Date()
-        onQueue { self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: now) }
+        onQueue {
+            self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: now, spanContext: spanContext)
+        }
     }
 
     #if canImport(ObjectiveC)
     /// An uncaught NSException, on the crashing thread: recorded and written
     /// to disk before this returns, then sent for up to `timeout` seconds.
     func captureFatalException(_ exception: NSException, timeout: TimeInterval = 2) {
-        let header = StackTraceFormatter.format(type: exception.name.rawValue, message: exception.reason, frames: [])
+        let type = exception.name.rawValue
+        var attrs = screen.context(nowMs: Clock.nowMs())
+        guard !ignored(type: type, message: exception.reason ?? "") else { return }
+        let header = StackTraceFormatter.format(type: type, message: exception.reason, frames: [])
         let trace = CrashRecordStore.renderWireTrace(
             header: header,
             arch: BinaryImages.currentArch(),
             images: BinaryImages.capture(),
             addresses: exception.callStackReturnAddresses.map { UInt(truncating: $0) }
         )
-        var attrs: [String: AttributeValue] = [
-            "exception.type": .string(exception.name.rawValue),
-            "exception.stacktrace": .string(trace),
-            "exception.escaped": .bool(true),
-            "traceway.crash": .bool(true),
-            Attr.exceptionId: .string(Ids.uuidv4()),
-        ]
+        guard reports(TracewayCapturedError(
+            error: nil, type: type, message: exception.reason ?? "", isMessage: false,
+            attributes: TracewayClient.strings(attrs), stackTrace: trace
+        )) else { return }
+        attrs["exception.type"] = .string(type)
+        attrs["exception.stacktrace"] = .string(trace)
+        attrs["exception.escaped"] = .bool(true)
+        attrs["traceway.crash"] = .bool(true)
+        attrs[Attr.exceptionId] = .string(Ids.uuidv4())
         if let reason = exception.reason { attrs["exception.message"] = .string(reason) }
         let now = Date()
         onQueueSync {
@@ -614,29 +644,66 @@ public final class TracewayClient {
     }
     #endif
 
+    /// Reports a message as an issue, with the screen it was sent from.
     public func captureMessage(_ message: String, attributes: [String: String] = [:]) {
-        var attrs: [String: AttributeValue] = [Attr.exceptionId: .string(Ids.uuidv4())]
+        let spanContext = OpenTelemetry.instance.contextProvider.activeSpan?.context
+        var attrs = screen.context(nowMs: Clock.nowMs())
         for (key, value) in attributes { attrs[key] = .string(value) }
+        guard !ignored(type: nil, message: message) else { return }
+        guard reports(TracewayCapturedError(
+            error: nil, type: nil, message: message, isMessage: true,
+            attributes: TracewayClient.strings(attrs), stackTrace: nil
+        )) else { return }
+        attrs[Attr.exceptionId] = .string(Ids.uuidv4())
         let now = Date()
-        onQueue { self.emit(eventName: Events.message, severity: .info, body: message, attributes: attrs, time: now) }
+        onQueue {
+            self.emit(eventName: Events.message, severity: .info, body: message, attributes: attrs, time: now,
+                      spanContext: spanContext)
+        }
     }
 
-    /// A line for the session timeline (signal `console`).
-    public func log(_ message: String, severity: TracewayLogSeverity = .info) {
+    /// Whether `ignoreErrors` (or the default list) matches the issue's
+    /// first line.
+    private func ignored(type: String?, message: String) -> Bool {
+        let line = ignoreLine(type: type, message: message)
+        return (options.ignoreErrors ?? TracewayOptions.defaultIgnoreErrors).contains { $0.matches(line) }
+    }
+
+    /// Whether `beforeCapture` lets the issue through. One that throws
+    /// keeps it: a bug in the callback must not hide the app's errors.
+    private func reports(_ captured: TracewayCapturedError) -> Bool {
+        guard let before = options.beforeCapture else { return true }
+        do {
+            return try before(captured)
+        } catch {
+            Log.warn("beforeCapture threw, the record is kept: \(error)")
+            return true
+        }
+    }
+
+    private static func strings(_ attributes: [String: AttributeValue]) -> [String: String] {
+        var out: [String: String] = [:]
+        for (key, value) in attributes { out[key] = value.description }
+        return out
+    }
+
+    /// A line for the session timeline (signal `console`) at `level`, with
+    /// `log.source: api` and the given attributes.
+    public func log(_ message: String, level: TracewayLogLevel = .info, attributes: [String: String] = [:]) {
+        let spanContext = OpenTelemetry.instance.contextProvider.activeSpan?.context
+        var attrs: [String: AttributeValue] = [:]
+        for (key, value) in attributes { attrs[key] = .string(value) }
+        attrs["log.source"] = .string("api")
         let now = Date()
-        let level: Severity
-        switch severity {
-        case .trace: level = .trace
-        case .debug: level = .debug
-        case .info: level = .info
-        case .warn: level = .warn
-        case .error: level = .error
-        case .fatal: level = .fatal
-        }
         onQueue {
-            self.emit(eventName: Events.console, severity: level, body: message,
-                      attributes: ["log.severity": .string(severity.rawValue)], time: now)
+            self.emit(eventName: nil, severity: level.severity, body: message, attributes: attrs, time: now,
+                      spanContext: spanContext)
         }
+    }
+
+    @available(*, deprecated, renamed: "log(_:level:attributes:)")
+    public func log(_ message: String, severity: TracewayLogLevel) {
+        log(message, level: severity)
     }
 
     /// Records a custom breadcrumb, shown on the session timeline.
@@ -724,12 +791,11 @@ public final class TracewayClient {
     }
 
     func recordNavigation(to path: String, action: String, from: String?, time: Date) {
+        // The screen changes now, on the caller's thread: an issue captured
+        // right after names the screen it happened on.
+        let shown = screen.navigated(to: path, atMs: Clock.ms(time))
         onQueue {
             self.sessions?.markActivity()
-            if !path.isEmpty {
-                self.currentScreen = path
-                self.interaction.setScreen(path)
-            }
             var attrs: [String: AttributeValue] = [
                 "url.full": .string(path),
                 "navigation.action": .string(action),
@@ -738,9 +804,33 @@ public final class TracewayClient {
                 "navigation.to": .string(path),
             ]
             if let from = from { attrs["navigation.from"] = .string(from) }
-            if !path.isEmpty { attrs["app.screen.name"] = .string(path) }
+            if let name = shown.name { attrs["app.screen.name"] = .string(name) }
+            if let route = shown.route { attrs["app.screen.route"] = .string(route) }
             self.emit(eventName: Events.navigation, severity: .info, attributes: attrs, time: time)
         }
+    }
+
+    /// Names the current screen by its route template (`/orders/{id}`):
+    /// issues and navigation records carry it as `app.screen.route` until
+    /// the app reaches another screen. Nil removes it.
+    public func setRoute(_ template: String?) {
+        screen.setRoute(template)
+    }
+
+    /// Starts an interaction named `name`: a span (`traceway.interaction`)
+    /// that requests made in its `run` are children of. One started inside
+    /// another's `run` is its child.
+    public func startInteraction(_ name: String, attributes: [String: Any] = [:]) -> TracewayInteraction {
+        // The tracer is set before the client is shared and never changes.
+        guard !name.isEmpty, !isShutdown, let tracer = tracer else {
+            return TracewayInteraction(span: nil, client: self)
+        }
+        let builder = tracer.spanBuilder(spanName: name).setSpanKind(spanKind: .internal)
+        builder.setAttribute(key: "traceway.interaction", value: true)
+        for (key, value) in attributes where !key.isEmpty {
+            builder.setAttribute(key: key, value: TracewayClient.attribute(value))
+        }
+        return TracewayInteraction(span: builder.startSpan(), client: self)
     }
 
     /// Asks the server for collection settings now instead of at the next poll.
@@ -833,7 +923,8 @@ public final class TracewayClient {
                 self.sessions?.stop()
                 self.opamp?.stop()
                 self.replay.stop()
-                for timer in [self.refreshTimer, self.overrideTimer, self.progressTimer, self.flushTimer] {
+                for timer in [self.refreshTimer, self.overrideTimer, self.progressTimer, self.flushTimer,
+                              self.healthTimer] {
                     timer?.cancel()
                 }
                 self.store.flush()
@@ -899,17 +990,21 @@ public final class TracewayClient {
 
     // MARK: - Emission
 
+    /// Emits a log record. `spanContext` is the span active where the
+    /// record was made (an interaction's), read on that thread.
     func emit(
         eventName: String?,
         severity: Severity?,
         body: String? = nil,
         attributes: [String: AttributeValue] = [:],
-        time: Date? = nil
+        time: Date? = nil,
+        spanContext: SpanContext? = nil
     ) {
         guard !isShutdown, let logger = logger else { return }
         emitDepth += 1
         defer { emitDepth -= 1 }
         let builder = logger.logRecordBuilder()
+        if let spanContext = spanContext { _ = builder.setSpanContext(spanContext) }
         if let eventName = eventName { _ = builder.setEventName(eventName) }
         if let severity = severity { _ = builder.setSeverity(severity) }
         if let body = body { _ = builder.setBody(.string(body)) }
@@ -924,22 +1019,58 @@ public final class TracewayClient {
              time: Clock.date(ms: endedAtMs))
     }
 
-    /// What every session event carries: the session and how much of its
-    /// diagnostic budget replay used, shown on the session page.
+    /// What every session event carries: the session, how much of its
+    /// diagnostic budget replay used, what was dropped, and the images
+    /// policy it started with, shown on the session page.
     private func sessionAttributes(_ session: SessionInfo) -> [String: AttributeValue] {
         var attrs: [String: AttributeValue] = [
             Attr.sessionId: .string(session.id),
             Attr.sessionStartedAt: .int(Int(session.startedAtMs)),
             "traceway.replay.failed_segments": .int(recordings.failedSegments),
             "traceway.context.evicted": .int(buffer.evictedCount),
+            "traceway.error.suppressed_total": .int(suppressedErrorsTotal),
         ]
+        let images = sessionImages?.id == session.id ? sessionImages!.policy : control.settings.replayImages
+        attrs["traceway.replay.images"] = .string(images.rawValue)
         for (key, value) in replay.budget.snapshot(session.id) { attrs[key] = .int(value) }
         return attrs
+    }
+
+    /// Tells the server that the SDK dropped data (the session's budget ran
+    /// out, errors were suppressed, replay segments failed), as the browser
+    /// SDK does: at most once per period, which starts at a second and
+    /// doubles up to five minutes. The first report of a session also
+    /// updates the session's row.
+    private func scheduleHealth() {
+        guard healthTimer == nil, !isShutdown else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.healthTimer = nil
+            let session = self.sessions?.current
+            var attrs: [String: AttributeValue] = [
+                "traceway.error.suppressed_total": .int(self.suppressedErrorsTotal),
+                "traceway.context.evicted": .int(self.buffer.evictedCount),
+                "traceway.replay.failed_segments": .int(self.recordings.failedSegments),
+            ]
+            for (key, value) in self.replay.budget.snapshot(session?.id) { attrs[key] = .int(value) }
+            self.emit(eventName: Events.collectionHealth, severity: .info, attributes: attrs)
+            if let session = session, !self.healthReported, self.reportedSessions.contains(session.id) {
+                self.emit(eventName: Events.sessionUpdate, severity: .info, attributes: self.sessionAttributes(session))
+            }
+            self.healthReported = true
+            self.nextHealthDelayMs = min(self.nextHealthDelayMs * 2, maxHealthDelayMs)
+        }
+        healthTimer = work
+        queue.asyncAfter(deadline: .now() + .milliseconds(nextHealthDelayMs), execute: work)
     }
 
     private func onSessionStart(_ session: SessionInfo, resumed: Bool) {
         // What an earlier session left behind is not this one's context.
         if !resumed { buffer.clear() }
+        replay.budget.use(session.id)
+        sessionImages = (session.id, control.settings.replayImages)
+        nextHealthDelayMs = healthDelayMs
+        healthReported = false
         triggers.resetSession()
         if let limits = store.get("triggerLimits")?.object, limits["sessionId"]?.string == session.id {
             triggers.restoreSessionLimits(limits["limits"])
@@ -974,7 +1105,7 @@ public final class TracewayClient {
             metadata[Attr.sessionId] = session.id
             metadata[Attr.sessionStartedAt] = String(session.startedAtMs)
         }
-        if let screen = currentScreen { metadata["app.screen.name"] = screen }
+        if let name = screen.name { metadata["app.screen.name"] = name }
         CrashReporter.updateMetadata(metadata, appVersion: serviceVersion)
     }
 
@@ -1008,7 +1139,7 @@ public final class TracewayClient {
                 if let id = target.id { attrs["app.widget.id"] = .string(id) }
                 if let text = target.text { attrs["app.widget.text"] = .string(text) }
                 if let label = target.label { attrs["app.widget.label"] = .string(label) }
-                if let screen = self.currentScreen { attrs["app.screen.name"] = .string(screen) }
+                if let name = self.screen.name { attrs["app.screen.name"] = .string(name) }
                 self.emit(eventName: Events.click, severity: .info, attributes: attrs)
             }
             if self.sequenceKinds.contains("click") {
@@ -1195,6 +1326,7 @@ public final class TracewayClient {
         let settings = control.settings
         if let recorder = screenRecorder as? WireframeRecorder {
             recorder.maskAllInputs = settings.replayMaskAllInputs
+            recorder.imagePolicy = settings.replayImages
         }
         replay.apply(
             control.replayMode,
@@ -1478,7 +1610,11 @@ extension TracewayClient: RouterHooks {
         }
         if signal == "errors" {
             let key = "\(existing["exception.type"]?.description ?? ""):\(existing["exception.message"]?.description ?? "")"
-            guard admitError(key) else { return false }
+            guard admitError(key) else {
+                suppressedErrorsTotal += 1
+                scheduleHealth()
+                return false
+            }
             if suppressedErrors > 0 {
                 record.setAttribute(key: "traceway.error.suppressed_count", value: .int(suppressedErrors))
                 suppressedErrors = 0
@@ -1573,7 +1709,6 @@ final class InteractionState {
     private let lock = NSLock()
     private var _recordTaps = false
     private var _clickSelectors: [String] = []
-    private var _screen: String?
 
     func update(recordTaps: Bool, clickSelectors: [String]) {
         lock.lock()
@@ -1582,19 +1717,21 @@ final class InteractionState {
         lock.unlock()
     }
 
-    func setScreen(_ screen: String) {
-        lock.lock()
-        _screen = screen
-        lock.unlock()
-    }
-
     var snapshot: (recordTaps: Bool, clickSelectors: [String]) {
         lock.lock(); defer { lock.unlock() }
         return (_recordTaps, _clickSelectors)
     }
+}
 
-    var screen: String? {
-        lock.lock(); defer { lock.unlock() }
-        return _screen
+extension TracewayLogLevel {
+    var severity: Severity {
+        switch self {
+        case .trace: return .trace
+        case .debug: return .debug
+        case .info: return .info
+        case .warn: return .warn
+        case .error: return .error
+        case .fatal: return .fatal
+        }
     }
 }

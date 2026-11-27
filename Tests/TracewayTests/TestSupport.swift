@@ -78,12 +78,12 @@ final class FakeReplaySource: ReplaySource {
 
     func hasFrames(sinceMs: Int64?, untilMs: Int64?) -> Bool { isRunning }
 
-    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> RecordingClip? {
+    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload? {
         lock.lock()
         clips.append(clipId)
         lock.unlock()
         let start = sinceMs ?? Clock.nowMs()
-        return RecordingClip(
+        return SessionRecordingPayload(
             clipId: clipId,
             events: [["type": 4, "data": ["href": "/", "width": 390, "height": 844], "timestamp": JSON(start)]],
             startedAtMs: start,

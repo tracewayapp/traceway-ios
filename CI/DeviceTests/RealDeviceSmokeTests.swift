@@ -30,8 +30,8 @@ final class RealDeviceSmokeTests: XCTestCase {
 
         struct DeviceSmokeError: Error {}
         Traceway.log("device smoke breadcrumb")
-        Traceway.capture(message: "device smoke message")
-        Traceway.capture(DeviceSmokeError())
+        Traceway.captureMessage("device smoke message")
+        Traceway.captureException(DeviceSmokeError())
         Traceway.flush(timeout: 8)
 
         XCTAssertNotNil(TracewayClient.shared)

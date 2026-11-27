@@ -32,6 +32,8 @@ final class ReplayController {
     private var segmentTimer: DispatchSourceTimer?
     /// The end of the last frames uploaded as part of the current session.
     private var sessionCursor: Int64?
+    /// Called on the client's queue when the budget turns a segment away.
+    var onBudgetDrop: (() -> Void)?
 
     init(
         transport: RecordingsTransport,
@@ -194,6 +196,7 @@ final class ReplayController {
                     approxBytes: clip.approxBytes
                 )
                 guard self.budget.admit(budgetSession, bytes: 256 + segment.bytes, events: clip.events.count) else {
+                    self.onBudgetDrop?()
                     return
                 }
                 self.transport.send([segment])

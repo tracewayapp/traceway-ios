@@ -2,10 +2,32 @@
 import UIKit
 import QuartzCore
 
-/// Turns what the app's windows show into a wireframe DOM, by walking the
-/// view hierarchy and reading each view's and layer's geometry and paint
-/// properties. Main thread only. Nothing is drawn, laid out or read as
-/// pixels: the walk only reads properties UIKit already holds.
+/// Turns what the app's windows show into a wireframe DOM. The pipeline, in
+/// the words every Traceway SDK uses for it:
+///
+/// roots → walk → convert → VNodes (stable ids, shared unchanged subtrees)
+/// → CSS → diff → rrweb events
+///
+/// - **roots**: `WireframeRoots` picks the visible windows, back to front.
+/// - **walk**: `visit` goes through each window's views and the layers no
+///   view owns, in paint order, within a node budget and a depth limit.
+/// - **convert**: each kind of view becomes nodes in its converter (`text`,
+///   `field`, `image`, `toggle`, `slider`, `progress`, `segmented`,
+///   `nativePlaceholder`, `customDrawing`, `keyboard`, `group`, `scroll`;
+///   iOS's own `stepper`, `pageControl`, `visualEffect`, `glass`; SwiftUI's
+///   in `WireframeSwiftUICapture.swift`).
+/// - **VNodes**: a view keeps its node id from frame to frame, and an
+///   unchanged node is the previous frame's very object.
+/// - **CSS**: geometry and paint are inline styles (`WireframeCSS`); the
+///   shared `wireframeCss` sets the classes; icon glyphs and pictures
+///   (`WireframeGlyphs`, `WireframeImages`) are style nodes of their own.
+/// - **diff** and **rrweb events**: `WireframeRecorder` keeps the frames and
+///   turns them into a full snapshot and `diffScreens` mutations.
+///
+/// Main thread only. Nothing is laid out or read off the screen: the walk
+/// reads properties UIKit already holds. The only pixels are the bitmaps of
+/// symbols (their shape) and, when the images policy allows it, of the
+/// pictures image views show; never a screenshot of the window.
 ///
 /// Only views and layers that paint something, clip or fade get a DOM node;
 /// layout-only views in between are folded into the geometry of their
@@ -32,7 +54,20 @@ final class WireframeCapture {
     /// How long a glyph's rule stays on the page after its icon left the
     /// screen, so an icon that comes back does not add it again.
     static let glyphLingerMs: Int64 = 10_000
-    private var shownGlyphs = Set<String>()
+    var shownGlyphs = Set<String>()
+
+    /// When the pictures of image views are inlined (`replay.images`); set
+    /// by the recorder from the settings before each capture. Off keeps
+    /// every image a placeholder.
+    var imagePolicy: TracewayImagePolicy = .off
+    /// Whether the device is on an unmetered connection; asked at each
+    /// capture under the `wifi` policy.
+    var isUnmetered: () -> Bool = { NetworkState.shared.isUnmetered }
+    /// The pictures shown lately and their rules.
+    let images = WireframeImages()
+    /// Whether this capture may show pictures: decided once per frame, so
+    /// a picture captured on Wi-Fi stays in that frame.
+    private var picturesAllowed = false
 
     /// The window whose coordinate space the frames are in.
     private(set) weak var screenWindow: UIWindow?
@@ -47,9 +82,9 @@ final class WireframeCapture {
     private var budget = 0
     private var blankRects: [WireframeRect] = []
     private var blurRects: [WireframeRect] = []
-    private var hostTexts: [[SwiftUIText]] = []
-    private var textCache: [ObjectIdentifier: CachedTexts] = [:]
-    private var nowMs: Int64 = 0
+    var hostTexts: [[SwiftUIText]] = []
+    var textCache: [ObjectIdentifier: CachedTexts] = [:]
+    private(set) var nowMs: Int64 = 0
     /// How deep the walk is: views and layers below this many levels are
     /// left out, so a very deep tree cannot overflow the main thread's stack.
     private var depth = 0
@@ -67,16 +102,13 @@ final class WireframeCapture {
     /// The wireframe of the app's visible windows, or nil when there is no
     /// window to show.
     func captureScreen(timestampMs: Int64, href: String?, keyboardFrame: CGRect?) -> WireframeFrame? {
-        capture(windows: WireframeCapture.visibleWindows(), timestampMs: timestampMs, href: href, keyboardFrame: keyboardFrame)
+        capture(windows: WireframeRoots.visibleWindows(), timestampMs: timestampMs, href: href, keyboardFrame: keyboardFrame)
     }
 
     /// The wireframe of `windows`, back to front, in the coordinate space of
     /// the key one (or the first normal one).
     func capture(windows: [UIWindow], timestampMs: Int64, href: String?, keyboardFrame: CGRect?) -> WireframeFrame? {
-        guard let main = windows.first(where: { $0.isKeyWindow })
-            ?? windows.first(where: { $0.windowLevel == .normal })
-            ?? windows.first
-        else { return nil }
+        guard let main = WireframeRoots.screenWindow(of: windows) else { return nil }
         let size = main.bounds.size
         guard size.width > 0, size.height > 0 else { return nil }
         screenWindow = main
@@ -89,6 +121,7 @@ final class WireframeCapture {
         blurRects = []
         hostTexts = []
         shownGlyphs = []
+        picturesAllowed = imagePolicy.allowsCapture(unmetered: imagePolicy == .wifi && isUnmetered())
 
         let width = Double(size.width), height = Double(size.height)
         let screenRect = WireframeRect(x: 0, y: 0, width: width, height: height)
@@ -104,15 +137,10 @@ final class WireframeCapture {
         }
         if let keyboard = keyboardFrame {
             let frame = main.convert(keyboard, from: main.screen.coordinateSpace)
-            children.append(keyboardNode(frame, dark: main.traitCollection.userInterfaceStyle == .dark))
+            children.append(self.keyboard(frame, dark: main.traitCollection.userInterfaceStyle == .dark))
         }
-        children.insert(contentsOf: glyphStyles(), at: 0)
-        let screen = element(
-            screenNodeId,
-            "width:\(WireframeCSS.px(width));height:\(WireframeCSS.px(height))",
-            children,
-            extra: ["id": "tw"]
-        )
+        children.insert(contentsOf: (glyphStyles() + pictureStyles()).sorted { $0.id < $1.id }, at: 0)
+        let screen = element(screenNodeId, screenNodeStyle(width: width, height: height), children, extra: ["id": "tw"])
         previous = current
         current = [:]
         // Hosting views that went away take their cached text with them.
@@ -120,34 +148,14 @@ final class WireframeCapture {
         return WireframeFrame(screen: screen, width: width, height: height, timestampMs: timestampMs, href: href)
     }
 
-    /// The windows of the scene in front, back to front.
-    static func visibleWindows() -> [UIWindow] {
-        var windows: [UIWindow] = []
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        if let scene = scenes.first(where: { $0.activationState == .foregroundActive })
-            ?? scenes.first(where: { $0.activationState == .foregroundInactive }) {
-            windows = scene.windows
-        }
-        if windows.isEmpty, let legacy = UIApplication.shared.value(forKey: "windows") as? [UIWindow] {
-            windows = legacy
-        }
-        let shown = windows.enumerated().filter { _, window in
-            !window.isHidden && window.alpha > 0.01 && window.bounds.width > 0
-                && !ClassInfo.of(window).isKeyboardWindow
-        }
-        return shown.sorted { a, b in
-            (a.element.windowLevel.rawValue, a.offset) < (b.element.windowLevel.rawValue, b.offset)
-        }.map { $0.element }
-    }
-
     /// The keyboard as a neutral box: its keys are never recorded.
-    private func keyboardNode(_ frame: CGRect, dark: Bool) -> VNode {
+    private func keyboard(_ frame: CGRect, dark: Bool) -> VNode {
         let colors = dark ? "background-color:#2c2c2e;color:#8e8e93;" : "background-color:#d1d3d9;color:#6d6d72;"
         let place = WireframeCSS.rect(
             left: Double(frame.minX), top: Double(frame.minY), width: Double(frame.width), height: Double(frame.height)
         )
         let style = place + colors + "display:flex;align-items:center;justify-content:center;font-size:13px;"
-        return element(keyboardNodeId, style, [text(keyboardLabelTextId, "Keyboard")])
+        return element(keyboardNodeId, style, [textNode(keyboardLabelTextId, "Keyboard")])
     }
 
     /// A style node for each glyph shown lately, first on the screen (a
@@ -172,6 +180,27 @@ final class WireframeCapture {
         return styles.sorted { $0.id < $1.id }
     }
 
+    /// A style node for each picture shown lately, while pictures are
+    /// allowed: under a policy that does not allow them, nothing of a
+    /// picture is in the frame.
+    private func pictureStyles() -> [VNode] {
+        guard picturesAllowed else { return [] }
+        var styles: [VNode] = []
+        for picture in images.all {
+            guard let css = picture.css, nowMs - picture.lastShownMs <= WireframeImages.lingerMs else { continue }
+            let styleId: Int
+            if let existing = picture.styleId {
+                styleId = existing
+            } else {
+                styleId = WireframeCapture.nextId
+                WireframeCapture.nextId += 1
+                picture.styleId = styleId
+            }
+            styles.append(intern(VNode(element: styleId, tag: "style", attributes: ["_cssText": css], children: [])))
+        }
+        return styles
+    }
+
     // MARK: - Ids and interning
 
     private static var idKey: UInt8 = 0
@@ -182,7 +211,7 @@ final class WireframeCapture {
 
     /// The id of the node playing `role` for `object`; the same in every
     /// frame while the object lives.
-    private func id(_ object: AnyObject, _ role: Int = 0) -> Int {
+    func id(_ object: AnyObject, _ role: Int = 0) -> Int {
         let box: IdBox
         if let existing = objc_getAssociatedObject(object, &WireframeCapture.idKey) as? IdBox {
             box = existing
@@ -208,7 +237,7 @@ final class WireframeCapture {
         return kept
     }
 
-    private func element(
+    func element(
         _ id: Int, _ style: String, _ children: [VNode],
         cls: String? = nil, tag: String = "div", extra: [String: String]? = nil
     ) -> VNode {
@@ -220,7 +249,7 @@ final class WireframeCapture {
         return intern(VNode(element: id, tag: tag, attributes: attributes, children: children))
     }
 
-    private func text(_ id: Int, _ value: String) -> VNode {
+    func textNode(_ id: Int, _ value: String) -> VNode {
         intern(VNode(text: id, text: value))
     }
 
@@ -228,7 +257,7 @@ final class WireframeCapture {
 
     /// Where the walk is: the DOM parent being filled and the coordinates of
     /// both it and the layer above.
-    private struct Scope {
+    struct Scope {
         /// Maps the DOM parent's coordinates (its top left is 0, 0) to the
         /// screen.
         var origin: WireframeAffine
@@ -283,7 +312,7 @@ final class WireframeCapture {
     }
 
     /// Where a layer is on screen.
-    private struct Placed {
+    struct Placed {
         /// The layer's bounds coordinates to the screen.
         var t: WireframeAffine
         /// The node's coordinates (0, 0 at the bounds' origin) to the screen.
@@ -332,7 +361,7 @@ final class WireframeCapture {
         return m.translated(-ax, -ay)
     }
 
-    private func geometry(_ s: Scope, _ p: Placed) -> String {
+    func geometry(_ s: Scope, _ p: Placed) -> String {
         wireframeGeometry(origin: s.origin, transform: p.node, width: p.width, height: p.height)
     }
 
@@ -382,10 +411,7 @@ final class WireframeCapture {
 
         switch info.kind {
         case .native(let label):
-            out.append(element(
-                id(view), geometry(s, p) + box(layer, p, clips: true).radius,
-                [text(id(view, 1), label)], cls: "pv"
-            ))
+            out.append(nativePlaceholder(view, label, geometry(s, p) + box(layer, p, clips: true).radius))
             return
         case .swiftUIDrawing:
             swiftUIDrawing(view, layer, p, s, &out)
@@ -395,11 +421,11 @@ final class WireframeCapture {
         }
 
         if let label = view as? UILabel {
-            self.label(label, layer, p, s, &out)
-        } else if let field = view as? UITextField {
-            textField(field, layer, p, s, &out)
+            text(label, layer, p, s, &out)
+        } else if let textField = view as? UITextField {
+            field(textField, layer, p, s, &out)
         } else if let textView = view as? UITextView {
-            self.textView(textView, layer, p, s, &out)
+            field(textView, layer, p, s, &out)
         } else if let imageView = view as? UIImageView {
             image(imageView, layer, p, s, &out)
         } else if let toggle = view as? UISwitch {
@@ -409,7 +435,7 @@ final class WireframeCapture {
         } else if let progress = view as? UIProgressView {
             self.progress(progress, layer, p, s, &out)
         } else if let spinner = view as? UIActivityIndicatorView {
-            activity(spinner, layer, p, s, &out)
+            self.progress(spinner, layer, p, s, &out)
         } else if let pages = view as? UIPageControl {
             pageControl(pages, layer, p, s, &out)
         } else if let segmented = view as? UISegmentedControl {
@@ -421,19 +447,20 @@ final class WireframeCapture {
         } else if info.kind == .swiftUIHost && WireframeCapture.readsSwiftUIText {
             let depth = hostTexts.count
             hostTexts.append(swiftUITexts(of: view))
-            container(view, layer, p, s, info, &out) { [unowned self] children, scope in
+            group(view, layer, p, s, info, &out) { [unowned self] children, scope in
                 if let texts = self.hostTexts.last {
                     self.remainingSwiftUITexts(texts, view, scope, &children)
                 }
             }
             if hostTexts.count > depth { hostTexts.removeSubrange(depth...) }
         } else {
-            container(view, layer, p, s, info, &out)
+            group(view, layer, p, s, info, &out)
         }
     }
 
-    /// A view that is only its box and its subviews.
-    private func container(
+    /// A view that is only its box and its subviews: a node when it paints,
+    /// clips, fades or scrolls, else folded into its children's geometry.
+    func group(
         _ view: UIView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ info: ClassInfo, _ out: inout [VNode],
         trailing: ((inout [VNode], Scope) -> Void)? = nil
     ) {
@@ -454,10 +481,10 @@ final class WireframeCapture {
         // paints it under its subviews.
         let gradient = (layer as? CAGradientLayer).map { gradientCss($0, p) } ?? ""
         let shape = (layer as? CAShapeLayer).flatMap { shapeNode($0, view.layer, p) }
-        let group = paint.paints || clips || opacity < 0.999 || view is UIWindow || custom || scrolls
+        let needsNode = paint.paints || clips || opacity < 0.999 || view is UIWindow || custom || scrolls
             || !gradient.isEmpty || shape != nil
         var inner = s.entering(p, view.layer)
-        if !group {
+        if !needsNode {
             visitSublayers(of: view, inner, &out)
             trailing?(&out, inner)
             return
@@ -470,29 +497,45 @@ final class WireframeCapture {
         }
         inner.origin = p.node
         var children: [VNode] = []
-        if custom {
-            // Drawn by the app's own draw(_:): its pixels are not read.
-            children.append(element(id(view, 1), "width:100%;height:100%;", [], cls: "cp"))
-        }
+        if custom { children.append(customDrawing(view)) }
         if let shape = shape { children.append(shape) }
         if scrolls || p.boundsX != 0 || p.boundsY != 0 {
-            // The content sits in a node of its own that moves as it
-            // scrolls: one attribute changes per frame, not every child's.
-            var content: [VNode] = []
-            var contentScope = inner
-            contentScope.origin = p.t
-            visitSublayers(of: view, contentScope, &content)
-            trailing?(&content, contentScope)
-            children.append(element(
-                id(view, 2),
-                "left:\(WireframeCSS.px(-p.boundsX));top:\(WireframeCSS.px(-p.boundsY));",
-                content
-            ))
+            children.append(scroll(view, p, inner, trailing: trailing))
         } else {
             visitSublayers(of: view, inner, &children)
             trailing?(&children, inner)
         }
         out.append(element(id(view), style, children))
+    }
+
+    /// The content of a view whose bounds are shifted (a scroll view): a
+    /// node of its own that moves as it scrolls, inside the view's clip, so
+    /// one attribute changes per frame, not every child's.
+    private func scroll(
+        _ view: UIView, _ p: Placed, _ inner: Scope, trailing: ((inout [VNode], Scope) -> Void)?
+    ) -> VNode {
+        var content: [VNode] = []
+        var contentScope = inner
+        contentScope.origin = p.t
+        visitSublayers(of: view, contentScope, &content)
+        trailing?(&content, contentScope)
+        return element(
+            id(view, 2),
+            "left:\(WireframeCSS.px(-p.boundsX));top:\(WireframeCSS.px(-p.boundsY));",
+            content
+        )
+    }
+
+    /// A view the app draws in its own `draw(_:)`: a dashed outline, since
+    /// its pixels are not read.
+    private func customDrawing(_ view: UIView) -> VNode {
+        element(id(view, 1), "width:100%;height:100%;", [], cls: "cp")
+    }
+
+    /// A view or layer whose pixels the system draws (a web view, a map,
+    /// video, the camera, Metal): a labeled placeholder.
+    private func nativePlaceholder(_ owner: AnyObject, _ label: String, _ style: String) -> VNode {
+        element(id(owner), style, [textNode(id(owner, 1), label)], cls: "pv")
     }
 
     /// The subviews and other sublayers of `view`, in the order they paint.
@@ -617,10 +660,7 @@ final class WireframeCapture {
             return
         }
         if case .native(let label) = info.kind {
-            out.append(element(
-                id(model), geometry(scope, p) + box(layer, p, clips: true).radius,
-                [text(id(model, 1), label)], cls: "pv"
-            ))
+            out.append(nativePlaceholder(model, label, geometry(scope, p) + box(layer, p, clips: true).radius))
             return
         }
         if info.kind == .swiftUIText {
@@ -645,6 +685,10 @@ final class WireframeCapture {
                 // shape, in a neutral gray (its colors are not read).
                 cls = "ic " + glyph
                 extra = "color:#8e8e93;"
+            } else if let picture = layerPhoto(model, layer, p, scope) {
+                cls = "im " + picture.cls
+                extra = picture.placement
+                paint.paints = true
             } else {
                 cls = "im"
                 paint.paints = true
@@ -722,7 +766,7 @@ final class WireframeCapture {
         return out
     }
 
-    private func boxCss(_ s: Scope, _ p: Placed, _ layer: CALayer, _ view: UIView, extraShadows: [String] = []) -> (String, Bool) {
+    func boxCss(_ s: Scope, _ p: Placed, _ layer: CALayer, _ view: UIView, extraShadows: [String] = []) -> (String, Bool) {
         let clips = view.clipsToBounds || layer.masksToBounds
         let paint = box(layer, p, clips: clips)
         var style = geometry(s, p) + paint.css(adding: extraShadows)
@@ -761,17 +805,17 @@ final class WireframeCapture {
 
     // MARK: - Privacy
 
-    private enum Privacy { case show, mask, hide }
+    enum Privacy { case show, mask, hide }
 
     /// What may be recorded of text shown at `box`: a blank mask over it
     /// hides it, a blur mask or a masked subtree turns it into `*`.
-    private func privacy(_ box: WireframeRect, _ s: Scope) -> Privacy {
+    func privacy(_ box: WireframeRect, _ s: Scope) -> Privacy {
         if blankRects.contains(where: { $0.overlaps(box) }) { return .hide }
         if s.maskText || blurRects.contains(where: { $0.overlaps(box) }) { return .mask }
         return .show
     }
 
-    private func shown(_ value: String, _ box: WireframeRect, _ s: Scope) -> String? {
+    func shown(_ value: String, _ box: WireframeRect, _ s: Scope) -> String? {
         switch privacy(box, s) {
         case .show: return value
         case .mask: return WireframeCSS.mask(value)
@@ -855,7 +899,9 @@ final class WireframeCapture {
         }
     }
 
-    private func label(_ label: UILabel, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+    /// A label: its text with the label's font, color, alignment and line
+    /// breaking, and rich text as spans.
+    private func text(_ label: UILabel, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         var (baseStyle, paints) = boxCss(s, p, layer, label)
         // A label draws its background color into its own contents, not as
         // its layer's background.
@@ -919,7 +965,7 @@ final class WireframeCapture {
             if label.numberOfLines > 0 && !style.contains("overflow:hidden") { style += "overflow:hidden;" }
             cls = "t"
         }
-        out.append(element(id(label), style, content ?? [text(id(label, 1), shownText)], cls: cls))
+        out.append(element(id(label), style, content ?? [textNode(id(label, 1), shownText)], cls: cls))
     }
 
     /// The runs of `attributed` as spans when some differ from the font and
@@ -960,7 +1006,7 @@ final class WireframeCapture {
         guard styled else { return nil }
         var nodes: [VNode] = []
         for (i, part) in parts.enumerated() where !part.0.isEmpty {
-            nodes.append(element(id(owner, 10 + 2 * i), part.1, [text(id(owner, 11 + 2 * i), part.0)], tag: "span"))
+            nodes.append(element(id(owner, 10 + 2 * i), part.1, [textNode(id(owner, 11 + 2 * i), part.0)], tag: "span"))
         }
         return nodes
     }
@@ -982,7 +1028,9 @@ final class WireframeCapture {
         }
     }
 
-    private func textField(_ field: UITextField, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+    /// A text field: its border style, the placeholder or what is typed
+    /// (masked), and its side views.
+    private func field(_ field: UITextField, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         let traits = field.traitCollection
         let dark = traits.userInterfaceStyle == .dark
         let clips = field.clipsToBounds || layer.masksToBounds
@@ -1032,7 +1080,7 @@ final class WireframeCapture {
             var textStyle = place + WireframeCapture.fontCss(font, color: color)
             textStyle += "line-height:\(lineHeight);"
             if align != "left" { textStyle += "text-align:\(align);" }
-            children.append(element(id(field, 1), textStyle, [text(id(field, 2), visible)], cls: "t n k"))
+            children.append(element(id(field, 1), textStyle, [textNode(id(field, 2), visible)], cls: "t n k"))
         }
         var inner = s.entering(p, field.layer)
         inner.origin = p.node
@@ -1046,7 +1094,9 @@ final class WireframeCapture {
         out.append(element(id(field), style, children))
     }
 
-    private func textView(_ view: UITextView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+    /// A text view: its text within the container insets, masked when it
+    /// is editable.
+    private func field(_ view: UITextView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         var style = boxCss(s, p, layer, view).0
         if !style.contains("overflow:hidden") { style += "overflow:hidden;" }
         let traits = view.traitCollection
@@ -1074,7 +1124,7 @@ final class WireframeCapture {
                 let maskTyped = view.isEditable && maskAllInputs
                 let content = runs(view.attributedText, font: font, color: color, traits: traits, owner: view,
                                    masked: maskTyped || privacy(p.box, s) == .mask)
-                children.append(element(id(view, 1), textStyle, content ?? [text(id(view, 2), visible)], cls: "t"))
+                children.append(element(id(view, 1), textStyle, content ?? [textNode(id(view, 2), visible)], cls: "t"))
             }
         }
         out.append(element(id(view), style, children))
@@ -1117,10 +1167,56 @@ final class WireframeCapture {
             // A stretched background, such as a control's: its pixels are
             // not read, and a placeholder over the content would hide it.
             out.append(element(id(view), style, children))
+        } else if let picture = photo(shownImage, contentMode: view.contentMode, p, s) {
+            out.append(element(id(view), style + picture.placement, children, cls: "im " + picture.cls))
         } else {
-            // Pixels are never recorded: an image is a placeholder.
+            // The app's or the user's picture, while pictures are not
+            // allowed or not encoded yet: a placeholder.
             out.append(element(id(view), style, children, cls: "im"))
         }
+    }
+
+    /// The picture class and placement of a photo an image view shows, when
+    /// this capture may show pictures, no privacy mask covers it and its
+    /// picture is encoded; nil keeps the placeholder. Asking starts the
+    /// encoding of a picture seen for the first time.
+    private func photo(
+        _ image: UIImage, contentMode: UIView.ContentMode, _ p: Placed, _ s: Scope
+    ) -> (cls: String, placement: String)? {
+        guard picturesAllowed, !s.blockImages, privacy(p.box, s) == .show else { return nil }
+        let placement = WireframeGlyphs.placement(contentMode)
+        let natural = (width: Double(image.size.width), height: Double(image.size.height))
+        let drawn = placement.rect(image: natural, box: (p.width, p.height))
+        guard let picture = images.picture(image, displayed: CGSize(width: drawn.width, height: drawn.height), nowMs: nowMs),
+              picture.css != nil
+        else { return nil }
+        return (picture.cls, WireframeImageEncoding.placementCss(placement, image: natural, box: (p.width, p.height)))
+    }
+
+    /// The same for a photo a layer shows as its contents (SwiftUI's
+    /// `Image`, an `ImageLayer`), placed by its `contentsGravity`.
+    private func layerPhoto(_ model: CALayer, _ layer: CALayer, _ p: Placed, _ s: Scope) -> (cls: String, placement: String)? {
+        guard picturesAllowed, !s.blockImages, privacy(p.box, s) == .show, p.width > 0, p.height > 0,
+              let contents = layer.contents
+        else { return nil }
+        let ref = contents as AnyObject
+        guard CFGetTypeID(ref) == CGImage.typeID else { return nil }
+        let image = ref as! CGImage
+        let scale = max(Double(layer.contentsScale), 1)
+        let natural = (width: Double(image.width) / scale, height: Double(image.height) / scale)
+        let placement: ImagePlacement
+        switch layer.contentsGravity {
+        case .resizeAspect: placement = .aspectFit
+        case .resizeAspectFill: placement = .aspectFill
+        case .center: placement = .center
+        default: placement = .fill
+        }
+        let drawn = placement.rect(image: natural, box: (p.width, p.height))
+        guard let picture = images.picture(model, contents: image, displayed: CGSize(width: drawn.width, height: drawn.height),
+                                           nowMs: nowMs),
+              picture.css != nil
+        else { return nil }
+        return (picture.cls, WireframeImageEncoding.placementCss(placement, image: natural, box: (p.width, p.height)))
     }
 
     /// Whether an image is drawn stretched between cap insets, the way
@@ -1190,7 +1286,7 @@ final class WireframeCapture {
                 let textStyle = place + WireframeCapture.fontCss(font, color: color)
                     + "line-height:\(WireframeCSS.px(p.height));align-items:center;justify-content:center;"
                 children.append(element(id(control, 200 + 2 * i), textStyle,
-                                        visible.isEmpty ? [] : [text(id(control, 201 + 2 * i), visible)], cls: "t n"))
+                                        visible.isEmpty ? [] : [textNode(id(control, 201 + 2 * i), visible)], cls: "t n"))
             } else if control.imageForSegment(at: i) != nil {
                 let side = min(w, p.height) * 0.6
                 let icon = WireframeCSS.rect(left: x + (w - side) / 2, top: (p.height - side) / 2, width: side, height: side)
@@ -1219,7 +1315,7 @@ final class WireframeCapture {
             let place = WireframeCSS.rect(left: left, top: 0, width: half, height: p.height)
                 + "font-size:20px;line-height:\(WireframeCSS.px(p.height));color:\(WireframeCSS.color(color));"
                 + "align-items:center;justify-content:center;"
-            return element(id(stepper, role), place, [text(id(stepper, role + 1), glyph)], cls: "t n")
+            return element(id(stepper, role), place, [textNode(id(stepper, role + 1), glyph)], cls: "t n")
         }
         let divider = WireframeCSS.rect(left: half - 0.5, top: p.height * 0.25, width: 1, height: p.height * 0.5)
             + (dark ? "background-color:rgba(84,84,88,.6);" : "background-color:rgba(60,60,67,.29);")
@@ -1307,7 +1403,8 @@ final class WireframeCapture {
         out.append(element(id(view), trackStyle, [element(id(view, 1), barStyle, [])]))
     }
 
-    private func activity(_ view: UIActivityIndicatorView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
+    /// A spinner: a dotted ring in its color.
+    private func progress(_ view: UIActivityIndicatorView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
         let color = WireframeCapture.color(view.color, view.traitCollection) ?? WireframeColor(r: 0.557, g: 0.557, b: 0.576)
         let side = min(p.width, p.height)
         guard side > 0 else { return }
@@ -1439,195 +1536,12 @@ final class WireframeCapture {
         case .justified: style += "text-align:justify;"
         default: break
         }
-        return element(id(model, 1), style, [text(id(model, 2), visible)], cls: "t")
-    }
-
-    // MARK: - SwiftUI
-
-    private final class SwiftUIText {
-        let rect: WireframeRect
-        let label: String
-        let isStatic: Bool
-        let isButton: Bool
-        var used = false
-
-        init(rect: WireframeRect, label: String, isStatic: Bool, isButton: Bool) {
-            self.rect = rect
-            self.label = label
-            self.isStatic = isStatic
-            self.isButton = isButton
-        }
-    }
-
-    private struct CachedTexts {
-        weak var host: UIView?
-        var ms: Int64
-        var items: [(WireframeRect, String, Bool, Bool)]
-    }
-
-    /// The text a hosting view shows, as its accessibility elements describe
-    /// it: frame, label and whether it is static text or a button. Read at
-    /// most once a second per hosting view.
-    private func swiftUITexts(of host: UIView) -> [SwiftUIText] {
-        guard let screen = screenWindow else { return [] }
-        let key = ObjectIdentifier(host)
-        if let cached = textCache[key], cached.host === host, nowMs - cached.ms < 1000 {
-            return cached.items.map { SwiftUIText(rect: $0.0, label: $0.1, isStatic: $0.2, isButton: $0.3) }
-        }
-        var items: [(WireframeRect, String, Bool, Bool)] = []
-        var visitedElements = 0
-        let screenSpace = screen.screen.coordinateSpace
-
-        func walk(_ element: Any, depth: Int) {
-            guard visitedElements < 400, depth < 10, items.count < 200 else { return }
-            visitedElements += 1
-            guard let object = element as? NSObject else { return }
-            // Real views are walked as views.
-            if object is UIView { return }
-            if object.isAccessibilityElement {
-                let traits = object.accessibilityTraits
-                let isStatic = traits.contains(.staticText)
-                let isButton = traits.contains(.button) || traits.contains(.link)
-                if traits.contains(.image) && !isStatic { return }
-                let parts = [object.accessibilityLabel, object.accessibilityValue]
-                    .compactMap { $0 }.filter { !$0.isEmpty }
-                guard !parts.isEmpty else { return }
-                let frame = screen.convert(object.accessibilityFrame, from: screenSpace)
-                guard frame.width > 0, frame.height > 0, frame.width.isFinite, frame.height.isFinite else { return }
-                items.append((
-                    WireframeRect(x: Double(frame.minX), y: Double(frame.minY),
-                                  width: Double(frame.width), height: Double(frame.height)),
-                    parts.joined(separator: " "), isStatic, isButton
-                ))
-                return
-            }
-            for child in WireframeCapture.accessibilityChildren(of: object) { walk(child, depth: depth + 1) }
-        }
-
-        for child in WireframeCapture.accessibilityChildren(of: host) { walk(child, depth: 0) }
-        textCache[key] = CachedTexts(host: host, ms: nowMs, items: items)
-        return items.map { SwiftUIText(rect: $0.0, label: $0.1, isStatic: $0.2, isButton: $0.3) }
-    }
-
-    private static func accessibilityChildren(of object: NSObject) -> [Any] {
-        if let elements = object.accessibilityElements, !elements.isEmpty { return elements }
-        let count = object.accessibilityElementCount()
-        guard count > 0, count < 500 else { return [] }
-        var out: [Any] = []
-        for i in 0..<count {
-            if let element = object.accessibilityElement(at: i) { out.append(element) }
-        }
-        return out
-    }
-
-    /// The text item best placed at `box`: one whose frame holds the box's
-    /// center, static text first, the smallest first.
-    private func takeText(at box: WireframeRect) -> SwiftUIText? {
-        guard let texts = hostTexts.last else { return nil }
-        let cx = box.x + box.width / 2, cy = box.y + box.height / 2
-        var best: SwiftUIText?
-        for item in texts where !item.used {
-            let r = item.rect
-            guard WireframeRect(x: r.x - 2, y: r.y - 2, width: r.width + 4, height: r.height + 4).contains(x: cx, y: cy)
-            else { continue }
-            if let current = best {
-                if item.isStatic != current.isStatic {
-                    if item.isStatic { best = item }
-                } else if r.width * r.height < current.rect.width * current.rect.height {
-                    best = item
-                }
-            } else {
-                best = item
-            }
-        }
-        best?.used = true
-        return best
-    }
-
-    /// A layer SwiftUI draws one `Text` into. Its words are only known when
-    /// the hosting view's accessibility describes them, which iOS does while
-    /// an assistive technology runs; otherwise the text is a neutral bar
-    /// where its lines are, as a masked text would be.
-    private func swiftUIText(_ model: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
-        let style = geometry(s, p)
-        if let item = takeText(at: p.box), let visible = shown(item.label, p.box, s) {
-            let color = screenWindow.map { textColor(for: item, $0) } ?? .black
-            out.append(element(
-                id(model), style + swiftUITextCss(height: p.height, color: color),
-                [text(id(model, 1), visible)], cls: p.height < 40 ? "t n" : "t"
-            ))
-            return
-        }
-        if privacy(p.box, s) == .hide || p.width < 1 || p.height < 1 { return }
-        out.append(element(id(model), style, [], cls: p.height <= 48 ? "sk" : "sk sm"))
-    }
-
-    /// The glyph class of a small layer picture that has see-through pixels
-    /// (an icon: a photo is opaque and stays a placeholder), drawn as its
-    /// shape only.
-    private func smallImageGlyph(_ layer: CALayer, _ p: Placed, _ s: Scope) -> String? {
-        guard p.width <= 40, p.height <= 40, !s.blockImages, privacy(p.box, s) == .show,
-              let contents = layer.contents
-        else { return nil }
-        let ref = contents as AnyObject
-        guard CFGetTypeID(ref) == CGImage.typeID else { return nil }
-        let image = ref as! CGImage
-        guard image.alphaInfo != .none, image.alphaInfo != .noneSkipLast, image.alphaInfo != .noneSkipFirst,
-              let glyph = glyphs?.lookup(image, size: CGSize(width: p.width, height: p.height))
-        else { return nil }
-        shownGlyphs.insert(glyph.cls)
-        return glyph.cls
-    }
-
-    /// A view SwiftUI draws text and shapes into. When the hosting view's
-    /// accessibility names text at its place, that text is shown.
-    private func swiftUIDrawing(_ view: UIView, _ layer: CALayer, _ p: Placed, _ s: Scope, _ out: inout [VNode]) {
-        let (style, paints) = boxCss(s, p, layer, view)
-        guard let item = takeText(at: p.box), let visible = shown(item.label, p.box, s) else {
-            if paints { out.append(element(id(view), style, [])) }
-            return
-        }
-        let color = textColor(for: item, view)
-        out.append(element(
-            id(view), style + swiftUITextCss(height: p.height, color: color),
-            [text(id(view, 1), visible)], cls: p.height < 40 ? "t n" : "t"
-        ))
-    }
-
-    /// Text the hosting view's accessibility names that no drawing view
-    /// showed, placed where its frame is, above the hosting view's content.
-    private func remainingSwiftUITexts(_ texts: [SwiftUIText], _ host: UIView, _ s: Scope, _ out: inout [VNode]) {
-        for (index, item) in texts.enumerated() where !item.used && (item.isStatic || item.isButton) {
-            guard item.rect.overlaps(s.clip), let visible = shown(item.label, item.rect, s) else { continue }
-            let t = WireframeAffine.translation(item.rect.x, item.rect.y)
-            let style = wireframeGeometry(origin: s.origin, transform: t, width: item.rect.width, height: item.rect.height)
-                + swiftUITextCss(height: item.rect.height, color: textColor(for: item, host))
-            out.append(element(
-                id(host, 100_000 + 2 * index), style,
-                [text(id(host, 100_001 + 2 * index), visible)], cls: item.rect.height < 40 ? "t n" : "t"
-            ))
-        }
-    }
-
-    private func textColor(for item: SwiftUIText, _ view: UIView) -> WireframeColor {
-        let traits = view.traitCollection
-        if item.isButton && !item.isStatic, let tint = WireframeCapture.color(view.tintColor, traits) { return tint }
-        return WireframeCapture.color(UIColor.label, traits) ?? .black
-    }
-
-    /// The font is not known: a line is sized from its frame.
-    private func swiftUITextCss(height: Double, color: WireframeColor) -> String {
-        if height < 40 {
-            let size = min(max(height / 1.25, 9), 34)
-            return "font-size:\(WireframeCSS.px(size));line-height:\(WireframeCSS.px(height));"
-                + "color:\(WireframeCSS.color(color));align-items:center;"
-        }
-        return "font-size:15px;line-height:18px;color:\(WireframeCSS.color(color));"
+        return element(id(model, 1), style, [textNode(id(model, 2), visible)], cls: "t")
     }
 }
 
 /// What the walk needs to know about a class, worked out once per class.
-private struct ClassInfo: Equatable {
+struct ClassInfo: Equatable {
     enum Kind: Equatable {
         case plain
         /// Internal views that only get in the way, such as scroll indicators.

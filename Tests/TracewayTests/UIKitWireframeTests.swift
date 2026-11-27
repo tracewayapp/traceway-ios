@@ -292,6 +292,124 @@ final class UIKitWireframeTests: XCTestCase {
         XCTAssertLessThan(rule.count, 4000, "a glyph stays small")
     }
 
+    // MARK: - Replay images
+
+    /// A bitmap of `size` points in one color; opaque unless `clear`, which
+    /// leaves the corners see-through.
+    private func photo(_ size: CGSize, _ color: UIColor = .blue, clear: Bool = false) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        format.opaque = !clear
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            color.setFill()
+            if clear {
+                UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+            } else {
+                context.fill(CGRect(origin: .zero, size: size))
+            }
+        }
+    }
+
+    private func imageView(_ image: UIImage, _ frame: CGRect, mode: UIView.ContentMode = .scaleAspectFill) -> UIImageView {
+        let view = UIImageView(image: image)
+        view.frame = frame
+        view.contentMode = mode
+        return view
+    }
+
+    /// Spins the main run loop until `count` pictures are encoded.
+    private func waitForPictures(_ count: Int = 1) {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, capture.images.all.filter({ $0.css != nil }).count < count {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+    }
+
+    private func pictureRules(_ s: VNode) -> [String] {
+        allNodes(s).compactMap { $0.tag == "style" ? $0.attributes["_cssText"] : nil }.filter { $0.hasPrefix(".im.p") }
+    }
+
+    func testPhotosStayPlaceholdersUnlessThePolicyAllowsThem() throws {
+        show(imageView(photo(CGSize(width: 40, height: 30)), CGRect(x: 10, y: 10, width: 200, height: 150)))
+        for policy: TracewayImagePolicy in [.off, .wifi] {
+            capture.imagePolicy = policy
+            capture.isUnmetered = { false }
+            _ = try screen()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            let s = try screen()
+            XCTAssertTrue(capture.images.all.isEmpty, "\(policy): nothing is encoded")
+            XCTAssertTrue(pictureRules(s).isEmpty)
+            let node = try XCTUnwrap(allNodes(s).first { classes($0).contains("im") })
+            XCTAssertEqual(classes(node), ["im"])
+        }
+    }
+
+    func testAPhotoIsInlinedOnceEncoded() throws {
+        show(imageView(photo(CGSize(width: 40, height: 30)), CGRect(x: 10, y: 10, width: 200, height: 150), mode: .scaleAspectFit))
+        capture.imagePolicy = .wifi
+        capture.isUnmetered = { true }
+        let first = try screen()
+        XCTAssertEqual(classes(try XCTUnwrap(allNodes(first).first { classes($0).contains("im") })), ["im"],
+                       "the first frame shows the placeholder")
+        waitForPictures()
+        let s = try screen()
+        let node = try XCTUnwrap(allNodes(s).first { classes($0).contains("im") })
+        let cls = try XCTUnwrap(classes(node).first { $0.hasPrefix("p") }, "a later frame shows the picture")
+        XCTAssertEqual(styleMap(node)["background-size"], "contain")
+        let rules = pictureRules(s)
+        XCTAssertEqual(rules.count, 1)
+        let rule = try XCTUnwrap(rules.first)
+        XCTAssertTrue(rule.hasPrefix(".im.\(cls){background:url(data:image/jpeg;base64,"), rule)
+        XCTAssertTrue(rule.hasSuffix(") center/cover no-repeat}"), rule)
+        XCTAssertLessThan(rule.count, 96 * 1024 * 4 / 3 + 100)
+        // A picture captured off Wi-Fi is not in the frame.
+        capture.isUnmetered = { false }
+        let metered = try screen()
+        XCTAssertTrue(pictureRules(metered).isEmpty)
+        XCTAssertEqual(classes(try XCTUnwrap(allNodes(metered).first { classes($0).contains("im") })), ["im"])
+    }
+
+    func testMaskedPhotosStayPlaceholders() throws {
+        let blurred = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+        blurred.tracewayPrivacyMask = .blur
+        blurred.addSubview(imageView(photo(CGSize(width: 40, height: 30)), CGRect(x: 10, y: 10, width: 200, height: 150)))
+        let blanked = UIView(frame: CGRect(x: 0, y: 300, width: 300, height: 200))
+        blanked.tracewayPrivacyMask = .blank()
+        blanked.addSubview(imageView(photo(CGSize(width: 40, height: 30), .red), CGRect(x: 10, y: 10, width: 200, height: 150)))
+        show(blurred, blanked)
+        capture.imagePolicy = .always
+        _ = try screen()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let s = try screen()
+        XCTAssertTrue(capture.images.all.isEmpty, "a masked picture is never encoded")
+        XCTAssertTrue(pictureRules(s).isEmpty)
+        XCTAssertTrue(allNodes(s).contains { classes($0) == ["im"] })
+    }
+
+    func testTheSamePictureIsEncodedOnceAndSmallSeeThroughOnesArePNG() throws {
+        let shared = photo(CGSize(width: 40, height: 30))
+        let badge = photo(CGSize(width: 24, height: 24), .green, clear: true)
+        show(
+            imageView(shared, CGRect(x: 10, y: 10, width: 120, height: 90)),
+            imageView(shared, CGRect(x: 10, y: 120, width: 120, height: 90)),
+            imageView(badge, CGRect(x: 200, y: 10, width: 24, height: 24), mode: .center)
+        )
+        capture.imagePolicy = .always
+        _ = try screen()
+        waitForPictures(2)
+        let s = try screen()
+        XCTAssertEqual(capture.images.all.count, 2, "one picture per bitmap and size")
+        let pictured = allNodes(s).filter { classes($0).contains("im") }
+        XCTAssertEqual(pictured.count, 3)
+        let shownClasses = pictured.map { classes($0).subtracting(["im"]) }
+        XCTAssertEqual(shownClasses[0], shownClasses[1])
+        XCTAssertNotEqual(shownClasses[0], shownClasses[2])
+        let rules = pictureRules(s)
+        XCTAssertEqual(rules.count, 2)
+        XCTAssertEqual(rules.filter { $0.contains("data:image/png;base64,") }.count, 1)
+        XCTAssertEqual(styleMap(pictured[2])["background-size"], "24px 24px")
+    }
+
     // MARK: - Controls
 
     func testSwitchSliderProgressSpinnerAndPages() throws {

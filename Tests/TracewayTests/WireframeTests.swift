@@ -536,6 +536,21 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertFalse(r.maskAllInputs)
     }
 
+    func testImagesAreOffUntilTheSettingsAllowThem() {
+        let r = recorder()
+        XCTAssertEqual(r.imagePolicy, .off)
+        r.imagePolicy = .wifi
+        XCTAssertEqual(r.imagePolicy, .wifi)
+    }
+
+    func testATapLiftsNearWhereItStartedBeforeTheLongPressDuration() {
+        // The tap record and the replay's click use the same rule.
+        XCTAssertTrue(TapGesture.isTap(dx: 6, dy: 8, durationMs: 499))
+        XCTAssertFalse(TapGesture.isTap(dx: 6, dy: 8, durationMs: 500), "UIKit's long press")
+        XCTAssertFalse(TapGesture.isTap(dx: 8, dy: 8, durationMs: 100), "moved more than 10 points")
+        XCTAssertEqual(TapGesture.maxDurationMs, 500)
+    }
+
     func testTheAwayScreenIsWithinReservedIds() {
         let away = WireframeRecorder.awayScreen(390, 844)
         XCTAssertEqual(away.id, screenNodeId)

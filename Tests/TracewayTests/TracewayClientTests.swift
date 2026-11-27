@@ -89,11 +89,11 @@ final class TracewayClientTests: XCTestCase {
         Traceway.recordNavigation("/checkout")
         client.flush(timeout: 5)
         // Breadcrumbs stay on the device until something goes wrong.
-        XCTAssertTrue(logs.events("browser.console").isEmpty)
+        XCTAssertTrue(logs.consoleLines.isEmpty)
         XCTAssertTrue(logs.events("traceway.action").isEmpty)
 
         struct PaymentFailed: Error {}
-        Traceway.capture(PaymentFailed(), attributes: ["order": "42"])
+        Traceway.captureException(PaymentFailed(), attributes: ["order": "42"])
         client.flush(timeout: 5)
 
         let exception = try XCTUnwrap(logs.events("exception").first)
@@ -104,7 +104,7 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(exception.string("session.id"), client.currentSessionId)
         XCTAssertEqual(exception.string("traceway.replay.status"), "disabled")
         XCTAssertEqual(exception.severity, .error)
-        XCTAssertEqual(logs.events("browser.console").first?.body, .string("opened cart"))
+        XCTAssertEqual(logs.consoleLines.first?.body, .string("opened cart"))
         XCTAssertEqual(logs.events("traceway.action").first?.string("traceway.action.data"), "{\"sku\":\"A1\"}")
         XCTAssertEqual(logs.events("browser.navigation").first?.string("url.full"), "/checkout")
         XCTAssertEqual(logs.events("traceway.trigger.fired").first?.string("traceway.trigger.id"), "default-exception")
@@ -112,7 +112,7 @@ final class TracewayClientTests: XCTestCase {
 
     func testMessagesStreamAsIssues() throws {
         let client = try start()
-        Traceway.capture(message: "checkout reached", attributes: ["step": "3"])
+        Traceway.captureMessage("checkout reached", attributes: ["step": "3"])
         client.flush(timeout: 5)
         let message = try XCTUnwrap(logs.events("traceway.message").first)
         XCTAssertEqual(message.body, .string("checkout reached"))
@@ -124,20 +124,20 @@ final class TracewayClientTests: XCTestCase {
         let client = try start(TracewayOptions(sampleRate: 0))
         Traceway.log("breadcrumb")
         struct Boom: Error {}
-        Traceway.capture(Boom())
+        Traceway.captureException(Boom())
         client.flush(timeout: 5)
         XCTAssertTrue(logs.events("exception").isEmpty)
-        XCTAssertTrue(logs.events("browser.console").isEmpty)
+        XCTAssertTrue(logs.consoleLines.isEmpty)
     }
 
     func testIdenticalErrorsCollapseAndCountWhatWasSuppressed() throws {
         let client = try start()
         struct Same: Error {}
-        for _ in 0..<3 { Traceway.capture(Same()) }
+        for _ in 0..<3 { Traceway.captureException(Same()) }
         client.flush(timeout: 5)
         XCTAssertEqual(logs.events("exception").count, 1)
         Thread.sleep(forTimeInterval: 1.1)
-        Traceway.capture(Same())
+        Traceway.captureException(Same())
         client.flush(timeout: 5)
         let second = logs.events("exception")
         XCTAssertEqual(second.count, 2)
@@ -147,7 +147,7 @@ final class TracewayClientTests: XCTestCase {
     func testGlobalAttributesAreStampedOnLaterRecords() throws {
         let client = try start(TracewayOptions(attributes: ["tenant": "acme"]))
         Traceway.setAttribute("user.id", "u-1")
-        Traceway.capture(message: "hello")
+        Traceway.captureMessage("hello")
         client.flush(timeout: 5)
         let message = try XCTUnwrap(logs.events("traceway.message").first)
         XCTAssertEqual(message.string("user.id"), "u-1")
@@ -167,7 +167,7 @@ final class TracewayClientTests: XCTestCase {
     // MARK: - Local and remote settings
 
     func testLocalCollectionSettingsAndTriggersApply() throws {
-        let client = try start(TracewayOptions(remoteConfig: false, collection: [
+        let client = try start(TracewayOptions(collection: [
             "signals": ["navigation": ["mode": "stream"]],
             "triggers": [[
                 "id": "checkout-failed-twice",
@@ -177,16 +177,16 @@ final class TracewayClientTests: XCTestCase {
                 ]],
                 "actions": [["type": "flush", "lookbackSeconds": 120, "signals": ["*"]]],
             ]],
-        ]))
+        ], remoteConfig: false))
         Traceway.recordNavigation("/cart")
         Traceway.log("before")
         Traceway.track("checkout_failed")
         client.flush(timeout: 5)
         XCTAssertEqual(logs.events("browser.navigation").count, 1, "navigation streams")
-        XCTAssertTrue(logs.events("browser.console").isEmpty, "console still buffers")
+        XCTAssertTrue(logs.consoleLines.isEmpty, "console still buffers")
         Traceway.track("checkout_failed")
         client.flush(timeout: 5)
-        XCTAssertEqual(logs.events("browser.console").count, 1, "the second event flushed the buffer")
+        XCTAssertEqual(logs.consoleLines.count, 1, "the second event flushed the buffer")
         XCTAssertEqual(logs.events("checkout_failed").count, 2)
         XCTAssertTrue(server.requests(to: "/api/otel/v1/opamp").isEmpty, "remoteConfig: false never polls")
     }
@@ -197,7 +197,7 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertTrue(eventually { client.onQueueSync { client.control.modeFor("console") } == .stream })
         Traceway.log("now streamed")
         client.flush(timeout: 5)
-        XCTAssertEqual(logs.events("browser.console").first?.body, .string("now streamed"))
+        XCTAssertEqual(logs.consoleLines.first?.body, .string("now streamed"))
         XCTAssertNotNil(logs.events("traceway.config.applied").first?.string("traceway.config.hash"))
         let poll = try XCTUnwrap(server.requests(to: "/api/otel/v1/opamp").first)
         XCTAssertEqual(poll.headers["Authorization"], "Bearer token")
@@ -246,7 +246,7 @@ final class TracewayClientTests: XCTestCase {
             TracewayOptions(telemetry: TracewayTelemetry(url: "https://collector.example.com/otlp")),
             connectionString: nil
         )
-        Traceway.capture(message: "standalone")
+        Traceway.captureMessage("standalone")
         client.flush(timeout: 5)
         XCTAssertEqual(logs.events("traceway.message").count, 1)
         XCTAssertTrue(logs.events("session.start").isEmpty, "no session records without Traceway")
@@ -288,7 +288,7 @@ final class TracewayClientTests: XCTestCase {
         let client = try start(TracewayOptions(screenCapture: true), replay: source)
         XCTAssertTrue(eventually { source.isRunning }, "buffer mode records")
         struct Boom: Error {}
-        Traceway.capture(Boom())
+        Traceway.captureException(Boom())
         client.flush(timeout: 5)
         let exception = try XCTUnwrap(logs.events("exception").first)
         XCTAssertEqual(exception.string("traceway.replay.status"), "requested")
@@ -305,7 +305,7 @@ final class TracewayClientTests: XCTestCase {
         let source = FakeReplaySource()
         let client = try start(TracewayOptions(screenCapture: false), replay: source)
         struct Boom: Error {}
-        Traceway.capture(Boom())
+        Traceway.captureException(Boom())
         client.flush(timeout: 5)
         XCTAssertFalse(source.isRunning)
         XCTAssertTrue(server.requests(to: "/api/recordings").isEmpty)
@@ -356,7 +356,7 @@ final class TracewayClientTests: XCTestCase {
         client.flush(timeout: 5)
         XCTAssertTrue(spans.spans.isEmpty)
         struct Boom: Error {}
-        Traceway.capture(Boom())
+        Traceway.captureException(Boom())
         client.flush(timeout: 5)
         XCTAssertTrue(eventually { self.spans.spans.count == 1 })
     }
@@ -378,9 +378,9 @@ final class TracewayClientTests: XCTestCase {
         client = try start(TracewayOptions(remoteConfig: false), stateDirectory: dir)
         XCTAssertEqual(client.currentSessionId, session, "the session goes on")
         struct Boom: Error {}
-        Traceway.capture(Boom())
+        Traceway.captureException(Boom())
         client.flush(timeout: 5)
-        XCTAssertEqual(logs.events("browser.console").first?.body, .string("before the restart"))
+        XCTAssertEqual(logs.consoleLines.first?.body, .string("before the restart"))
         XCTAssertEqual(logs.events("traceway.session.update").count, 1)
     }
 
@@ -430,6 +430,212 @@ final class TracewayClientTests: XCTestCase {
         let exception = try XCTUnwrap(logs.events("exception").first)
         XCTAssertEqual(exception.string("exception.type"), "MyError: boom")
         XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
+    }
+
+    // MARK: - Logs, screens and issues
+
+    func testALogLineHasNoEventNameAndCarriesItsLevelAndAttributes() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        XCTAssertEqual(Traceway.currentSessionId, client.currentSessionId)
+        Traceway.log("cache warmed", level: .warn, attributes: ["cache": "images", "log.source": "mine"])
+        Traceway.log("too quiet", level: .debug)
+        client.flush(timeout: 5)
+        XCTAssertEqual(logs.consoleLines.count, 1, "below the console's minimum severity")
+        let line = try XCTUnwrap(logs.consoleLines.first)
+        XCTAssertNil(line.eventName)
+        XCTAssertEqual(line.severity, .warn)
+        XCTAssertEqual(line.severity?.description, "WARN")
+        XCTAssertEqual(line.body, .string("cache warmed"))
+        XCTAssertEqual(line.string("cache"), "images")
+        XCTAssertEqual(line.string("log.source"), "api")
+        XCTAssertNil(line.attributes["log.severity"])
+        XCTAssertTrue(logs.events("browser.console").isEmpty)
+    }
+
+    func testIssuesCarryTheScreenTheyHappenedOn() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        client.screen.viewport = "390x844"
+        Traceway.recordNavigation("/cart")
+        Traceway.recordNavigation("/orders/42", from: "/cart")
+        Traceway.setRoute("orders/{id}")
+        struct Declined: Error {}
+        Traceway.captureException(Declined(), attributes: ["order": "42"])
+        Traceway.captureMessage("paid", attributes: ["viewport": "mine"])
+        // The same screen again keeps its route; the next one loses it.
+        Traceway.recordNavigation("/orders/42")
+        Traceway.recordNavigation("/done", action: "pop", from: "/orders/42")
+        client.flush(timeout: 5)
+
+        let exception = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(exception.string("app.screen.name"), "/orders/42")
+        XCTAssertEqual(exception.string("app.screen.route"), "/orders/{id}")
+        XCTAssertEqual(exception.string("app.screen.previous"), "/cart")
+        XCTAssertEqual(exception.string("viewport"), "390x844")
+        XCTAssertEqual(exception.string("order"), "42")
+        guard case .int(let shownMs)? = exception.attributes["app.screen.duration_ms"] else {
+            return XCTFail("app.screen.duration_ms is a number")
+        }
+        XCTAssertGreaterThanOrEqual(shownMs, 0)
+        let message = try XCTUnwrap(logs.events("traceway.message").first)
+        XCTAssertEqual(message.string("app.screen.route"), "/orders/{id}")
+        XCTAssertEqual(message.string("viewport"), "mine", "the caller's attributes win")
+
+        let navigations = logs.events("browser.navigation")
+        XCTAssertEqual(navigations.map { $0.string("url.full") }, ["/cart", "/orders/42", "/orders/42", "/done"])
+        XCTAssertEqual(navigations.map { $0.string("app.screen.route") }, [nil, nil, "/orders/{id}", nil])
+        XCTAssertEqual(navigations.last?.string("navigation.action"), "pop")
+        XCTAssertEqual(navigations.last?.string("navigation.from"), "/orders/42")
+        XCTAssertEqual(navigations.last?.string("app.screen.name"), "/done")
+        XCTAssertEqual(ScreenState.template(" checkout "), "/checkout")
+        XCTAssertNil(ScreenState.template("  "))
+        XCTAssertEqual(ScreenState.template(String(repeating: "a", count: 100))?.count, 64)
+    }
+
+    func testNetworkNoiseIsNotReportedByDefault() throws {
+        let client = try start()
+        func urlError(_ code: Int, _ text: String) -> NSError {
+            NSError(domain: "NSURLErrorDomain", code: code, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+        Traceway.captureException(urlError(-1009, "The Internet connection appears to be offline."))
+        Traceway.captureException(urlError(-1001, "The request timed out."))
+        Traceway.captureException(urlError(-1003, "A server with the specified hostname could not be found."))
+        Traceway.captureException(urlError(-1005, "Lost it."))
+        Traceway.captureMessage("Upload failed: 404")
+        Traceway.captureMessage("Gateway timeout")
+        Traceway.captureException(urlError(-1011, "The server returned a bad response."))
+        client.flush(timeout: 5)
+        XCTAssertEqual(logs.events("exception").map { $0.string("exception.message") },
+                       ["The server returned a bad response. (code -1011)"])
+        XCTAssertTrue(logs.events("traceway.message").isEmpty)
+        let line = ignoreLine(type: "Foundation.URLError", message: "Error Domain=NSURLErrorDomain Code=-1009 \"(null)\"")
+        XCTAssertTrue(TracewayOptions.defaultIgnoreErrors.contains { $0.matches(line) }, "a URLError's form too")
+        XCTAssertEqual(ignoreLine(type: "E", message: "E: boom\nframe"), "E: boom", "the first line only")
+    }
+
+    func testIgnoreErrorsAndBeforeCaptureDecideWhatIsReported() throws {
+        struct Broken: Error {}
+        let lock = NSLock()
+        var seen: [TracewayCapturedError] = []
+        let client = try start(TracewayOptions(
+            ignoreErrors: ["Ignored", .regex(#"^Noise\b"#)],
+            beforeCapture: { captured in
+                lock.lock(); seen.append(captured); lock.unlock()
+                if captured.attributes["drop"] == "yes" { return false }
+                if captured.message == "explode" { throw Broken() }
+                return true
+            }
+        ))
+        client.screen.navigated(to: "/pay", atMs: Clock.nowMs())
+        Traceway.captureMessage("Ignored by its text")
+        Traceway.captureMessage("Noise level high")
+        Traceway.captureMessage("dropped", attributes: ["drop": "yes"])
+        Traceway.captureMessage("explode")
+        // A list of its own replaces the defaults.
+        Traceway.captureException(NSError(domain: "NSURLErrorDomain", code: -1001,
+                                          userInfo: [NSLocalizedDescriptionKey: "The request timed out."]))
+        client.flush(timeout: 5)
+
+        XCTAssertEqual(logs.events("traceway.message").map { $0.body }, [.string("explode")],
+                       "a callback that throws keeps the record")
+        XCTAssertEqual(logs.events("exception").count, 1)
+        lock.lock(); defer { lock.unlock() }
+        XCTAssertEqual(seen.map(\.message), ["dropped", "explode", "The request timed out. (code -1001)"])
+        let message = seen[0]
+        XCTAssertTrue(message.isMessage)
+        XCTAssertNil(message.type)
+        XCTAssertNil(message.error)
+        XCTAssertNil(message.stackTrace)
+        XCTAssertEqual(message.attributes["app.screen.name"], "/pay")
+        let exception = seen[2]
+        XCTAssertFalse(exception.isMessage)
+        XCTAssertEqual(exception.type, "NSURLErrorDomain")
+        XCTAssertNotNil(exception.error)
+        XCTAssertTrue(exception.stackTrace?.contains("os: ios arch:") == true)
+    }
+
+    func testDroppedDataIsReportedAsCollectionHealth() throws {
+        let client = try start()
+        struct Same: Error {}
+        for _ in 0..<3 { Traceway.captureException(Same()) }
+        XCTAssertTrue(eventually(timeout: 5) {
+            client.flush(timeout: 1)
+            return !self.logs.events("traceway.collection.health").isEmpty
+        })
+        let health = try XCTUnwrap(logs.events("traceway.collection.health").first)
+        XCTAssertEqual(health.attributes["traceway.error.suppressed_total"], .int(2))
+        XCTAssertEqual(health.attributes["traceway.replay.failed_segments"], .int(0))
+        XCTAssertEqual(health.attributes["traceway.collection.max_events"], .int(10_000))
+        XCTAssertEqual(health.attributes["traceway.replay.image_bytes"], .int(0))
+        XCTAssertEqual(health.string("session.id"), client.currentSessionId)
+        let update = try XCTUnwrap(logs.events("traceway.session.update").first, "the session row learns of it once")
+        XCTAssertEqual(update.attributes["traceway.error.suppressed_total"], .int(2))
+    }
+
+    func testSessionEventsCarryTheImagesPolicy() throws {
+        func policy(_ options: TracewayOptions) throws -> String? {
+            TracewayClient.resetForTesting()
+            logs = MemoryLogExporter()
+            let client = try start(options, replay: FakeReplaySource())
+            client.flush(timeout: 5)
+            let started = try XCTUnwrap(logs.events("session.start").first)
+            XCTAssertEqual(started.attributes["traceway.replay.image_bytes"], .int(0))
+            return started.string("traceway.replay.images")
+        }
+        XCTAssertEqual(try policy(TracewayOptions(screenCapture: true)), "wifi", "the setting's default")
+        XCTAssertEqual(try policy(TracewayOptions(screenCapture: true, replayImages: .off)), "off")
+        XCTAssertEqual(try policy(TracewayOptions(screenCapture: true, replayImages: .wifi,
+                                                  collection: ["replay": ["images": "always"]])), "wifi")
+        XCTAssertEqual(try policy(TracewayOptions(screenCapture: true, collection: ["replay": ["images": "always"]])),
+                       "always")
+        XCTAssertEqual(try policy(TracewayOptions(screenCapture: false)), "off")
+    }
+
+    // MARK: - Interactions
+
+    func testAnInteractionTracesWhatRunsInIt() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        let checkout = Traceway.startInteraction("checkout", attributes: ["cart.items": 3])
+        XCTAssertEqual(checkout.traceId?.count, 32)
+        XCTAssertEqual(checkout.spanId?.count, 16)
+        let total = checkout.run { () -> Int in
+            Traceway.log("placing the order")
+            return 42
+        }
+        XCTAssertEqual(total, 42)
+        checkout.setAttribute("payment", "card")
+        struct Declined: Error {}
+        checkout.captureException(Declined())
+        checkout.end()
+        checkout.end(failed: false)
+        XCTAssertTrue(checkout.isEnded)
+        client.flush(timeout: 5)
+
+        XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "checkout" } })
+        let span = try XCTUnwrap(spans.spans.first { $0.name == "checkout" })
+        XCTAssertEqual(spans.spans.filter { $0.name == "checkout" }.count, 1)
+        XCTAssertEqual(span.attributes["traceway.interaction"], .bool(true))
+        XCTAssertEqual(span.attributes["cart.items"], .int(3))
+        XCTAssertEqual(span.attributes["payment"], .string("card"))
+        XCTAssertTrue(span.status.isError, "an exception fails the interaction")
+        XCTAssertEqual(span.kind, .internal)
+        let exception = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(exception.spanContext?.traceId.hexString, checkout.traceId)
+        XCTAssertEqual(exception.spanContext?.spanId.hexString, checkout.spanId)
+        let line = try XCTUnwrap(logs.consoleLines.first)
+        XCTAssertEqual(line.spanContext?.traceId.hexString, checkout.traceId)
+
+        let search = Traceway.startInteraction("search")
+        search.end(failed: true)
+        client.flush(timeout: 5)
+        XCTAssertTrue(eventually { self.spans.spans.contains { $0.name == "search" && $0.status.isError } })
+    }
+
+    func testAnInteractionBeforeStartRecordsNothing() {
+        let interaction = Traceway.startInteraction("early")
+        XCTAssertNil(interaction.traceId)
+        XCTAssertEqual(interaction.run { 7 }, 7)
+        interaction.end()
+        XCTAssertTrue(interaction.isEnded)
     }
 
     // MARK: - Outbox
@@ -527,7 +733,7 @@ final class WireframeReplayIntegrationTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.02)
 
         struct PaymentFailed: Error {}
-        Traceway.capture(PaymentFailed())
+        Traceway.captureException(PaymentFailed())
         client.flush(timeout: 5)
 
         XCTAssertTrue(eventually { !server.segments.isEmpty })

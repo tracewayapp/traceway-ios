@@ -245,6 +245,9 @@ func applyOverlay(_ base: Settings, _ overlay: [String: JSON]) -> Settings {
         if let mode = Mode(name: replay["mode"]) { out.replayMode = mode }
         if let sampleRate = rate(replay["sessionSampleRate"]) { out.replaySessionSampleRate = sampleRate }
         if let mask = replay["maskAllInputs"]?.bool { out.replayMaskAllInputs = mask }
+        if let images = replay["images"]?.string.flatMap(TracewayImagePolicy.init(rawValue:)) {
+            out.replayImages = images
+        }
     }
 
     if let buffer = overlay["buffer"]?.object {
@@ -301,6 +304,9 @@ func clampToCeilings(_ settings: Settings, _ ceilings: Ceilings) -> Settings {
         out.signals[signal] = target
     }
     out.replayMode = lowerMode(out.replayMode, ceilings.replay)
+    // Without replay (no screen capture, or a plan without it) there is no
+    // picture to record either.
+    out.replayImages = ceilings.replay == .off ? .off : min(out.replayImages, ceilings.replayImages)
     out.sessionsEnabled = out.sessionsEnabled && ceilings.sessions
     return out
 }

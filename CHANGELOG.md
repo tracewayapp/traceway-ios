@@ -69,7 +69,59 @@ recording triggers, taps, and wireframe session replay.
   start.
 - New API: `track`, `log`, `recordAction`, `recordNavigation`,
   `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `shutdown`,
-  `refreshConfig`, `instanceId`, `sessionId`, `tracer`.
+  `refreshConfig`, `instanceId`, `currentSessionId`, `tracer`.
+- **Same API and wire format as the Android and Flutter SDKs**:
+  - `Traceway.captureException(_:attributes:)` and
+    `captureMessage(_:attributes:)`; `capture(_:)`, `capture(error:)` and
+    `capture(message:)` are deprecated aliases. `currentSessionId` replaces
+    the deprecated `sessionId`.
+  - `log(_:level:attributes:)` with `TracewayLogLevel` (`TracewayLogSeverity`
+    is a deprecated alias, `log(_:severity:)` a deprecated method). A log
+    line has no event name any more (it was `browser.console`) and no
+    `log.severity` attribute: its severity is the record's, and it carries
+    `log.source: api` and the caller's attributes.
+  - `recordNavigation(_:action:from:)` and `setRoute(_:)`: navigation
+    records and issues carry `app.screen.route` while a route template is
+    set.
+  - Exceptions and messages carry the screen they happened on:
+    `app.screen.name`, `app.screen.route`, `app.screen.previous`,
+    `app.screen.duration_ms` and `viewport` (`<width>x<height>` in points).
+  - `startInteraction(_:attributes:)` returns a `TracewayInteraction`
+    (`traceId`, `spanId`, `run`, `setAttribute`, `captureException`,
+    `end(failed:)`): a span the requests, issues and logs inside it belong to.
+  - Options `ignoreErrors` (`TracewayErrorPattern`: a substring or a regular
+    expression matched against `Type: message`; default
+    `TracewayOptions.defaultIgnoreErrors`: URL errors -1001, -1003, -1004,
+    -1005 and -1009, lost connections, timeouts and 4xx answers) and
+    `beforeCapture` (`TracewayCapturedError`; returning false drops the
+    issue, a callback that throws keeps it).
+  - **Breaking**: `TracewayOptions` takes its arguments in the order the
+    other mobile SDKs use (`collection` before `sessions`,
+    `baselineSampleRate` and `remoteConfig`; `telemetry` before
+    `propagateTraceHeaderUrls`).
+  - A tap is a finger lifted within 10 points before UIKit's long-press
+    duration (0.5 s), for the tap record and the replay's click alike (it was
+    1 s and 600 ms).
+  - `traceway.collection.health` reports dropped data (the session's replay
+    budget, suppressed errors, failed replay uploads), backing off from one
+    second to five minutes; session events carry
+    `traceway.error.suppressed_total`.
+- **Replay images**: with the setting `replay.images` (`off`, `wifi` by
+  default, `always`) and the option `replayImages` as its ceiling, the
+  wireframe includes the pictures image views and SwiftUI image layers show:
+  downscaled to their displayed size (1.5 px per point, at most 512 px), JPEG
+  at 0.6 (PNG when small and see-through), at most 96 KiB each and 4 MiB per
+  session, encoded off the main thread, sent once per bitmap and size, never
+  under a privacy mask. `wifi` means unmetered (`NWPathMonitor`: not
+  cellular, a hotspot or Low Data Mode), decided for each frame. Session
+  events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
+- **Wireframe**: the shared stylesheet is byte for byte the Android and
+  Flutter SDKs' (Apple's font stack is now inline on the screen node).
+  `WireframeRoots` finds the windows, the SwiftUI converters live in
+  `WireframeSwiftUICapture.swift`, `CollectionBudget` in a file of its own,
+  and the recorder hands the controller a `SessionRecordingPayload` (it was
+  `RecordingClip`). [Docs/Wireframe.md](Docs/Wireframe.md) describes the
+  pipeline.
 
 ## 0.1.0
 

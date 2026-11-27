@@ -35,22 +35,51 @@ public enum Traceway {
     /// The running client, or nil before `start`.
     public static var client: TracewayClient? { TracewayClient.shared }
 
-    /// Captures a caught error with the stack of the caller.
+    // MARK: - Errors and messages
+
+    /// Reports a caught error as an issue, with the stack of the caller and
+    /// the screen it happened on.
+    @inline(never)
+    public static func captureException(_ error: Error, attributes: [String: String] = [:]) {
+        let stack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
+        TracewayClient.shared?.captureException(error, callStack: stack, attributes: attributes)
+    }
+
+    /// Reports a message as an issue.
+    public static func captureMessage(_ message: String, attributes: [String: String] = [:]) {
+        TracewayClient.shared?.captureMessage(message, attributes: attributes)
+    }
+
+    @available(*, deprecated, renamed: "captureException(_:attributes:)")
     @inline(never)
     public static func capture(_ error: Error, attributes: [String: String] = [:]) {
         let stack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
         TracewayClient.shared?.captureException(error, callStack: stack, attributes: attributes)
     }
 
+    @available(*, deprecated, renamed: "captureException(_:attributes:)")
     @inline(never)
     public static func capture(error: NSError, attributes: [String: String] = [:]) {
         let stack = Array(Thread.callStackReturnAddresses.map { UInt(truncating: $0) }.dropFirst(1))
         TracewayClient.shared?.captureException(error as Error, callStack: stack, attributes: attributes)
     }
 
-    /// Reports a message as an issue.
+    @available(*, deprecated, renamed: "captureMessage(_:attributes:)")
     public static func capture(message: String, attributes: [String: String] = [:]) {
         TracewayClient.shared?.captureMessage(message, attributes: attributes)
+    }
+
+    // MARK: - Logs, actions and events
+
+    /// A log line on the session timeline (signal `console`) at `level`,
+    /// filtered by the console's `minSeverity` setting.
+    public static func log(_ message: String, level: TracewayLogLevel = .info, attributes: [String: String] = [:]) {
+        TracewayClient.shared?.log(message, level: level, attributes: attributes)
+    }
+
+    @available(*, deprecated, renamed: "log(_:level:attributes:)")
+    public static func log(_ message: String, severity: TracewayLogLevel) {
+        TracewayClient.shared?.log(message, level: severity)
     }
 
     /// A named product event, e.g. `checkout_failed`; triggers can match it.
@@ -63,16 +92,34 @@ public enum Traceway {
         TracewayClient.shared?.recordAction(category: category, name: name, data: data)
     }
 
-    /// A log line on the session timeline (signal `console`).
-    public static func log(_ message: String, severity: TracewayLogSeverity = .info) {
-        TracewayClient.shared?.log(message, severity: severity)
-    }
+    // MARK: - Screens
 
     /// Records that the app shows `path`, for SwiftUI navigation and routers
-    /// no view controller reports. Navigation triggers match it.
-    public static func recordNavigation(_ path: String) {
-        TracewayClient.shared?.recordNavigation(path)
+    /// no view controller reports. Navigation triggers match it. `action`
+    /// is `push` or `pop`; `from` is the screen left, when known.
+    public static func recordNavigation(_ path: String, action: String = "push", from: String? = nil) {
+        TracewayClient.shared?.recordNavigation(path, action: action, from: from)
     }
+
+    /// Names the current screen by its route template (`/orders/{id}`), so
+    /// issues carry it (`app.screen.route`). Lasts until the app reaches
+    /// another screen; nil removes it.
+    public static func setRoute(_ template: String?) {
+        TracewayClient.shared?.setRoute(template)
+    }
+
+    // MARK: - Interactions
+
+    /// Starts an interaction named `name` (`checkout`, `search`): a span the
+    /// requests made in its `run` are children of, and that the exceptions
+    /// and logs recorded there point to. Call `end()` when the action is
+    /// over. Before `start` it records nothing.
+    public static func startInteraction(_ name: String, attributes: [String: Any] = [:]) -> TracewayInteraction {
+        TracewayClient.shared?.startInteraction(name, attributes: attributes)
+            ?? TracewayInteraction(span: nil, client: nil)
+    }
+
+    // MARK: - Attributes
 
     /// An attribute attached to every later record, usable to target this
     /// user or device from the dashboard (`user.id`, a plan, a cohort).
@@ -92,6 +139,8 @@ public enum Traceway {
         TracewayClient.shared?.clearAttributes()
     }
 
+    // MARK: - Delivery
+
     /// Sends what is ready now, waiting at most `timeout` seconds (nil waits
     /// until done). Breadcrumbs held in the ring buffer stay there.
     public static func flush(timeout: TimeInterval? = nil) {
@@ -108,11 +157,16 @@ public enum Traceway {
         TracewayClient.shared?.refreshConfig()
     }
 
+    // MARK: - Identity
+
     /// The id this installation reports (`service.instance.id`), usable to
     /// target it from the dashboard.
     public static var instanceId: String? { TracewayClient.shared?.instanceId }
 
-    /// The current session id.
+    /// The current session id (`session.id`), or nil before `start`.
+    public static var currentSessionId: String? { TracewayClient.shared?.currentSessionId }
+
+    @available(*, deprecated, renamed: "currentSessionId")
     public static var sessionId: String? { TracewayClient.shared?.currentSessionId }
 
     /// The OpenTelemetry tracer of this installation, for spans of your own.

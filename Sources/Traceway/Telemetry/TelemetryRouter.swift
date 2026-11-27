@@ -102,6 +102,9 @@ final class TelemetryRouter {
         self.random = random
     }
 
+    /// The dashboard's captures running now. Only these are stamped, as the
+    /// browser SDK does: the server tracks captures by the ids it created,
+    /// not by the ones triggers make up on the device.
     private func activeCaptureIds() -> [String] {
         let now = Date()
         return control.settings.captures.filter { $0.until > now }.map { $0.id }

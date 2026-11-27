@@ -10,25 +10,25 @@ struct ContentView: View {
             List {
                 Section(header: Text("Issues (sent right away)")) {
                     Button("Capture a Swift Error") {
-                        Traceway.capture(SampleError.somethingFailed(code: 42))
+                        Traceway.captureException(SampleError.somethingFailed(code: 42))
                         lastAction = "captured Swift Error"
                     }
                     Button("Capture an NSError") {
-                        Traceway.capture(error: NSError(
+                        Traceway.captureException(NSError(
                             domain: "com.example.Demo", code: 7,
                             userInfo: [NSLocalizedDescriptionKey: "demo failure"]
                         ))
                         lastAction = "captured NSError"
                     }
                     Button("Capture a message") {
-                        Traceway.capture(message: "Something noteworthy happened")
+                        Traceway.captureMessage("Something noteworthy happened")
                         lastAction = "captured message"
                     }
                 }
 
                 Section(header: Text("Breadcrumbs (kept until an issue)")) {
                     Button("Log a line") {
-                        Traceway.log("Opened the cart", severity: .info)
+                        Traceway.log("Opened the cart", level: .info)
                         lastAction = "logged"
                     }
                     Button("Record an action") {
@@ -98,7 +98,7 @@ struct CheckoutView: View {
         VStack(spacing: 16) {
             Text("Checkout").font(.title)
             Button("Pay") {
-                Traceway.capture(SampleError.paymentDeclined)
+                Traceway.captureException(SampleError.paymentDeclined)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 12)

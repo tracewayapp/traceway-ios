@@ -213,7 +213,8 @@ final class WireframeGlyphs {
         return glyph
     }
 
-    private static func placement(_ mode: UIView.ContentMode) -> ImagePlacement {
+    /// How a content mode places an image in its view.
+    static func placement(_ mode: UIView.ContentMode) -> ImagePlacement {
         switch mode {
         case .scaleToFill, .redraw: return .fill
         case .scaleAspectFit: return .aspectFit

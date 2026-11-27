@@ -86,12 +86,17 @@ let keyboardLabelTextId = 14
 /// The first id handed to a captured node.
 let firstCapturedNodeId = 16
 
-/// Shared rules of every wireframe, the same classes as the Flutter SDK's.
-/// Each node carries its geometry and colors inline; these set the defaults
-/// and the placeholder looks.
+/// The stylesheet of every wireframe, byte for byte the same in the iOS,
+/// Android and Flutter SDKs (a test compares it with the shared
+/// `wireframe.css`; change them together). Each node carries its geometry
+/// and colors inline; these rules set the defaults and the looks of the
+/// classes: `.t` text, `.n` one line, `.e` cut with an ellipsis, `.k` field
+/// text, `.im` image placeholder, `.ic` icon, `.cp` custom drawing, `.mk`
+/// masked, `.sk` SwiftUI text bars, `.pv` native view placeholder. The
+/// platform's font is inline on the screen node (`screenNodeStyle`).
 let wireframeCss = """
 html,body{margin:0;padding:0;overflow:hidden;background:#000}
-body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:none;text-size-adjust:none}
+body{font-family:Roboto,"Segoe UI","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:none;text-size-adjust:none}
 #tw{position:relative;overflow:hidden}
 #tw div,#tw img{position:absolute;left:0;top:0;box-sizing:border-box;margin:0}
 .t{white-space:pre-wrap;overflow-wrap:break-word;line-height:1.17}
@@ -108,6 +113,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue"
 .pv{display:flex;align-items:center;justify-content:center;overflow:hidden;background-color:#eceff1;background-image:repeating-linear-gradient(135deg,rgba(96,125,139,.16) 0 10px,transparent 10px 20px);box-shadow:inset 0 0 0 1px rgba(96,125,139,.45);color:#455a64;font-size:13px;font-weight:500;text-align:center}
 
 """
+
+/// The font stack of the screen node: Apple's system font where the replay
+/// runs on an Apple device, the closest fonts elsewhere.
+let wireframeFontFamily = #"-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif"#
+
+/// The inline style of the screen node (`div#tw`, `screenNodeId`): its size
+/// in points and the platform's font.
+func screenNodeStyle(width: Double, height: Double) -> String {
+    "width:\(WireframeCSS.px(width));height:\(WireframeCSS.px(height));font-family:\(wireframeFontFamily);"
+}
 
 /// The rrweb document of a full snapshot, with `screen` inside its body.
 func serializeDocument(_ screen: VNode) -> JSON {

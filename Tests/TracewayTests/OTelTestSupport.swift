@@ -19,6 +19,9 @@ final class MemoryLogExporter: LogRecordExporter, @unchecked Sendable {
 
     func events(_ name: String) -> [ReadableLogRecord] { records.filter { $0.eventName == name } }
 
+    /// `Traceway.log` lines: records without an event name.
+    var consoleLines: [ReadableLogRecord] { records.filter { $0.eventName == nil || $0.eventName == "" } }
+
     func export(logRecords: [ReadableLogRecord], explicitTimeout: TimeInterval?) -> ExportResult {
         lock.lock()
         _records.append(contentsOf: logRecords)

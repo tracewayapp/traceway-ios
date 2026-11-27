@@ -172,7 +172,7 @@ final class E2EScript {
         phase("breadcrumbs_done")
 
         // 2. The exception brings them up, with a replay clip.
-        Traceway.capture(CheckoutError(amount: 1999))
+        Traceway.captureException(CheckoutError(amount: 1999))
         Traceway.flush(timeout: 10)
         phase("exception_sent")
 
@@ -231,8 +231,8 @@ final class E2EScript {
         let client = try start(options(), dsn: dsn)
         phase("resumed", ["instance": client.instanceId, "session": client.currentSessionId ?? ""], wait: false)
         pause(1)
-        Traceway.capture(message: "e2e after restart")
-        Traceway.capture(CheckoutError(amount: 5))
+        Traceway.captureMessage("e2e after restart")
+        Traceway.captureException(CheckoutError(amount: 5))
         Traceway.flush(timeout: 10)
         phase("resume_done")
         Traceway.shutdown()
@@ -244,7 +244,7 @@ final class E2EScript {
         let client = try start(options(telemetry: TracewayTelemetry(url: otlp)), dsn: nil)
         phase("standalone", ["instance": client.instanceId], wait: false)
         Traceway.log("e2e standalone log")
-        Traceway.capture(CheckoutError(amount: 7))
+        Traceway.captureException(CheckoutError(amount: 7))
         Traceway.flush(timeout: 10)
         phase("standalone_done")
         Traceway.shutdown()
@@ -310,7 +310,7 @@ final class GalleryReplaySource: ReplaySource {
     /// Where `ms` falls in the recording.
     private func recordingTime(_ ms: Int64) -> Int64 { first + ((ms - origin) % length + length) % length }
 
-    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> RecordingClip? {
+    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload? {
         guard !events.isEmpty else { return nil }
         let end = untilMs ?? Clock.nowMs()
         let start = max(sinceMs ?? end - 10_000, end - 60_000)
@@ -343,7 +343,7 @@ final class GalleryReplaySource: ReplaySource {
             index += 1
         }
         out.append(["type": 5, "data": ["tag": "traceway.end", "payload": [:]], "timestamp": JSON(end)])
-        return RecordingClip(clipId: clipId, events: out, startedAtMs: start, endedAtMs: end,
+        return SessionRecordingPayload(clipId: clipId, events: out, startedAtMs: start, endedAtMs: end,
                              approxBytes: JSON.array(out).encoded().utf8.count)
     }
 }
@@ -376,7 +376,7 @@ final class SyntheticScreenSource: ReplaySource {
 
     func clearBuffer() { recorder.clearBuffer() }
     func hasFrames(sinceMs: Int64?, untilMs: Int64?) -> Bool { recorder.hasFrames(sinceMs: sinceMs, untilMs: untilMs) }
-    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> RecordingClip? {
+    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload? {
         recorder.captureRecording(clipId: clipId, sinceMs: sinceMs, untilMs: untilMs)
     }
 

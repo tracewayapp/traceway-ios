@@ -205,6 +205,9 @@ struct Settings: Equatable {
     /// Wireframe recordings mask what is typed into text fields
     /// (`replay.maskAllInputs`, as in the browser SDK).
     var replayMaskAllInputs: Bool = true
+    /// When wireframe recordings inline the pictures of image views
+    /// (`replay.images`); held at or below `TracewayOptions.replayImages`.
+    var replayImages: TracewayImagePolicy = .wifi
     var bufferMaxBytes: Int
     var bufferMaxAgeSeconds: Double
     var persist: Bool
@@ -224,6 +227,8 @@ struct Ceilings: Equatable {
     /// `.off` when screen capture is not allowed.
     var replay: Mode
     var sessions: Bool
+    /// `TracewayOptions.replayImages`; nothing when replay is off.
+    var replayImages: TracewayImagePolicy = .always
 
     func signal(_ name: String) -> Mode { signals[name] ?? .off }
 }
@@ -298,7 +303,8 @@ func ceilingsFrom(
     captureNetwork: Bool = true,
     captureNavigation: Bool = true,
     captureUserActions: Bool = true,
-    sessions: Bool = true
+    sessions: Bool = true,
+    replayImages: TracewayImagePolicy = .always
 ) -> Ceilings {
     func allow(_ flag: Bool) -> Mode { flag ? .stream : .off }
     var signals: [String: Mode] = [:]
@@ -311,6 +317,7 @@ func ceilingsFrom(
         enabled: enabled,
         signals: signals,
         replay: allow(screenCapture),
-        sessions: sessions
+        sessions: sessions,
+        replayImages: screenCapture ? replayImages : .off
     )
 }

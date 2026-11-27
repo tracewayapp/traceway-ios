@@ -72,8 +72,9 @@ final class PlatformHooks {
                 fps: min(max(client.options.fps, 1), 15),
                 debug: client.options.debug
             )
-            let interaction = client.interaction
-            recorder.screenName = { interaction.screen }
+            let screen = client.screen
+            recorder.screenName = { screen.name }
+            recorder.imageBudget = client.replay.budget
             self.recorder = recorder
         } else {
             recorder = nil
@@ -86,6 +87,8 @@ final class PlatformHooks {
             let hooks = PlatformHooks(client: client)
             current = hooks
             hooks.addObservers()
+            client.screen.viewportProvider = PlatformHooks.viewport
+            client.screen.viewport = PlatformHooks.viewport()
             if !swizzled {
                 swizzled = true
                 UIApplication.tracewaySwizzleSendEvent()
@@ -151,6 +154,16 @@ final class PlatformHooks {
 
     // MARK: - Navigation
 
+    /// The size of the key window (or the first one in front), in points,
+    /// as issues carry it (`viewport`). Main thread only.
+    static func viewport() -> String? {
+        let windows = WireframeRoots.visibleWindows()
+        guard let window = WireframeRoots.screenWindow(of: windows) else { return nil }
+        let size = window.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        return "\(Int(size.width.rounded()))x\(Int(size.height.rounded()))"
+    }
+
     private var lastScreen: (path: String, at: TimeInterval)?
 
     func viewDidAppear(_ controller: UIViewController) {
@@ -162,6 +175,7 @@ final class PlatformHooks {
         let from = lastScreen?.path
         lastScreen = (path, now)
         let action = controller.isMovingToParent || controller.isBeingPresented ? "push" : "pop"
+        if let viewport = PlatformHooks.viewport() { client.screen.viewport = viewport }
         client.recordNavigation(to: path, action: action, from: from, time: Date())
     }
 
@@ -217,8 +231,10 @@ final class TouchTracker {
                 client.markActivity()
             case .ended:
                 guard let began = touches.removeValue(forKey: key) else { continue }
-                let dx = point.x - began.start.x, dy = point.y - began.start.y
-                let tap = dx * dx + dy * dy < 100 && touch.timestamp - began.time < 1.0
+                let tap = TapGesture.isTap(
+                    dx: Double(point.x - began.start.x), dy: Double(point.y - began.start.y),
+                    durationMs: Int64(((touch.timestamp - began.time) * 1000).rounded())
+                )
                 if tap { self.tap(at: point, in: window, view: touch.view, client: client) }
             case .cancelled:
                 touches.removeValue(forKey: key)

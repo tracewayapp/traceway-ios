@@ -46,7 +46,10 @@ let package = Package(
         ),
         .testTarget(
             name: "TracewayTests",
-            dependencies: ["Traceway"]
+            dependencies: ["Traceway"],
+            // The shared wireframe stylesheet, byte for byte the Android
+            // and Flutter SDKs' copy; `wireframeCss` must equal it.
+            resources: [.copy("Resources/wireframe.css")]
         ),
     ],
     swiftLanguageModes: [.v5]

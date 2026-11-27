@@ -7,7 +7,6 @@ enum Events {
     static let exception = "exception"
     static let message = "traceway.message"
     static let action = "traceway.action"
-    static let console = "browser.console"
     static let navigation = "browser.navigation"
     /// A tap, under the browser SDK's name so the dashboard shows it the same.
     static let click = "browser.user_action.click"
@@ -17,6 +16,9 @@ enum Events {
     static let triggerFired = "traceway.trigger.fired"
     static let captureStarted = "traceway.capture.started"
     static let configApplied = "traceway.config.applied"
+    /// The SDK dropped data: the session's budget ran out, errors were
+    /// suppressed, replay segments failed to upload.
+    static let collectionHealth = "traceway.collection.health"
 }
 
 enum Attr {
@@ -38,15 +40,17 @@ private let controlEvents: Set<String> = [
     Events.triggerFired,
     Events.captureStarted,
     Events.configApplied,
-    "traceway.collection.health",
+    Events.collectionHealth,
 ]
 
 /// Maps a log record's event name to the signal whose settings govern it.
+/// A log line has no event name; `browser.console` is the browser SDK's
+/// console record.
 func classifyLog(_ eventName: String?) -> String {
     switch eventName {
     case Events.exception?: return "errors"
     case Events.message?: return "messages"
-    case Events.console?, nil, ""?: return "console"
+    case "browser.console"?, nil, ""?: return "console"
     case Events.navigation?: return "navigation"
     case Events.click?: return "userActions"
     case "browser.web_vital"?: return "webVitals"

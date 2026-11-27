@@ -1,8 +1,10 @@
 import Foundation
 
-/// One screen-recording clip: the rrweb events of a wireframe recording,
-/// each a JSON object with `type`, `data` and `timestamp`.
-struct RecordingClip {
+/// One screen-recording clip a recorder hands the replay controller: the
+/// rrweb events of a wireframe recording, each a JSON object with `type`,
+/// `data` and `timestamp`. The controller wraps it in a `RecordingSegment`
+/// for upload.
+struct SessionRecordingPayload {
     /// Names the clip while it is assembled; not sent.
     var clipId: String
     var events: [JSON]
@@ -29,5 +31,5 @@ protocol ReplaySource: AnyObject {
 
     /// Makes one clip of what was on screen at or after `sinceMs` and before
     /// `untilMs`. The frames are chosen when this is called.
-    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> RecordingClip?
+    func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload?
 }
