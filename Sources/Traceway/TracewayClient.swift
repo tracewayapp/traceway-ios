@@ -1793,11 +1793,10 @@ extension TracewayClient: RouterHooks {
 
     func globalAttribute(_ key: String) -> String? { globalAttributes[key] }
 
+    // Only session events carry traceway.session.started_at, as in the browser SDK: the server reads the
+    // session's start from them and nothing else.
     func enrichLog(_ record: inout ReadableLogRecord, signal: String) -> Bool {
         let existing = record.attributes
-        if let session = sessions?.current, existing[Attr.sessionStartedAt] == nil {
-            record.setAttribute(key: Attr.sessionStartedAt, value: .int(Int(session.startedAtMs)))
-        }
         for (key, value) in globalAttributes where existing[key] == nil {
             record.setAttribute(key: key, value: .string(value))
         }
