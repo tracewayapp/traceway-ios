@@ -40,6 +40,7 @@ final class E2EScript {
     let state: URL
     let gallery: URL?
     let otlp: String?
+    private let syntheticScreen = SyntheticScreenSource()
 
     init(dsn: String, control: URL, state: URL, gallery: URL?, otlp: String?) {
         self.dsn = dsn
@@ -102,7 +103,7 @@ final class E2EScript {
     }
 
     private func start(_ options: TracewayOptions, dsn: String?) throws -> TracewayClient {
-        let replay: ReplaySource = gallery.flatMap { try? GalleryReplaySource(directory: $0) } ?? SyntheticScreenSource()
+        let replay: ReplaySource = gallery.flatMap { try? GalleryReplaySource(directory: $0) } ?? syntheticScreen
         // TRACEWAY_E2E_DSN keeps the 2.0 form: token@http://host.
         let parsed = try dsn.map(parseConnectionString)
         return try TracewayClient.start(
@@ -178,6 +179,7 @@ final class E2EScript {
         Traceway.captureException(CheckoutError(amount: 1999))
         Traceway.flush(timeout: 10)
         phase("exception_sent")
+        syntheticScreen.pictureCount.value = 1
 
         // 3. The trigger from the app's own settings: a navigation, a tap
         // and a log line start a capture that streams logs and replay.
@@ -192,6 +194,7 @@ final class E2EScript {
         Traceway.log("e2e after journey")
         Traceway.flush(timeout: 10)
         phase("journey_done")
+        syntheticScreen.pictureCount.value = 0
 
         // 4. A capture the dashboard starts for this instance.
         for i in 0..<3 { Traceway.log("e2e pre-capture tick \(i)") }
@@ -233,7 +236,7 @@ final class E2EScript {
     /// 6: the next start continues the session, a crash of the earlier run
     /// is reported, and its first error brings up the killed run's buffer.
     func resume() throws {
-        writeCrashRecord()
+        try writeCrashRecord()
         let client = try start(options(), dsn: dsn)
         phase("resumed", ["instance": client.instanceId, "session": client.currentSessionId ?? ""], wait: false)
         pause(1)
@@ -258,8 +261,10 @@ final class E2EScript {
 
     /// A fatal signal of the earlier run, as the signal handler writes it on
     /// a device: the binary images and the addresses the server symbolicates.
-    private func writeCrashRecord() {
-        let dir = state.appendingPathComponent(CrashRecordStore.directoryName, isDirectory: true)
+    private func writeCrashRecord() throws {
+        let parsed = try parseConnectionString(dsn)
+        let diagnostics = try diagnosticFixtureDirectory(stateDirectory, token: parsed.token, baseUrl: parsed.baseUrl)
+        let dir = CrashRecordStore.directory(base: diagnostics)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let record = [
             "TRACEWAY_SIGNAL_V1",
@@ -349,14 +354,39 @@ final class GalleryReplaySource: ReplaySource {
             index += 1
         }
         out.append(["type": 5, "data": ["tag": "traceway.end", "payload": [:]], "timestamp": JSON(end)])
-        return SessionRecordingPayload(clipId: clipId, events: out, startedAtMs: start, endedAtMs: end,
-                             approxBytes: JSON.array(out).encoded().utf8.count)
+        return SessionRecordingPayload(clipId: clipId, events: out, startedAtMs: start, endedAtMs: end)
     }
 }
 
 /// A screen made of wireframe nodes, for runs without the gallery: a list
 /// whose clock ticks every second.
 final class SyntheticScreenSource: ReplaySource {
+    // Four PNGs fit the single-image limit but exceed one segment's allowance.
+    private static let rasterNodes: [VNode] = {
+        var random: UInt32 = 17
+        var nodes: [VNode] = []
+        for i in 0..<4 {
+            var rgba = [UInt8](repeating: 255, count: 100 * 100 * 4)
+            for j in rgba.indices where j % 4 != 3 {
+                random = random &* 1_664_525 &+ 1_013_904_223
+                rgba[j] = UInt8(truncatingIfNeeded: random >> 24)
+            }
+            guard let png = MaskPNG.encodeColor(rgba: rgba, width: 100, height: 100) else {
+                XCTFail("Could not generate the synthetic PNG")
+                return []
+            }
+            XCTAssertLessThanOrEqual(png.count, 48 * 1024)
+            XCTAssertGreaterThan(png.base64EncodedString().utf8.count, 32 * 1024)
+            let cls = "p\(i)"
+            let css = WireframeImageEncoding.rule(cls: cls, mime: "image/png", data: png)
+            nodes.append(VNode(element: 30 + 2 * i, tag: "style", attributes: ["_cssText": css], children: []))
+            nodes.append(VNode(element: 31 + 2 * i, tag: "div", attributes: [
+                "class": "im \(cls)", "style": "left:\(i * 70)px;top:140px;width:64px;height:64px;",
+            ], children: []))
+        }
+        return nodes
+    }()
+    let pictureCount = Locked(4)
     private let recorder = WireframeRecorder(maxFrames: 400, fps: 2)
     private var timer: DispatchSourceTimer?
 
@@ -397,7 +427,7 @@ final class SyntheticScreenSource: ReplaySource {
         ], children: [VNode(text: 23, text: "Pay now")])
         let screen = VNode(element: screenNodeId, tag: "div", attributes: [
             "id": "tw", "style": "width:390px;height:844px;background-color:#ffffff;",
-        ], children: [text, button])
+        ], children: [text, button] + Self.rasterNodes.prefix(2 * pictureCount.value))
         recorder.push(WireframeFrame(screen: screen, width: 390, height: 844, timestampMs: now, href: "/checkout"))
     }
 }

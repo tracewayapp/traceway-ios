@@ -11,6 +11,10 @@ final class ClipSource: ReplaySource {
         let until: Int64?
     }
 
+    private let fixtureEvents: [JSON]?
+
+    init(events: [JSON]? = nil) { fixtureEvents = events }
+
     private let lock = NSLock()
     private var running = false
     private var _clears = 0
@@ -46,12 +50,13 @@ final class ClipSource: ReplaySource {
         }
         gate?.wait()
         let end = untilMs ?? 0
+        let events: [JSON] = fixtureEvents ?? [["type": 2, "data": "AAECAw==", "timestamp": JSON(end)]]
         return SessionRecordingPayload(
             clipId: clipId,
-            events: [["type": 2, "data": "AAECAw==", "timestamp": JSON(end)]],
+            events: events,
             startedAtMs: sinceMs ?? end - 10_000,
             endedAtMs: end,
-            approxBytes: 40
+            approxBytes: fixtureEvents == nil ? 40 : JSON.array(events).encoded().utf8.count
         )
     }
 }
@@ -98,6 +103,33 @@ final class ReplayControllerTests: XCTestCase {
     }
 
     private func uploaded() -> [[String: JSON]] { http.requests.flatMap(segments(of:)) }
+
+    func testOverBudgetRasterClipUploadsItsLayoutWithinTheSessionByteBudget() throws {
+        let data = Data(repeating: 0x61, count: 24 * 1024)
+        let styles = (0..<4).map { i in
+            VNode(element: 100 + i, tag: "style",
+                  attributes: ["_cssText": WireframeImageEncoding.rule(cls: "p\(i)", mime: "image/png", data: data)],
+                  children: [])
+        }
+        let root = VNode(element: screenNodeId, tag: "div", attributes: ["style": "width:320px;height:600px"],
+                         children: styles + [VNode(text: 200, text: "Checkout")])
+        let events: [JSON] = [["type": 2, "timestamp": 1, "data": ["node": serializeDocument(root)]]]
+        let structuralBytes = JSON.array(events).encoded().utf8.count - 4 * 32 * 1024
+        let c = controller(budget: CollectionBudget(maxBytes: structuralBytes + 1024))
+        let source = ClipSource(events: events)
+        onQueue {
+            c.attach(source)
+            c.apply(.buffer, maxAgeMs: 600_000)
+            _ = c.flush(lookbackMs: 30_000, exceptionId: "checkout")
+        }
+        XCTAssertTrue(drain(c))
+        let uploaded = try XCTUnwrap(uploaded().first)
+        XCTAssertEqual(uploaded["exceptionId"], "checkout")
+        let replay = try XCTUnwrap(uploaded["events"]?.array?.first)
+        XCTAssertFalse(replay.encoded().contains("data:image/"))
+        XCTAssertTrue(replay.encoded().contains("width:320px;height:600px"))
+        XCTAssertTrue(replay.encoded().contains("Checkout"))
+    }
 
     func testACaptureFlushWithoutAnExceptionIsPartOfTheSession() {
         let c = controller()

@@ -31,6 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Signal disposition and forwarding tests
+        run: CI/signals/test.sh
+
       - name: swift test
         run: swift test
 
@@ -48,8 +51,17 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Test symbol upload destinations
+        run: CI/test_upload_url.sh
+
+      - name: Test simulator release gate
+        run: ruby CI/test_release_gate.rb
+
       - name: swift build
         run: swift build
+
+      - name: Signal disposition and forwarding tests
+        run: CI/signals/test.sh
 
       - name: swift test (host = macOS)
         run: swift test
@@ -64,61 +76,7 @@ jobs:
   # Exercises the UIKit device-info paths that the macOS host can't. No secrets.
   # ---------------------------------------------------------------------------
   simulator-tests:
-    name: XCTest on iOS Simulator
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Pick an available simulator
-        id: sim
-        run: |
-          NAME=$(xcrun simctl list devices available \
-            | grep -oE 'iPhone [0-9]+( Pro( Max)?)?' | sort -V | tail -1)
-          echo "name=${NAME:-iPhone 16}" >> "$GITHUB_OUTPUT"
-          echo "Using simulator: ${NAME:-iPhone 16}"
-
-      # The gallery's `keyboard` scenario records the system keyboard, which
-      # the Simulator only shows while no hardware keyboard is connected.
-      - name: Use the software keyboard
-        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
-
-      - name: Run XCTest
-        env:
-          # Passed to the test process as WIREFRAME_GALLERY_OUT: where the
-          # wireframe gallery writes its recording and the app's pictures.
-          TEST_RUNNER_WIREFRAME_GALLERY_OUT: ${{ github.workspace }}/wireframe-gallery
-        run: |
-          xcodebuild test \
-            -project TracewayCI.xcodeproj \
-            -scheme TracewayCI \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            -resultBundlePath sim-results.xcresult
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: simulator-xcresult
-          path: sim-results.xcresult
-          if-no-files-found: ignore
-
-      # `python3 CI/wireframe/run.py --gh-run <id>` renders it in
-      # rrweb-player and compares every checkpoint with the app's picture.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: wireframe-gallery
-          path: wireframe-gallery
-          if-no-files-found: ignore
+    uses: ./.github/workflows/simulator.yml
 
   # ---------------------------------------------------------------------------
   # Build the signed device test bundle for Firebase Test Lab.

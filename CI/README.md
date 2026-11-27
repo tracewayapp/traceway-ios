@@ -18,6 +18,8 @@ Four layers, matching `.github/workflows/tests.yml`:
 ./Scripts/test.sh device   # device-arch build-for-testing compile check
 ```
 
+Release publishes after the Linux and macOS jobs and the same iOS Simulator XCTest workflow used for pull requests. Run `ruby CI/test_release_gate.rb` to check that dependency and `CI/signals/test.sh` to exercise the native signal chain on a Linux or macOS host. `CI/signals/test.sh -fsanitize=thread` also checks concurrent reconfiguration under ThreadSanitizer.
+
 The simulator and device layers use an Xcode project generated from
 [`project.yml`](../project.yml) via [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 (`brew install xcodegen`). The generated `TracewayCI.xcodeproj` is git-ignored —
@@ -181,7 +183,9 @@ breadcrumbs, the exception with its breadcrumbs, tap selector, request span,
 session and wireframe clip, a recording trigger from local settings, a capture
 started and cancelled from the dashboard, a remote rule built from the
 selector the server recorded, and a session that survives a kill, with the
-earlier run's crash reported and symbolicated by the server.
+earlier run's crash reported and symbolicated by the server. The default synthetic
+screen also checks an image-heavy clip falls back to layout and a later
+segment retains its image.
 
 ```sh
 python3 CI/e2e/run.py --base http://127.0.0.1:8082 --email you@example.com --password … \

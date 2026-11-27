@@ -183,6 +183,19 @@ public final class TracewayClient: @unchecked Sendable {
         shutdownLock.lock(); defer { shutdownLock.unlock() }
         return stoppingState
     }
+
+    /// A shutdown can start as soon as the client becomes shared. Serialize
+    /// registration with that transition so it cannot leave a late hook behind.
+    func installProcessCapture() {
+        let (directory, metadata) = onQueueSync { (diagnosticDirectory, crashMetadata()) }
+        shutdownLock.lock()
+        defer { shutdownLock.unlock() }
+        guard !stoppingState, !shutdownState else { return }
+        CrashReporter.install(owner: ObjectIdentifier(self), baseDir: directory,
+                              persistToDisk: options.persistToDisk, metadata: metadata, appVersion: serviceVersion)
+        StdoutCapture.install(for: self)
+    }
+
     private var emitDepth = 0
     private var errorTimes: [Int64] = []
     private var lastErrorKey: String?
@@ -454,7 +467,7 @@ public final class TracewayClient: @unchecked Sendable {
     private func startOnQueue(device: [String: String]) {
         let stateDir = resolveStateDirectory()
         stateDirectory = stateDir
-        store = StateStore(directory: stateDir, destination: routes.traceway?.key ?? bufferDestination)
+        store = StateStore(directory: stateDir, destination: routes.traceway?.key ?? routes.bufferDestination)
         store.load()
         replay.budget.store = store
         replay.onBudgetDrop = { [weak self] in self?.scheduleHealth() }
@@ -494,7 +507,7 @@ public final class TracewayClient: @unchecked Sendable {
         manager.start()
 
         if let stateDir = stateDir {
-            let persistence = BufferPersistence(directory: stateDir, destination: bufferDestination)
+            let persistence = BufferPersistence(directory: stateDir, destination: routes.bufferDestination)
             persisted = persistence
             let settings = control.settings
             if settings.persist {
@@ -515,9 +528,13 @@ public final class TracewayClient: @unchecked Sendable {
             }
         }
 
-        appHangs?.setDirectory(stateDir)
-        let crashes = reportEarlierRuns(stateDir)
-        let fatalHang = reportFatalHang(stateDir)
+        let diagnostics = diagnosticDirectory
+        if diagnostics != nil {
+            CrashReporter.discardUnscopedReports(support: supportDirectory(), state: stateDir)
+        }
+        appHangs?.setDirectory(diagnostics)
+        let crashes = reportEarlierRuns(diagnostics)
+        let fatalHang = reportFatalHang(diagnostics)
         checkLastRunExit(stateDir, crashRecorded: crashes > 0 || fatalHang)
 
         if remoteConfigEnabled, let endpoints = endpoints {
@@ -613,8 +630,8 @@ public final class TracewayClient: @unchecked Sendable {
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
     }
 
-    private var bufferDestination: String {
-        Ids.fingerprint64(JSON([routes.traceway?.key ?? "", routes.logs.key, routes.traces.key]).encoded())
+    var diagnosticDirectory: URL? {
+        options.persistToDisk ? stateDirectory.map(routes.diagnosticDirectory(in:)) : nil
     }
 
     var serviceName: String {
@@ -758,13 +775,10 @@ public final class TracewayClient: @unchecked Sendable {
         }
     }
 
-    /// Crashes the signal handler wrote in an earlier run, and reports the
-    /// 1.x SDK left unsent, are reported now with their original time and
-    /// the session they happened in. Returns the number of crashes.
+    /// Signals left by an earlier run for these receivers, under that run's session.
     @discardableResult
     private func reportEarlierRuns(_ stateDir: URL?) -> Int {
-        let base = supportDirectory()
-        let pending = CrashReporter.takePendingCrashes(baseDir: base)
+        let pending = CrashReporter.takePendingCrashes(baseDir: stateDir)
         for crash in pending {
             // MetricKit's report of the same crash is not sent again.
             recordExit(ExitLedgerEntry(kind: .signal, signal: crash.signal, ms: crash.recordedAtMs))
@@ -792,20 +806,6 @@ public final class TracewayClient: @unchecked Sendable {
             emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: attributes,
                            resource: resource, time: Clock.date(ms: crash.recordedAtMs))
             if options.captureMetrics { metrics.crash() }
-        }
-        for report in LegacyReports.take(baseDir: base) {
-            var attributes: [String: AttributeValue] = [Attr.exceptionId: .string(Ids.uuidv4())]
-            for (key, value) in report.attributes { attributes[key] = .string(value) }
-            if report.isMessage {
-                emit(eventName: Events.message, severity: .info, body: report.stackTrace,
-                     attributes: attributes, time: Clock.date(ms: report.recordedAtMs))
-            } else {
-                let firstLine = report.stackTrace.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
-                attributes["exception.type"] = .string(firstLine)
-                attributes["exception.stacktrace"] = .string(report.stackTrace)
-                emit(eventName: Events.exception, severity: .error, attributes: attributes,
-                     time: Clock.date(ms: report.recordedAtMs))
-            }
         }
         return pending.count
     }
@@ -1315,6 +1315,7 @@ public final class TracewayClient: @unchecked Sendable {
             stopped.enter()
         }
         shutdownLock.unlock()
+        stopProcessCapture()
         if first { stop() }
         if !isOnQueue { _ = stopped.wait(timeout: .now() + 10) }
     }
@@ -1331,6 +1332,7 @@ public final class TracewayClient: @unchecked Sendable {
     /// overwrite or send the same thing.
     private func supersede() {
         isShutdown = true
+        stopProcessCapture()
         store.seal()
         outbox?.dispose()
         tracewayOutbox?.dispose()
@@ -1566,7 +1568,7 @@ public final class TracewayClient: @unchecked Sendable {
 
     /// The signal handler writes what is known now into a crash record.
     private func updateCrashMetadata(_ session: SessionInfo? = nil) {
-        guard started || session != nil, CrashReporter.recordsSignals else { return }
+        guard options.persistToDisk, started || session != nil, CrashReporter.recordsSignals else { return }
         var metadata = resourceAttributes
         for (key, value) in globalAttributes { metadata[key] = value }
         if let session = session ?? sessions?.current {
@@ -1574,7 +1576,7 @@ public final class TracewayClient: @unchecked Sendable {
             metadata[Attr.sessionStartedAt] = String(session.startedAtMs)
         }
         if let name = screen.name { metadata["app.screen.name"] = name }
-        CrashReporter.updateMetadata(metadata, appVersion: serviceVersion)
+        CrashReporter.updateMetadata(metadata, owner: ObjectIdentifier(self), appVersion: serviceVersion)
     }
 
     func crashMetadata() -> [String: String] {
@@ -2245,10 +2247,10 @@ extension TracewayClient {
     private func reportFatalHang(_ stateDir: URL?) -> Bool {
         guard let hang = AppHangMonitor.takeFatal(directory: stateDir) else { return false }
         recordExit(ExitLedgerEntry(kind: .hang, signal: 0, ms: Int64.saturatingSum(hang.startedAtMs, hang.blockedMs)))
-        guard options.captureAppHangs else { return true }
+        guard options.captureAppHangs, let attrs = acceptedHangAttributes(hang) else { return true }
         var resource = resourceAttributes
         for (key, value) in hang.resource { resource[key] = value }
-        emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: appHangAttributes(hang),
+        emitEarlierRun(eventName: Events.exception, severity: .fatal, attributes: attrs,
                        resource: resource, time: Clock.date(ms: hang.startedAtMs))
         return true
     }
@@ -2257,16 +2259,20 @@ extension TracewayClient {
     /// with the main thread's stack, unless `ignoreErrors` or
     /// `beforeCapture` says otherwise.
     func reportAppHang(_ hang: AppHangReport) {
-        guard !isShutdown, !hang.fatal else { return }
+        guard !isShutdown, !hang.fatal, let attrs = acceptedHangAttributes(hang) else { return }
+        let time = Clock.date(ms: hang.startedAtMs)
+        afterLogs { self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: time) }
+    }
+
+    private func acceptedHangAttributes(_ hang: AppHangReport) -> [String: AttributeValue]? {
         let message = hang.message
-        guard !ignored(type: AppHangReport.type, message: message) else { return }
+        guard !ignored(type: AppHangReport.type, message: message) else { return nil }
         let attrs = appHangAttributes(hang)
         guard reports(TracewayCapturedError(
             error: nil, type: AppHangReport.type, message: message, isMessage: false,
             attributes: TracewayClient.strings(attrs), stackTrace: hang.stackTrace
-        )) else { return }
-        let time = Clock.date(ms: hang.startedAtMs)
-        afterLogs { self.emit(eventName: Events.exception, severity: .error, attributes: attrs, time: time) }
+        )) else { return nil }
+        return attrs
     }
 
     private func appHangAttributes(_ hang: AppHangReport) -> [String: AttributeValue] {
@@ -2413,7 +2419,7 @@ extension TracewayClient {
     /// lines are left out, and `NSLog`'s copy on standard error while the
     /// unified log is read. Any thread.
     func recordStdLines(_ lines: [String], stream: String) {
-        guard !isShutdown, consoleCaptured.value else { return }
+        guard options.captureStdout, !isStopping, !isShutdown, consoleCaptured.value else { return }
         let skipNSLog = stream == "stderr" && readsOSLog.value
         let kept = lines.filter { !OSLogReader.isOwnLine($0) && !(skipNSLog && TracewayClient.isNSLogLine($0)) }
         guard !kept.isEmpty else { return }

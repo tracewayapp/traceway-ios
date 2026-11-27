@@ -395,7 +395,8 @@ final class TracewayClientTests: XCTestCase {
 
     func testAHardCrashFromTheLastRunIsReportedOnStart() throws {
         let base = temporaryDirectory()
-        let crashDir = CrashRecordStore.directory(base: base)
+        let diagnostics = try diagnosticFixtureDirectory(base.appendingPathComponent("traceway_v2"), token: "token", baseUrl: "https://traceway.example.com")
+        let crashDir = CrashRecordStore.directory(base: diagnostics)
         try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
         let record = """
         TRACEWAY_SIGNAL_V1
@@ -425,7 +426,7 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: crashDir.appendingPathComponent("crash-1.tw").path))
     }
 
-    func testUnsentReportsOfTheFirstSDKAreReportedOnce() throws {
+    func testUnattributedReportsOfEarlierSDKVersionsAreDiscarded() throws {
         let base = temporaryDirectory()
         let pending = base.appendingPathComponent("traceway_pending")
         try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
@@ -435,10 +436,15 @@ final class TracewayClientTests: XCTestCase {
         """
         try report.write(to: pending.appendingPathComponent("a.json"), atomically: true, encoding: .utf8)
 
+        let crashDirectory = CrashRecordStore.directory(base: base)
+        try FileManager.default.createDirectory(at: crashDirectory, withIntermediateDirectories: true)
+        try "TRACEWAY_SIGNAL_V1\nsignal=6\ntime=1700000000\n---FRAMES---\n".write(
+            to: crashDirectory.appendingPathComponent("crash-1.tw"), atomically: true, encoding: .utf8)
+
         let client = try start(stateDirectory: base.appendingPathComponent("traceway_v2"))
         client.flush(timeout: 5)
-        let exception = try XCTUnwrap(logs.events("exception").first)
-        XCTAssertEqual(exception.string("exception.type"), "MyError: boom")
+        XCTAssertTrue(logs.events("exception").isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: crashDirectory.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
     }
 
@@ -736,7 +742,8 @@ final class TracewayClientTests: XCTestCase {
     /// was removed: a crash loop until the app was reinstalled.
     func testACorruptCrashFileIsReportedAndRemovedWithoutTrapping() throws {
         let base = scratchDirectory(self)
-        let crashDir = CrashRecordStore.directory(base: base)
+        let diagnostics = try diagnosticFixtureDirectory(base.appendingPathComponent("traceway_v2"), token: "token", baseUrl: "https://traceway.example.com")
+        let crashDir = CrashRecordStore.directory(base: diagnostics)
         try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
         let file = crashDir.appendingPathComponent("crash-7.tw")
         try "TRACEWAY_SIGNAL_V1\nsignal=4294967296\ntime=99999999999999999\n---FRAMES---\n0x1\n"
@@ -935,7 +942,8 @@ final class TracewayClientTests: XCTestCase {
     /// events it carries no `traceway.session.started_at`.
     func testACrashFromAnEarlierVersionIsReportedUnderThatVersion() throws {
         let base = scratchDirectory(self)
-        let crashDir = CrashRecordStore.directory(base: base)
+        let diagnostics = try diagnosticFixtureDirectory(base.appendingPathComponent("traceway_v2"), token: "token", baseUrl: "https://traceway.example.com")
+        let crashDir = CrashRecordStore.directory(base: diagnostics)
         try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
         try """
         TRACEWAY_SIGNAL_V1

@@ -53,13 +53,14 @@ final class AppExitsClientTests: XCTestCase {
         scheduler: MetricsScheduler? = nil,
         mainStack: (() -> [UInt]?)? = nil,
         osLog: OSLogEntrySource? = nil,
+        token: String = "token",
         graceMs: Int64 = 50
     ) throws -> TracewayClient {
         var options = options
         options.exportDelayMs = 50
         let bodies = metricBodies ?? Payloads()
         return try TracewayClient.start(
-            token: "token", baseUrl: "https://traceway.example.com",
+            token: token, baseUrl: "https://traceway.example.com",
             options: options,
             overrides: TracewayTestOverrides(
                 logExporter: logs,
@@ -119,8 +120,7 @@ final class AppExitsClientTests: XCTestCase {
 
     func testACrashTheSignalHandlerRecordedIsNotReportedAgainByMetricKit() throws {
         let state = stateDirectory()
-        let base = state.deletingLastPathComponent()
-        let crashDir = CrashRecordStore.directory(base: base)
+        let crashDir = CrashRecordStore.directory(base: try diagnostics(state))
         try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
         let crashedAt = Int64(Date().timeIntervalSince1970) - 600
         try """
@@ -166,6 +166,10 @@ final class AppExitsClientTests: XCTestCase {
 
     // MARK: - Fatal hangs (§14.2)
 
+    private func diagnostics(_ state: URL) throws -> URL {
+        try diagnosticFixtureDirectory(state, token: "token", baseUrl: "https://traceway.example.com")
+    }
+
     private func leaveFatalHang(in state: URL, startedAtMs: Int64, blockedMs: Int64) throws {
         let hang = AppHangReport(
             blockedMs: blockedMs, startedAtMs: startedAtMs,
@@ -179,10 +183,42 @@ final class AppExitsClientTests: XCTestCase {
         try hang.encoded().encodedData().write(to: state.appendingPathComponent(AppHangMonitor.fileName))
     }
 
+    func testOnlyTheOriginalProjectAndCollectorRecoverCrashesAndFatalHangs() throws {
+        let state = stateDirectory()
+        let directory = try diagnostics(state)
+        let crashes = CrashRecordStore.directory(base: directory)
+        try FileManager.default.createDirectory(at: crashes, withIntermediateDirectories: true)
+        try "TRACEWAY_SIGNAL_V1\nsignal=6\ntime=1700000000\n---FRAMES---\n".write(
+            to: crashes.appendingPathComponent("crash-1.tw"), atomically: true, encoding: .utf8)
+        try leaveFatalHang(in: directory, startedAtMs: Clock.nowMs() - 4000, blockedMs: 3000)
+        try leaveFatalHang(in: state, startedAtMs: Clock.nowMs() - 8000, blockedMs: 7000)
+        let optedOut = try start(TracewayOptions(persistToDisk: false), stateDirectory: state)
+        optedOut.flush(timeout: 5)
+        XCTAssertTrue(logs.events("exception").isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: state.appendingPathComponent(AppHangMonitor.fileName).path))
+        optedOut.shutdown()
+
+        let metricsOnly = TracewayTelemetry(metrics: TracewayTelemetryEndpoint(url: "https://metrics.example"))
+        let otherRoutes: [(String, TracewayTelemetry?)] = [
+            ("other", nil), ("token", TracewayTelemetry(url: "https://collector.example")), ("token", metricsOnly),
+        ]
+        for (token, telemetry) in otherRoutes {
+            let other = try start(TracewayOptions(telemetry: telemetry), stateDirectory: state, token: token)
+            other.flush(timeout: 5)
+            XCTAssertTrue(logs.events("exception").isEmpty)
+            other.shutdown()
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent(AppHangMonitor.fileName).path))
+        let original = try start(stateDirectory: state)
+        original.flush(timeout: 5)
+        XCTAssertEqual(logs.events("exception").count, 2)
+        XCTAssertEqual(exceptions("AppHang").first?.attributes["app.hang.duration_ms"], .int(3000))
+    }
+
     func testAHangThatEndedTheProcessIsReportedAtTheNextStart() throws {
         let state = stateDirectory()
         let startedAt = Clock.nowMs() - 60_000
-        try leaveFatalHang(in: state, startedAtMs: startedAt, blockedMs: 15_000)
+        try leaveFatalHang(in: diagnostics(state), startedAtMs: startedAt, blockedMs: 15_000)
         let client = try start(stateDirectory: state)
         client.flush(timeout: 5)
         let hang = try XCTUnwrap(exceptions("AppHang").first)
@@ -197,7 +233,7 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertEqual(hang.resource.attributes["service.version"], .string("0.9.0"))
         XCTAssertEqual(hang.severity, .fatal)
         XCTAssertLessThanOrEqual(abs(Clock.ms(hang.timestamp) - startedAt), 1)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent(AppHangMonitor.fileName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try diagnostics(state).appendingPathComponent(AppHangMonitor.fileName).path))
 
         // The watchdog termination that ended it is counted, not reported again.
         let killed = Date(timeIntervalSince1970: Double(startedAt + 15_000) / 1000)
@@ -233,7 +269,7 @@ final class AppExitsClientTests: XCTestCase {
         scheduler.advance(500)
         for _ in 0..<4 { scheduler.advance(500) }
         client.appHangs?.settle()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: state.appendingPathComponent(AppHangMonitor.fileName).path),
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try diagnostics(state).appendingPathComponent(AppHangMonitor.fileName).path),
                       "kept on disk while the main thread is blocked")
         scheduler.advance(500)
         scheduler.advance(500)
@@ -253,7 +289,7 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertTrue(trace.contains("#01 ") && trace.contains("0x100456"), trace)
         XCTAssertEqual(hang.string("app.screen.name"), "/cart")
         XCTAssertEqual(hang.string("session.id"), client.currentSessionId)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent(AppHangMonitor.fileName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try diagnostics(state).appendingPathComponent(AppHangMonitor.fileName).path))
 
         // A block under the threshold is the app.hang metric's business only.
         blockMain(host, scheduler, forMs: 1000)
@@ -357,7 +393,7 @@ final class AppExitsClientTests: XCTestCase {
         }), "it called exit")
         XCTAssertNil(try oomCount({ client, state in
             client.appResumed()
-            let crashDir = CrashRecordStore.directory(base: state.deletingLastPathComponent())
+            let crashDir = CrashRecordStore.directory(base: try diagnostics(state))
             try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
             try "TRACEWAY_SIGNAL_V1\nsignal=6\ntime=\(Int(Date().timeIntervalSince1970))\n---FRAMES---\n"
                 .write(to: crashDir.appendingPathComponent("crash-9.tw"), atomically: true, encoding: .utf8)
@@ -456,8 +492,56 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
     }
 
+    func testReinitializedClientRequiresItsOwnStdoutOptIn() throws {
+        let first = try start(TracewayOptions(recordAllSessions: true, captureStdout: true))
+        first.shutdown()
+        let next = try start(TracewayOptions(recordAllSessions: true))
+        next.recordStdLines(["after opt out"], stream: "stdout")
+        next.flush(timeout: 5)
+        XCTAssertTrue(lines("stdout").isEmpty)
+    }
+
+    func testStdoutPipesDoNotCarryPartialLinesAcrossClientLifetimes() throws {
+        let capture = TracewayOptions(recordAllSessions: true, captureStdout: true)
+        let first = try start(capture)
+        first.installProcessCapture()
+        FileHandle.standardOutput.write(Data("first client\nprivate partial".utf8))
+        XCTAssertTrue(eventually { self.lines("stdout").contains { $0.body == .string("first client") } })
+        first.shutdown()
+
+        let disabled = try start(TracewayOptions(recordAllSessions: true))
+        disabled.installProcessCapture()
+        FileHandle.standardOutput.write(Data("disabled output\n".utf8))
+        disabled.shutdown()
+
+        let last = try start(capture)
+        last.installProcessCapture()
+        first.installProcessCapture() // A stale startup cannot replace the running client's pipes.
+        StdoutCapture.uninstall(for: first)
+        FileHandle.standardOutput.write(Data("next client\n".utf8))
+        XCTAssertTrue(eventually { self.lines("stdout").contains { $0.body == .string("next client") } })
+        last.shutdown()
+        XCTAssertEqual(lines("stdout").map { $0.body }, [.string("first client"), .string("next client")])
+    }
+
+    func testRecoveredFatalHangHonorsBeforeCaptureAndIgnoreErrors() throws {
+        let state = stateDirectory()
+        let seen = expectation(description: "beforeCapture sees the recovered fatal hang")
+        for options in [TracewayOptions(beforeCapture: { event in
+            if event.attributes["app.hang.fatal"] == "true" { seen.fulfill() }
+            return false
+        }), TracewayOptions(ignoreErrors: ["AppHang"])] {
+            try leaveFatalHang(in: diagnostics(state), startedAtMs: Clock.nowMs() - 5000, blockedMs: 3000)
+            let client = try start(options, stateDirectory: state)
+            client.flush(timeout: 5)
+            XCTAssertTrue(exceptions("AppHang").isEmpty)
+            client.shutdown()
+        }
+        wait(for: [seen], timeout: 1)
+    }
+
     func testStandardOutputAndErrorLinesAreConsoleLines() throws {
-        let client = try start(TracewayOptions(recordAllSessions: true), osLog: FakeOSLogSource())
+        let client = try start(TracewayOptions(recordAllSessions: true, captureStdout: true), osLog: FakeOSLogSource())
         client.recordStdLines(["Loaded 12 items", "[Traceway] started"], stream: "stdout")
         client.recordStdLines(["warning: low disk",
                                "2026-11-27 10:00:00.123456+0100 Shop[12:3a] the NSLog copy of an os_log line"],

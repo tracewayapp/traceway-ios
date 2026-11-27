@@ -58,8 +58,8 @@ fi
 # The server's base URL by the rules every Traceway SDK uses: trimmed, https://
 # added without a scheme (http:// for a local host), query, fragment and
 # trailing slashes dropped, then a trailing /api/report, else /api.
-normalize_base_url() {
-  local u="$1" authority host
+symbol_upload_url() {
+  local u="$1" authority host scheme path
   u="$(printf '%s' "$u" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   case "$u" in
     *://*) ;;
@@ -77,20 +77,26 @@ normalize_base_url() {
   esac
   u="${u%%#*}"
   u="${u%%\?*}"
-  while [ "${u%/}" != "$u" ]; do u="${u%/}"; done
-  case "$u" in
-    */api/report) u="${u%/api/report}" ;;
-    */api) u="${u%/api}" ;;
+  scheme="${u%%://*}"
+  authority="${u#*://}"
+  authority="${authority%%/*}"
+  [ -n "$authority" ] || return 1
+  path="${u#"$scheme://$authority"}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  while [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  case "$path" in
+    */api/report) path="${path%/api/report}" ;;
+    */api) path="${path%/api}" ;;
   esac
-  while [ "${u%/}" != "$u" ]; do u="${u%/}"; done
-  printf '%s' "$u"
+  while [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  case "$path" in
+    */api/symbols/upload) ;;
+    *) path="$path/api/symbols/upload" ;;
+  esac
+  printf '%s' "$scheme://$authority$path"
 }
 
-trimmed_url="$(printf '%s' "$url" | sed -e 's/[[:space:]]*$//' -e 's|/*$||')"
-case "$trimmed_url" in
-  */api/symbols/upload) upload_url="$trimmed_url" ;;
-  *) upload_url="$(normalize_base_url "$url")/api/symbols/upload" ;;
-esac
+upload_url="$(symbol_upload_url "$url" || true)"
 case "$upload_url" in
   http://*|https://*) ;;
   *) warn "\"$url\" is not a Traceway server URL; expected https://host"; exit 0 ;;

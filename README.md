@@ -255,7 +255,8 @@ first and then records each line (`log.source: stdout`, severity `info`;
 `stderr`, severity `error`). It never holds the writer up: lines wait on a
 queue of their own, at most 1,000 at a time, and past that they are dropped
 (never the bytes). Off by default, as it redirects the process's
-descriptors; standard output becomes line buffered.
+descriptors; standard output becomes line buffered. Shutdown restores both
+descriptors. A later client must opt in again to collect new lines.
 
 All of it is the `console` signal: the remote `signals.console` settings
 (mode, `minSeverity`, `sampleRate`) apply exactly as to `Traceway.log`, and
@@ -635,8 +636,12 @@ black or white box), at most 192 pixels a side; at most 48 KiB each (else
 tried once at half size, then dropped) and 4 MiB per session. A capture holds up
 to 128 pictures; a new one past that replaces the one shown longest ago. A picture
 seen for the first time is encoded off the main thread: the frame that first
-shows it has the placeholder, a later one the picture. The same picture in
-many cells is sent once.
+shows it has the placeholder, a later one the picture. Cells showing the same
+picture share its style rule. Each playable clip or streamed segment allows
+128 KiB of serialized PNG and JPEG data URLs, including glyphs. Every copy in a
+snapshot or update counts. If a segment exceeds that limit, it contains the
+wireframe layout, text and interactions with placeholders for its raster images.
+The next segment has its own allowance.
 
 | `replay.images` (setting) | Pictures |
 |---|---|
@@ -870,9 +875,11 @@ After `initialize`, the SDK records:
   the **next launch**, with the session they happened in, under the app
   version that crashed.
 
-The handlers are installed once per process, and the ones installed before
-Traceway's (another crash reporter's) still get every crash, once, after it:
-a fault the hardware raised reaches them with its own `siginfo` and context.
+With disk persistence enabled, the client installs signal handlers for its
+project and receivers. Shutdown stops recording and restores the previous
+signal actions where Traceway still owns them. A previous crash reporter
+receives the original signal information and thread context, including for
+software-raised signals.
 The handler runs on an alternate signal stack (`sigaltstack`, 64 KiB, on the
 main thread and the thread that starts the SDK; a thread's own alternate
 stack is kept), so a stack overflow, which leaves no room on the crashing
@@ -1108,8 +1115,10 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
   not Traceway Cloud. The old call still works (see
   [Upgrading from 2.0](#upgrading-from-20)). Without a token the SDK runs
   [standalone](#standalone-without-traceway).
-- **Unsent 0.1.x reports** younger than 12 hours, and crashes 0.1.x recorded,
-  are sent once over OTLP on the first 2.x start.
+- Older crash, fatal hang and unsent report files lack a destination identity.
+  The SDK discards these files on the next start with disk persistence enabled.
+  New crash and hang files are recovered only for the project and receivers
+  that recorded them.
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`,
   `maxLocalFiles`, `localFileMaxAgeHours`.
 - **API**: `flush(timeout:)` now waits at most 10 seconds by default.

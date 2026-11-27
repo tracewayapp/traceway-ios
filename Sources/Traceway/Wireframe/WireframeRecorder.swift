@@ -328,12 +328,12 @@ final class WireframeRecorder: ReplaySource {
                 "timestamp": JSON(end),
             ])
         }
-        let bytes = JSON.array(events).encoded().utf8.count
+        let clip = SessionRecordingPayload(clipId: clipId, events: events, startedAtMs: start, endedAtMs: end)
         if debug {
-            NSLog("[Traceway] wireframe clip of %ld events, %ldKB, %.1fs", events.count, bytes / 1024,
+            NSLog("[Traceway] wireframe clip of %ld events, %ldKB, %.1fs", events.count, clip.approxBytes / 1024,
                   Double(end - start) / 1000)
         }
-        return SessionRecordingPayload(clipId: clipId, events: events, startedAtMs: start, endedAtMs: end, approxBytes: bytes)
+        return clip
     }
 
     /// The index of the frame showing at `at`: the last one taken at or

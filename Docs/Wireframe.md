@@ -179,13 +179,18 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   aspect fill uses the rule's `cover`).
 - **Dedup and limits**: a picture is found again by its bitmap (the
   `UIImage`, or the layer and its contents) and displayed size, so the same
-  photo in many cells is sent once. At most 128 pictures are held; a new
+  photo in many cells shares one style rule. At most 128 pictures are held; a new
   one past that evicts the one shown longest ago (never one on the frame
   being captured), whose rule leaves the page. A rule lingers 30 s after its
   picture left the screen.
 - **Budget**: at most 4 MiB of encoded image data per session, counted in
   `CollectionBudget` and saved with the replay budget; past it, pictures stay
   placeholders. A new session encodes and counts its pictures again.
+  Each independently playable clip or segment also allows 128 KiB of serialized
+  raster data URLs, including PNG glyph masks. Their UTF-8 byte count includes
+  the prefix, base64 data and repeated appearances in snapshots and mutations.
+  An over-budget segment uses the base wireframe styles throughout, preserving
+  its layout, text, masked placeholders, timing and input events.
 - **Reported**: session events carry `traceway.replay.images` (the policy at
   session start) and `traceway.replay.image_bytes`.
 
@@ -274,6 +279,7 @@ gzipped, to `/api/recordings`; an exception's clip carries its
 | glyphs per recorder | 300, at most 512 px a side; a rule lingers 10 s |
 | pictures per recorder | 128, the one shown longest ago evicted first; a rule lingers 30 s |
 | picture size | 384 px longest side (JPEG), 192 px with transparency (PNG), 48 KiB encoded |
+| inline raster data per playable clip or segment | 128 KiB of serialized data URLs |
 | image data per session | 4 MiB |
 | replay per session | 50 MiB and 10,000 rrweb events (`CollectionBudget`) |
 | upload queue | 10 MiB, retries after 5 s, 30 s and 120 s |

@@ -323,6 +323,17 @@ final class MetricsVitalsTests: XCTestCase {
         XCTAssertEqual(r.decoded.histograms.values.first?.sum, 120)
     }
 
+    func testAHotStartWithinOneClockTickStillCounts() throws {
+        vitals.start(host: host)
+        vitals.lifecycleChanged(foreground: false)
+        vitals.lifecycleChanged(foreground: true)
+        vitals.drawn()
+        r.recorder.flush()
+        let start = try XCTUnwrap(r.decoded.histograms["app.start.duration|start_type=hot"])
+        XCTAssertEqual(start.count, 1)
+        XCTAssertEqual(start.sum, 0)
+    }
+
     func testAReturnThatReconnectsTheSceneIsWarmAndASlowOneIsReported() throws {
         vitals.start(host: host)
         vitals.lifecycleChanged(foreground: false)

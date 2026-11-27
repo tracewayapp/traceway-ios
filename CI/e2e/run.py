@@ -359,6 +359,11 @@ def main():
         events = (detail.get('sessionRecording') or {}).get('events') or []
         check(is_rrweb(events), 'the issue has a wireframe clip: a Meta event, then a full snapshot',
               f'{len(events)} events')
+        if events and not args.gallery:
+            wireframe = json.dumps(events)
+            check('data:image/' not in wireframe, 'over-budget synthetic wireframe uploads no raster data URLs')
+            check(all(f'im p{i}' in wireframe for i in range(4)) and 'width:64px;height:64px' in wireframe
+                  and 'Pay now' in wireframe, 'uploaded layout keeps all four picture boxes and checkout text')
         if events:
             span = (events[-1]['timestamp'] - events[0]['timestamp']) / 1000
             check(0 < span <= 31, 'the clip covers the 30 s before the exception at most', f'{span:.1f}s')
@@ -411,6 +416,9 @@ def main():
         check(is_rrweb(segments), 'the session recording replays in rrweb', f'{len(segments)} events')
         snapshots = sum(1 for e in segments if e.get('type') == 2)
         check(snapshots >= 2, 'the session has the error clip and the streamed segments', f'{snapshots} full snapshots')
+        if not args.gallery:
+            check(any('url(data:image/png;base64,iVBOR' in json.dumps(event) for event in segments),
+                  'a later independently playable segment retains its small PNG')
         go('journey_done')
 
         # ---- 4. a capture from the dashboard -------------------------------

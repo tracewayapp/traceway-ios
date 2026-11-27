@@ -30,6 +30,77 @@ final class WireframeRecorderTests: XCTestCase {
         WireframeFrame(screen: screen, width: width, height: height, timestampMs: clock, href: href)
     }
 
+    func testRasterAllowanceIncludesItsExact128KiBBoundary() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        for extra in [0, 1] {
+            var styles: [VNode] = []
+            // Four PNG data URLs: four 22-byte prefixes, three 32,744-byte
+            // base64 payloads and one 32,752-byte payload total 131,072.
+            for (i, size) in [24558, 24558, 24558, 24564 + extra].enumerated() {
+                let css = WireframeImageEncoding.rule(cls: "p\(i)", mime: "image/png",
+                                                      data: Data(repeating: 0, count: size))
+                styles.append(VNode(element: 210 + i, tag: "style", attributes: ["_cssText": css], children: []))
+            }
+            r.push(frame(screen([], from: styles)))
+            let clip = try XCTUnwrap(r.captureRecording(clipId: "boundary", sinceMs: clock, untilMs: clock + 1))
+            XCTAssertEqual(JSON.array(clip.events).encoded().components(separatedBy: "data:image/png;base64,").count - 1,
+                           extra == 0 ? 4 : 0)
+            clock += 100
+        }
+    }
+
+    func testRasterAllowanceCountsSnapshotsAddedNodesAndStyleUpdatesAcrossAClip() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        let first = clock
+        let bytes = Data(repeating: 0, count: 24 * 1024)
+        let photo = WireframeImageEncoding.rule(cls: "p1", mime: "image/jpeg", data: bytes)
+        let glyph = MaskPNG.css(cls: "g2", png: bytes)
+        func style(_ id: Int, _ css: String) -> VNode {
+            VNode(element: id, tag: "style", attributes: ["_cssText": css], children: [])
+        }
+        func content(_ styles: [VNode]) -> VNode {
+            let title = VNode(element: 200, tag: "div", attributes: ["style": "width:91px;height:32px"],
+                              children: [VNode(text: 201, text: "Pay ****")])
+            return screen([], from: [title] + styles)
+        }
+        let initial = content([style(210, photo)])
+        r.push(frame(initial))
+        clock += 100
+        r.push(frame(initial, width: 400)) // The same bytes in a second full snapshot.
+        clock += 100
+        r.push(frame(content([style(210, glyph)]), width: 400)) // An attribute update.
+        clock += 100
+        let last = clock
+        r.push(frame(content([style(210, glyph), style(211, photo)]), width: 400)) // An added style node.
+        r.pointerDown(pointer: 1, x: 12, y: 31, touch: true)
+        r.pointerUp(pointer: 1, x: 12, y: 31, touch: true, tap: true)
+        clock += 100
+
+        let small = try XCTUnwrap(r.captureRecording(clipId: "small", sinceMs: first, untilMs: last))
+        let original = JSON.array(small.events).encoded()
+        XCTAssertEqual(original.components(separatedBy: photo).count - 1, 2)
+        XCTAssertEqual(original.components(separatedBy: glyph).count - 1, 1)
+
+        let large = try XCTUnwrap(r.captureRecording(clipId: "large", sinceMs: first, untilMs: clock))
+        let layout = JSON.array(large.events).encoded()
+        XCTAssertFalse(layout.contains("data:image/"))
+        XCTAssertTrue(layout.contains("width:91px;height:32px"))
+        XCTAssertEqual(large.approxBytes, layout.utf8.count)
+        XCTAssertEqual(large.events.filter { $0["type"]?.int == 2 }.count, 2)
+        XCTAssertEqual(large.events.filter { $0["data"]?["source"]?.int == 0 }.count, 2)
+        XCTAssertEqual(large.events.filter { $0["data"]?["source"]?.int == 2 }.count, 3)
+        XCTAssertEqual(replay(large.events).screen.texts(), ["Pay ****"])
+
+        let next = try XCTUnwrap(r.captureRecording(clipId: "next", sinceMs: last, untilMs: clock))
+        let fresh = JSON.array(next.events).encoded()
+        XCTAssertTrue(fresh.contains(photo))
+        XCTAssertTrue(fresh.contains(glyph))
+    }
+
     func testAClipReplaysToTheLastScreenTouchesIncluded() {
         let r = recorder()
         r.start()
@@ -59,7 +130,7 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertEqual(clip.startedAtMs, start)
         XCTAssertEqual(clip.endedAtMs, end)
         XCTAssertEqual(clip.approxBytes, JSON.array(events).encoded().utf8.count)
-        XCTAssertGreaterThan(clip.approxBytes!, 1000)
+        XCTAssertGreaterThan(clip.approxBytes, 1000)
 
         // Touches: start, end and a click, on the screen node.
         let touches = events.filter { $0["data"]?["source"]?.int == 2 }.map { $0["data"]! }

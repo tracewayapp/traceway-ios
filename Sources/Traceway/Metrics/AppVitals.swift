@@ -563,7 +563,8 @@ final class AppVitals {
                 || AppVitals.coldStartCounts(backgroundedBeforeFirstFrame: backgroundedBeforeFirstFrame,
                                              foreground: foreground)
             let ms = at - p.originMs
-            if counts && ms > 0 && ms <= maxStartMs { start = (p.type, ms) }
+            // A foreground transition and the first draw can share a millisecond.
+            if counts && ms >= 0 && ms <= maxStartMs { start = (p.type, ms) }
         }
         firstFrameDone = true
         if let v = visit, !v.displayed {

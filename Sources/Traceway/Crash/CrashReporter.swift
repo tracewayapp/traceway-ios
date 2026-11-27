@@ -5,12 +5,16 @@ import Foundation
 /// to disk by an async-signal-safe handler and reported on the next start.
 enum CrashReporter {
     static func install(
+        owner: ObjectIdentifier,
         baseDir: URL?,
         persistToDisk: Bool,
         metadata: [String: String],
         appVersion: String
     ) {
         guard persistToDisk, let baseDir = baseDir else {
+            #if canImport(Darwin)
+            SignalHandler.disableRecording()
+            #endif
             Log.debug("signal handlers disabled (persistToDisk = false)")
             return
         }
@@ -23,8 +27,15 @@ enum CrashReporter {
             imagesSection: CrashRecordStore.buildImagesSection(
                 arch: BinaryImages.currentArch(),
                 images: BinaryImages.capture()
-            )
+            ),
+            owner: owner
         )
+        #endif
+    }
+
+    static func uninstall(owner: ObjectIdentifier) {
+        #if canImport(Darwin)
+        SignalHandler.uninstall(owner: owner)
         #endif
     }
 
@@ -40,9 +51,9 @@ enum CrashReporter {
 
     /// What a crash record says about the app: the session it happened in
     /// and the attributes known then. Called when they change.
-    static func updateMetadata(_ metadata: [String: String], appVersion: String) {
+    static func updateMetadata(_ metadata: [String: String], owner: ObjectIdentifier, appVersion: String) {
         #if canImport(Darwin)
-        SignalHandler.setMetadata(CrashRecordStore.buildMetadata(attributes: metadata, appVersion: appVersion))
+        SignalHandler.setMetadata(CrashRecordStore.buildMetadata(attributes: metadata, appVersion: appVersion), owner: owner)
         #endif
     }
 
@@ -51,46 +62,13 @@ enum CrashReporter {
         guard let baseDir = baseDir else { return [] }
         return CrashRecordStore.convertPending(dir: CrashRecordStore.directory(base: baseDir))
     }
-}
 
-/// Reports the 1.x SDK left on disk without sending them: they are reported
-/// once over OTLP, as exceptions and messages of this project, if they are
-/// younger than the 12 hours 1.x kept them. The directory is removed.
-enum LegacyReports {
-    static let maxAgeMs: Int64 = 12 * 60 * 60 * 1000
-
-    struct Report {
-        var stackTrace: String
-        var recordedAtMs: Int64
-        var attributes: [String: String]
-        var isMessage: Bool
-    }
-
-    static func take(baseDir: URL?, now: Int64 = Clock.nowMs()) -> [Report] {
-        guard let dir = baseDir?.appendingPathComponent("traceway_pending"),
-              FileManager.default.fileExists(atPath: dir.path)
-        else { return [] }
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        var reports: [Report] = []
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let object = try? JSON.parse(data).object,
-                  let exception = object["exception"]?.object,
-                  let stackTrace = exception["stackTrace"]?.string, !stackTrace.isEmpty
-            else { continue }
-            let recordedAt = ISO8601.parseMillis(exception["recordedAt"]?.string ?? "")
-            let createdAt = ISO8601.parseMillis(object["createdAt"]?.string ?? "")
-            guard now - max(recordedAt, createdAt) < maxAgeMs else { continue }
-            var attributes: [String: String] = [:]
-            for (key, value) in exception["attributes"]?.object ?? [:] { attributes[key] = value.text }
-            reports.append(Report(
-                stackTrace: stackTrace,
-                recordedAtMs: recordedAt > 0 ? recordedAt : createdAt,
-                attributes: attributes,
-                isMessage: exception["isMessage"]?.bool ?? false
-            ))
+    /// Older crash, hang and 0.1.x report files carry no destination identity.
+    static func discardUnscopedReports(support: URL?, state: URL?) {
+        for file in [support.map(CrashRecordStore.directory(base:)),
+                     support?.appendingPathComponent("traceway_pending"),
+                     state?.appendingPathComponent(AppHangMonitor.fileName)].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(at: file)
         }
-        return reports.sorted { $0.recordedAtMs < $1.recordedAtMs }
     }
 }

@@ -5,6 +5,7 @@ import PackageDescription
 // SDK from opentelemetry-swift-core, the OTLP/HTTP exporters (and on Apple
 // platforms the URLSession instrumentation) from opentelemetry-swift.
 var tracewayDependencies: [Target.Dependency] = [
+    "TracewaySignalSupport",
     .product(name: "OpenTelemetryApi", package: "opentelemetry-swift-core"),
     .product(name: "OpenTelemetrySdk", package: "opentelemetry-swift-core"),
     .product(name: "OpenTelemetryProtocolExporterHTTP", package: "opentelemetry-swift"),
@@ -36,6 +37,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.38.1"),
     ],
     targets: [
+        .target(name: "TracewaySignalSupport"),
         .target(
             name: "Traceway",
             dependencies: tracewayDependencies,

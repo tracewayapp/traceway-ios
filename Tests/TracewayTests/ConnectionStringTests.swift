@@ -5,6 +5,14 @@ import XCTest
 /// way every Traceway SDK reads them. The strings are the 2.0 form on
 /// purpose: they are what apps still pass to the deprecated entry points.
 final class ConnectionStringTests: XCTestCase {
+    func testAPIHostnameIsPreservedWhenStrippingLegacyPaths() throws {
+        for url in ["http://api", "http://api/api", "http://api/api/report/", "http://api?project=1"] {
+            XCTAssertEqual(try normalizeBaseUrl(url), "http://api", url)
+        }
+        XCTAssertEqual(try normalizeBaseUrl("http://api/report"), "http://api/report")
+    }
+
+
 
     /// Every row of the table the SDKs share; nil is "not started".
     func testEveryConnectionStringFormOfTheContract() {

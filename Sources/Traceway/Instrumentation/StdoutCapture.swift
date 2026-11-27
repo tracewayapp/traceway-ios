@@ -75,12 +75,11 @@ final class StreamTee {
     }
 
     /// Points `fd` back at the original destination and ends the reader
-    /// (tests; the SDK keeps its tees for the life of the process).
-    func stop() {
+    /// after the last buffered bytes have reached the original destination.
+    func stop(waitForDrain: Bool = true) {
         if fd == STDOUT_FILENO { fflush(stdout) }
         dup2(original, fd)
-        _ = finished.wait(timeout: .now() + 2)
-        close(original)
+        if waitForDrain { _ = finished.wait(timeout: .now() + 2) }
     }
 
     private func run() {
@@ -88,6 +87,7 @@ final class StreamTee {
         defer {
             buffer.deallocate()
             close(readEnd)
+            close(original)
             finished.signal()
         }
         while true {
@@ -151,42 +151,38 @@ final class StreamTee {
     }
 }
 
-/// The process's standard output and error tees, set up once: a restarted
-/// SDK only gets the lines.
+/// Each opted-in client owns fresh pipes. Already-buffered bytes can only
+/// reach the client that owned the corresponding descriptor.
 enum StdoutCapture {
     private static let lock = NSLock()
     private static var tees: [StreamTee] = []
-    private static var sink: ((_ lines: [String], _ stream: String) -> Void)?
+    private static var owner: ObjectIdentifier?
 
-    static var isInstalled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return !tees.isEmpty
-    }
-
-    static func install(_ sink: @escaping (_ lines: [String], _ stream: String) -> Void) {
+    static func install(for client: TracewayClient) {
         lock.lock()
         defer { lock.unlock() }
-        self.sink = sink
-        guard tees.isEmpty else { return }
+        stopTees()
+        guard client.options.captureStdout else { return }
+        owner = ObjectIdentifier(client)
         for (fd, name) in [(STDOUT_FILENO, "stdout"), (STDERR_FILENO, "stderr")] {
-            if let tee = StreamTee(fd: fd, name: name, onLines: { StdoutCapture.deliver($0, name) }) {
-                tees.append(tee)
-            }
+            if let tee = StreamTee(fd: fd, name: name, onLines: { [weak client] lines in
+                client?.recordStdLines(lines, stream: name)
+            }) { tees.append(tee) }
         }
     }
 
-    /// Lines are dropped from now on; the bytes still reach the original
-    /// destinations.
-    static func uninstall() {
+    static func uninstall(for client: TracewayClient) {
         lock.lock()
-        sink = nil
-        lock.unlock()
+        defer { lock.unlock() }
+        if owner == ObjectIdentifier(client) { stopTees() }
     }
 
-    private static func deliver(_ lines: [String], _ stream: String) {
-        lock.lock()
-        let sink = self.sink
-        lock.unlock()
-        sink?(lines, stream)
+    private static func stopTees() {
+        for tee in tees {
+            tee.setHandler(nil)
+            tee.stop(waitForDrain: false)
+        }
+        tees.removeAll()
+        owner = nil
     }
 }

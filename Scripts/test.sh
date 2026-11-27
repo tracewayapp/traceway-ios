@@ -16,6 +16,10 @@ STAGE="${1:-all}"
 bold() { printf "\n\033[1m== %s ==\033[0m\n" "$1"; }
 
 run_swift() {
+  bold "Signal forwarding, symbol upload and release gate tests"
+  CI/signals/test.sh
+  CI/test_upload_url.sh
+  ruby CI/test_release_gate.rb
   bold "swift build"
   swift build
   bold "swift test (host = macOS)"

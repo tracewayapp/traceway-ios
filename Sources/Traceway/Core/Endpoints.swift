@@ -57,13 +57,6 @@ func normalizeBaseUrlDetailed(_ raw: String) throws -> NormalizedBaseUrl {
     }
     if let hash = url.firstIndex(of: "#") { url = String(url[..<hash]) }
     if let query = url.firstIndex(of: "?") { url = String(url[..<query]) }
-    url = trimmingTrailingSlashes(url)
-    if url.hasSuffix("/api/report") {
-        url.removeLast("/api/report".count)
-    } else if url.hasSuffix("/api") {
-        url.removeLast("/api".count)
-    }
-    url = trimmingTrailingSlashes(url)
     guard var components = URLComponents(string: url),
           let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
           let host = components.host, !host.isEmpty, host.count <= 255,
@@ -72,6 +65,13 @@ func normalizeBaseUrlDetailed(_ raw: String) throws -> NormalizedBaseUrl {
         throw ConfigurationError(description:
             "\"\(shortened(raw))\" is not a Traceway server URL; expected https://host, e.g. \(Traceway.defaultBaseUrl)")
     }
+    var path = trimmingTrailingSlashes(components.percentEncodedPath)
+    if path.hasSuffix("/api/report") {
+        path.removeLast("/api/report".count)
+    } else if path.hasSuffix("/api") {
+        path.removeLast("/api".count)
+    }
+    components.percentEncodedPath = trimmingTrailingSlashes(path)
     components.scheme = scheme
     components.host = host.lowercased()
     if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
@@ -159,6 +159,16 @@ struct TelemetryRoutes {
     /// Traceway's log endpoint, for exceptions, messages and the SDK's
     /// control records when ordinary logs go elsewhere. Nil standalone.
     let traceway: OtlpDestination?
+
+    var bufferDestination: String {
+        Ids.fingerprint64(JSON([traceway?.key ?? "", logs.key, traces.key]).encoded())
+    }
+
+    func diagnosticDirectory(in state: URL) -> URL {
+        // A recovered crash can emit both an issue and a crash metric.
+        let destination = Ids.fingerprint64(JSON([bufferDestination, metrics.key]).encoded())
+        return state.appendingPathComponent("diagnostics").appendingPathComponent(destination)
+    }
 
     /// Whether logs go somewhere other than Traceway while Traceway still
     /// receives issues and session records.

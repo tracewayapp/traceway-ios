@@ -500,7 +500,7 @@ final class CrashSafetyTests: XCTestCase {
         defer {
             NSExceptionHandler.resetForTesting()
             NSSetUncaughtExceptionHandler(original)
-            SignalHandler.uninstallForTesting()
+            SignalHandler.disableRecording()
         }
         handlerCalls = []
         NSSetUncaughtExceptionHandler(firstHandler)
@@ -517,7 +517,7 @@ final class CrashSafetyTests: XCTestCase {
     /// A fatal signal is recorded, then handed once to the handler that was
     /// installed before Traceway's.
     func testAFatalSignalIsRecordedAndReachesTheHandlerBeforeTraceway() throws {
-        SignalHandler.uninstallForTesting()
+        SignalHandler.disableRecording()
         var original = sigaction()
         var previous = sigaction()
         sigemptyset(&previous.sa_mask)
@@ -525,7 +525,7 @@ final class CrashSafetyTests: XCTestCase {
         previous.__sigaction_u.__sa_sigaction = previousSignalHandler
         sigaction(SIGFPE, &previous, &original)
         defer {
-            SignalHandler.uninstallForTesting()
+            SignalHandler.disableRecording()
             sigaction(SIGFPE, &original, nil)
         }
         let path = scratchDirectory(self).appendingPathComponent("crash.tw").path
@@ -564,8 +564,8 @@ final class CrashSafetyTests: XCTestCase {
     /// IOS-16: every metadata update allocated a buffer that was never
     /// freed; updates now reuse two.
     func testCrashMetadataUpdatesReuseTheirBuffers() {
-        SignalHandler.uninstallForTesting()
-        defer { SignalHandler.uninstallForTesting() }
+        SignalHandler.disableRecording()
+        defer { SignalHandler.disableRecording() }
         // Before the handlers are installed, updates are ignored.
         let ignored = SignalHandler.metadataAllocationsForTesting
         SignalHandler.setMetadata([1, 2, 3])
@@ -585,11 +585,9 @@ final class CrashSafetyTests: XCTestCase {
     /// which leaves no room on the thread's stack, is still recorded. A
     /// recursion to death would end the test run, so the setup is checked:
     /// every handled signal's action asks for the alternate stack, the
-    /// thread has one, and a signal is handled on it. (`SIGFPE` is raised:
-    /// a raised `SIGSEGV` carries a fault's `si_code` on Darwin, so the
-    /// handler leaves it to fault again, which a raise never does.)
+    /// thread has one, and a signal is handled on it.
     func testTheSignalHandlerHasAStackOfItsOwn() throws {
-        SignalHandler.uninstallForTesting()
+        SignalHandler.disableRecording()
         var original = sigaction()
         var probe = sigaction()
         sigemptyset(&probe.sa_mask)
@@ -597,7 +595,7 @@ final class CrashSafetyTests: XCTestCase {
         probe.__sigaction_u.__sa_sigaction = stackProbeHandler
         sigaction(SIGFPE, &probe, &original)
         defer {
-            SignalHandler.uninstallForTesting()
+            SignalHandler.disableRecording()
             sigaction(SIGFPE, &original, nil)
         }
         let path = scratchDirectory(self).appendingPathComponent("crash.tw").path
@@ -656,20 +654,43 @@ final class CrashSafetyTests: XCTestCase {
         return result.value
     }
 
-    /// What a raised `SIGSEGV` carries on this platform (logged for the
-    /// report: the handler tells a fault from a sent signal by it).
-    func testWhatARaisedSegmentationFaultCarries() {
+    func testRaisedSegmentationSignalReachesPreviousHandlerAndShutdownStopsRecording() throws {
+        SignalHandler.disableRecording()
         var original = sigaction()
         var probe = sigaction()
         sigemptyset(&probe.sa_mask)
         probe.sa_flags = SA_SIGINFO
-        probe.__sigaction_u.__sa_sigaction = siginfoProbeHandler
+        probe.__sigaction_u.__sa_sigaction = previousSignalHandler
         sigaction(SIGSEGV, &probe, &original)
-        defer { sigaction(SIGSEGV, &original, nil) }
-        probedSiginfo = (-1, -1)
+        defer {
+            SignalHandler.disableRecording()
+            sigaction(SIGSEGV, &original, nil)
+        }
+        let first = NSObject()
+        let second = NSObject()
+        let directory = scratchDirectory(self)
+        func install(_ owner: NSObject, _ name: String) -> String {
+            let path = directory.appendingPathComponent(name).path
+            SignalHandler.install(crashPath: path, metadata: [1], owner: ObjectIdentifier(owner))
+            return path
+        }
+        let stoppedPath = install(first, "stopped.tw")
+        CrashReporter.install(owner: ObjectIdentifier(second), baseDir: directory, persistToDisk: false,
+                              metadata: ["user.id": "new"], appVersion: "2")
+        XCTAssertFalse(CrashReporter.recordsSignals)
+        previousSignalCalls = 0
         raise(SIGSEGV)
-        print("traceway-raised-sigsegv si_code=\(probedSiginfo.code) si_pid=\(probedSiginfo.pid) pid=\(getpid())")
-        XCTAssertNotEqual(probedSiginfo.code, -1, "the probe ran")
+        XCTAssertEqual(previousSignalCalls, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stoppedPath))
+
+        let activePath = install(second, "active.tw")
+        SignalHandler.uninstall(owner: ObjectIdentifier(first))
+        SignalHandler.setMetadata([2], owner: ObjectIdentifier(first))
+        XCTAssertEqual(SignalHandler.publishedMetadataForTesting, [1])
+        raise(SIGSEGV)
+        XCTAssertEqual(previousSignalCalls, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activePath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stoppedPath))
     }
 
     /// §14.2: from another thread, the main thread's stack while it is
@@ -785,13 +806,6 @@ private func previousSignalHandler(
 
 /// Where the probe handler's stack was when it ran.
 private var probedStackAddress: UInt = 0
-/// `si_code` and `si_pid` of the signal the siginfo probe got.
-private var probedSiginfo: (code: Int32, pid: Int32) = (-1, -1)
-private func siginfoProbeHandler(
-    _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
-) {
-    if let info = info { probedSiginfo = (info.pointee.si_code, info.pointee.si_pid) }
-}
 private func stackProbeHandler(
     _ signo: Int32, _ info: UnsafeMutablePointer<siginfo_t>?, _ context: UnsafeMutableRawPointer?
 ) {
@@ -1161,7 +1175,8 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
 
     /// IOS-17: every new picture queued an encode holding its full bitmap;
     /// at most a few wait now, the rest are placeholders until there is room.
-    func testPendingPictureEncodesAreCapped() {
+    @MainActor
+    func testPendingPictureEncodesAreCapped() async throws {
         let images = WireframeImages()
         final class Weak { weak var image: UIImage? }
         var held: [Weak] = []
@@ -1182,9 +1197,11 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
         XCTAssertLessThanOrEqual(images.pendingEncodes, WireframeImages.maxPendingEncodes)
         XCTAssertLessThanOrEqual(shown, WireframeImages.maxPendingEncodes)
         XCTAssertLessThanOrEqual(held.filter { $0.image != nil }.count, WireframeImages.maxPendingEncodes)
-        settle(0.05)
         let deadline = Date().addingTimeInterval(5)
-        while images.pendingEncodes > 0 && Date() < deadline { settle(0.05) }
+        while images.pendingEncodes > 0 && Date() < deadline {
+            // Encode completions publish on the main queue.
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(images.pendingEncodes, 0)
         let later = renderer.image { context in
             UIColor.red.setFill()
@@ -1195,7 +1212,8 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
 
     /// §14.5: past 128 pictures a new one evicts the one shown longest ago,
     /// instead of staying a placeholder until pictures age out.
-    func testPicturesPastTheLimitEvictTheOneShownLongestAgo() {
+    @MainActor
+    func testPicturesPastTheLimitEvictTheOneShownLongestAgo() async throws {
         let images = WireframeImages()
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
         var shown: [UIImage] = []
@@ -1207,7 +1225,9 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
             }
             shown.append(image)
             let deadline = Date().addingTimeInterval(5)
-            while images.pendingEncodes >= WireframeImages.maxPendingEncodes && Date() < deadline { settle(0.01) }
+            while images.pendingEncodes >= WireframeImages.maxPendingEncodes && Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
             let picture = images.picture(image, displayed: CGSize(width: 8, height: 8), nowMs: Int64(i))
             XCTAssertNotNil(picture, "picture \(i)")
             if i == 0 { first = picture }

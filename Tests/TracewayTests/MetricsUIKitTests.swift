@@ -53,18 +53,24 @@ final class MetricsUIKitTests: XCTestCase {
         XCTAssertLessThan(ttid.sum, 1000)
     }
 
-    func testAReturnFromTheBackgroundIsAHotStart() throws {
+    @MainActor
+    func testAReturnFromTheBackgroundIsAHotStart() async throws {
         try waitUntilActive()
         NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
-        spin(0.1)
+        let returnedAt = AppVitals.monotonicMs()
         NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
-        spin(0.5)
-        vitals.stop()
-        r.recorder.flush()
-        let start = try XCTUnwrap(r.decoded.histograms["app.start.duration|start_type=hot"])
+        let metric = "app.start.duration|start_type=hot"
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            // Let the display link draw, then inspect the exported measurement.
+            try await Task.sleep(nanoseconds: 20_000_000)
+            r.recorder.flush()
+        } while r.decoded.histograms[metric] == nil && Date() < deadline
+        let start = try XCTUnwrap(r.decoded.histograms[metric])
         XCTAssertEqual(start.count, 1)
-        XCTAssertLessThan(start.sum, 1000)
+        XCTAssertGreaterThanOrEqual(start.sum, 0)
+        XCTAssertLessThanOrEqual(start.sum, Double(AppVitals.monotonicMs() - returnedAt))
     }
 
     func testTheTestHostWasLaunchedForItsUI() {

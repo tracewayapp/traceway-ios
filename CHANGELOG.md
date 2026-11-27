@@ -135,8 +135,8 @@ this release.
   Traceway or standalone without a token.
 - **Outbox**: batches that fail for a reason that may pass are kept on disk per
   destination (24 hours, 200 batches) and sent again later.
-- Unsent 1.x reports and crash records are sent once over OTLP on the first
-  start.
+- Crash and fatal hang recovery uses destination-specific files. Older
+  diagnostics without a destination are discarded when persistence is enabled.
 - New API: `track`, `log`, `recordAction`, `recordNavigation`,
   `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `shutdown`,
   `refreshConfig`, `instanceId`, `currentSessionId`, `tracer`.
@@ -185,8 +185,10 @@ this release.
   wireframe includes the pictures image views and SwiftUI image layers show:
   downscaled to their displayed size (one pixel per point), JPEG at 0.45 up
   to 384 px, PNG up to 192 px for see-through pictures, at most 48 KiB each
-  and 4 MiB per session, encoded off the main thread, sent once per bitmap and size, never
-  under a privacy mask. `wifi` means unmetered (`NWPathMonitor`: not
+  and 4 MiB per session, encoded off the main thread and shared by bitmap
+  and display size. A clip or segment with more than 128 KiB of serialized
+  raster data URLs uploads as layout only. Repeated URLs count each time,
+  and each new segment has its own allowance. Privacy masks exclude pictures. `wifi` means unmetered (`NWPathMonitor`: not
   cellular, a hotspot or Low Data Mode), decided for each frame. Session
   events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
 - **Wireframe**: the shared stylesheet is byte for byte the Android and

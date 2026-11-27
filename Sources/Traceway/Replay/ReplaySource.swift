@@ -6,14 +6,26 @@ import Foundation
 /// for upload.
 struct SessionRecordingPayload {
     /// Names the clip while it is assembled; not sent.
-    var clipId: String
-    var events: [JSON]
+    let clipId: String
+    let events: [JSON]
     /// Wall-clock time of the first frame in this recording.
-    var startedAtMs: Int64?
-    var endedAtMs: Int64?
-    /// About how many bytes the events take as JSON, when the recorder
-    /// measured it.
-    var approxBytes: Int?
+    let startedAtMs: Int64?
+    let endedAtMs: Int64?
+    /// The recorder's size estimate, or the measured size of the emitted layout.
+    let approxBytes: Int
+
+    init(clipId: String, events: [JSON], startedAtMs: Int64?, endedAtMs: Int64?, approxBytes: Int? = nil) {
+        self.clipId = clipId
+        self.startedAtMs = startedAtMs
+        self.endedAtMs = endedAtMs
+        if let layout = WireframeRasterBudget.layoutOnlyIfNeeded(events) {
+            self.events = layout
+            self.approxBytes = JSON.array(layout).encoded().utf8.count
+        } else {
+            self.events = events
+            self.approxBytes = approxBytes ?? JSON.array(events).encoded().utf8.count
+        }
+    }
 }
 
 /// What the replay controller needs from a screen recorder; lets tests stand

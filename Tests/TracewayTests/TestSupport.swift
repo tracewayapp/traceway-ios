@@ -109,3 +109,9 @@ func temporaryDirectory() -> URL {
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
+
+/// Where the real crash handler and hang watchdog would persist a report for this run.
+func diagnosticFixtureDirectory(_ state: URL, token: String?, baseUrl: String, telemetry: TracewayTelemetry? = nil) throws -> URL {
+    let routes = try TelemetryRoutes.resolve(endpoints: resolveEndpoints(baseUrl), token: token, telemetry: telemetry)
+    return routes.diagnosticDirectory(in: state)
+}

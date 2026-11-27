@@ -20,13 +20,7 @@ extension TracewayClient {
             return
         }
         guard !isTesting else { return }
-        let metadata = onQueueSync { crashMetadata() }
-        CrashReporter.install(
-            baseDir: supportDirectory(),
-            persistToDisk: options.persistToDisk,
-            metadata: metadata,
-            appVersion: serviceVersion
-        )
+        installProcessCapture()
         #if canImport(ObjectiveC)
         NSExceptionHandler.install { exception in TracewayClient.shared?.captureFatalException(exception) }
         #endif
@@ -53,9 +47,11 @@ extension TracewayClient {
             startLogCapture(OSLogReader(source: OSLogStoreSource(), since: Date()))
         }
         #endif
-        if options.captureStdout {
-            StdoutCapture.install { lines, stream in TracewayClient.shared?.recordStdLines(lines, stream: stream) }
-        }
+    }
+
+    func stopProcessCapture() {
+        StdoutCapture.uninstall(for: self)
+        CrashReporter.uninstall(owner: ObjectIdentifier(self))
     }
 
     func uninstallPlatformHooks() {
