@@ -67,6 +67,7 @@ final class RealDeviceSmokeTests: XCTestCase {
         }
         let parsed = try parseConnectionString(dsn)
         let token = parsed.token
+        let urlString = parsed.baseUrl
 
         // An empty OTLP logs request: valid protobuf, and nothing to store.
         var request = URLRequest(url: try resolveEndpoints(parsed.baseUrl).logs)

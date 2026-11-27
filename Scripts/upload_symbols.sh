@@ -34,6 +34,10 @@ done
 
 warn() { echo "warning: traceway: $*"; }
 
+# A blank --url or TRACEWAY_URL is Traceway Cloud, as an unset one is.
+url="$(printf '%s' "$url" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+[ -n "$url" ] || url="https://cloud.tracewayapp.com"
+
 case "$upload_debug" in
   YES|yes|Yes|1|true|TRUE) upload_debug=1 ;;
   *) upload_debug=0 ;;

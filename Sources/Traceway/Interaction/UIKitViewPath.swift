@@ -30,7 +30,8 @@ final class UIViewPath: SelectorPath {
     /// way a browser's target is the element drawn there.
     static func at(_ point: CGPoint, in window: UIWindow) -> UIViewPath? {
         guard let hit = window.hitTest(point, with: nil) else { return nil }
-        if TracewayIdentifierMarkerView.exists, let marker = identifierMarker(at: point, under: hit, in: window) {
+        if TracewayIdentifierMarkerView.exists, !(hit is UIControl), let host = swiftUIHost(of: hit),
+           let marker = identifierMarker(at: point, under: host, in: window) {
             return UIViewPath(leaf: marker)
         }
         var leaf = hit
@@ -40,6 +41,26 @@ final class UIViewPath: SelectorPath {
             depth += 1
         }
         return UIViewPath(leaf: leaf)
+    }
+
+    /// The SwiftUI hosting view `view` belongs to (itself included), where
+    /// `tracewayIdentifier` markers live; nil for UIKit content, whose taps
+    /// a marker must never claim.
+    private static func swiftUIHost(of view: UIView) -> UIView? {
+        var current: UIView? = view
+        var depth = 0
+        while let candidate = current, depth < 64, !(candidate is UIWindow) {
+            // `_UIHostingView<…>`, also in list cells; or a hosting
+            // controller's root view, whatever its class is called.
+            if String(describing: type(of: candidate)).contains("HostingView") { return candidate }
+            if let controller = candidate.next as? UIViewController,
+               String(describing: type(of: controller)).hasPrefix("UIHostingController<") {
+                return candidate
+            }
+            current = candidate.superview
+            depth += 1
+        }
+        return nil
     }
 
     /// The smallest `tracewayIdentifier` marker under `point` in `root`'s
