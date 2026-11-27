@@ -271,6 +271,12 @@ struct WireframeRect: Equatable {
     func contains(x px: Double, y py: Double) -> Bool {
         px >= x && px <= maxX && py >= y && py <= maxY
     }
+
+    /// The same box, give or take half a point on each side.
+    func isClose(to other: WireframeRect) -> Bool {
+        abs(x - other.x) <= 0.5 && abs(y - other.y) <= 0.5
+            && abs(width - other.width) <= 0.5 && abs(height - other.height) <= 0.5
+    }
 }
 
 /// Where a node is inside its DOM parent, whose coordinates `origin` maps to

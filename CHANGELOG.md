@@ -45,10 +45,19 @@ recording triggers, taps, and wireframe session replay.
   `propagateTraceHeaderUrls` adds W3C `traceparent` headers.
 - **Wireframe session replay** (`screenCapture: true`): the view hierarchy
   becomes an HTML document replayed by the dashboard's rrweb player, the same
-  format as the Flutter SDK's wireframe recorder. Text fields are masked;
-  `tracewayPrivacyMask` (UIKit) and `.tracewayPrivacyMask()` (SwiftUI) blank or
-  blur views. Clips go to `/api/recordings`, linked to their exception; captures
-  stream segments.
+  format as the Flutter SDK's wireframe recorder: boxes, gradients and shape
+  layers, labels with rich text runs, buttons, fields, switches, sliders,
+  segmented controls, steppers, progress views, page controls and spinners,
+  SF Symbols and template images as their shapes (palette and multicolor
+  symbols in their colors), and iOS 26's Liquid Glass as frosted shapes.
+  SwiftUI text shows as its words while an assistive technology runs, else as
+  text-shaped bars. Text fields are masked; `tracewayPrivacyMask` (UIKit) and
+  `.tracewayPrivacyMask()` (SwiftUI) blank or blur views. Clips go to
+  `/api/recordings`, linked to their exception; captures stream segments.
+- **Tests**: a wireframe gallery of UIKit and SwiftUI screens recorded on the
+  iOS Simulator and compared with the app's own pictures in rrweb-player
+  (`CI/wireframe`), UIKit conversion tests, and an end-to-end check against a
+  running Traceway (`CI/e2e`).
 - **Sessions**: `session.start`, `traceway.session.update` and `session.end`,
   15 minutes of inactivity or one hour at most; a restart within the window
   continues the session.

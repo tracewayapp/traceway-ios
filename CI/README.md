@@ -6,7 +6,7 @@ Four layers, matching `.github/workflows/tests.yml`:
 | --- | --- | --- | --- |
 | `swift test` | Linux (`swift:6.3`) | The platform-neutral suite: settings merge and ceilings, triggers, ring buffer, OpAMP codec and client, routing, outbox, sessions, replay upload, wireframe DOM, diff and clip assembly, selectors, and the client end to end against in-memory exporters and a fake server | none |
 | `swift test` + iOS build | macOS host | The same suite on Apple's Foundation, plus a compile of the UIKit code for device and simulator | none |
-| iOS Simulator XCTest | iOS Simulator | The same suite **+ on-device smoke tests**: real `UIScreen`/`UIDevice` attributes, live `Traceway.start`, a wireframe capture of the host app's window, gzip via device zlib | none |
+| iOS Simulator XCTest | iOS Simulator | The same suite **+ UIKit tests**: what each kind of view becomes in the wireframe (`UIKitWireframeTests`), the wireframe gallery (`WireframeGalleryTests`, uploaded as the `wireframe-gallery` artifact), real `UIScreen`/`UIDevice` attributes, live `Traceway.start`, gzip via device zlib. The OpenTelemetry-typed client suite is left out here (the hosted bundle cannot link the host app's OpenTelemetry symbols); it runs on macOS and Linux | none |
 | Firebase Test Lab | **real iPhone** | The full bundle on physical hardware, optionally reporting to a real backend | Apple + GCP |
 
 ## Run locally
@@ -24,6 +24,49 @@ The simulator and device layers use an Xcode project generated from
 regenerate it any time with `xcodegen generate`. It defines a small host app
 (reusing `Examples/TracewayExample`) and a unit-test target that compiles both
 `Tests/TracewayTests` and `CI/DeviceTests`.
+
+## Wireframe gallery
+
+`WireframeGalleryTests` shows a gallery of UIKit and SwiftUI screens in a
+window of its own, records it with the real `WireframeRecorder` on its timer
+while scenarios scroll, tap, type, present and navigate, and at every
+checkpoint saves the window's own picture. In the test it checks the recording
+the way rrweb's replayer applies it (a Meta event and a full snapshot first,
+time order, every mutation applying to the page as it is), the texts each
+checkpoint must show and hide, and that no secret appears anywhere. It writes
+`events.json`, `run.json`, `app/<checkpoint>.png` and `tree/<checkpoint>.txt`
+(the window's layer tree, for diagnosing a conversion) to
+`WIREFRAME_GALLERY_OUT` (`TEST_RUNNER_WIREFRAME_GALLERY_OUT` for
+`xcodebuild`; `.build/wireframe-gallery` by default).
+
+```sh
+# Render a CI run's gallery in rrweb-player and compare every checkpoint with
+# the app's picture (SSIM, edges, color), like the Flutter SDK's suite:
+python3 CI/wireframe/run.py --gh-run <run id>
+# or a gallery on disk:
+python3 CI/wireframe/run.py --dir .build/wireframe-gallery
+```
+
+It needs Node with Playwright (`--playwright`), Chromium (`--chromium`) and
+rrweb-player (`--rrweb-player`, by default the dashboard's copy in
+`../traceway/frontend/node_modules`). Open `report.html` in `--out`.
+`--update-baseline` accepts a run into `CI/wireframe/baseline/<platform>-<size>/`.
+
+## End to end against Traceway
+
+`CI/e2e/run.py` drives the real client (`E2EScriptTests`, run on macOS or
+Linux) against a running Traceway that has an iOS project and asserts through
+the dashboard API what the server holds after each phase: buffered
+breadcrumbs, the exception with its breadcrumbs, tap selector, request span,
+session and wireframe clip, a recording trigger from local settings, a capture
+started and cancelled from the dashboard, a remote rule built from the
+selector the server recorded, and a session that survives a kill, with the
+earlier run's crash reported and symbolicated by the server.
+
+```sh
+python3 CI/e2e/run.py --base http://127.0.0.1:8082 --email you@example.com --password … \
+    [--gallery ~/.cache/tw-wireframe/ios]
+```
 
 ## Firebase Test Lab (real-device)
 

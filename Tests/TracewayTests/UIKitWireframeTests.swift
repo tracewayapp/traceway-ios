@@ -538,6 +538,22 @@ final class UIKitWireframeTests: XCTestCase {
         XCTAssertTrue(allNodes(s).contains { classes($0).contains("cp") })
     }
 
+    func testAClippingFillTakesTheCornersOfTheViewItFills() throws {
+        // iOS 26 rounds a configured button through its corner
+        // configuration: the button's layer has the radius, the clipping
+        // fill of the same size inside it has none of its own.
+        let button = UIView(frame: CGRect(x: 20, y: 20, width: 120, height: 34))
+        button.layer.cornerRadius = 17
+        let fill = UIView(frame: button.bounds)
+        fill.backgroundColor = UIColor(red: 0, green: 0.533, blue: 1, alpha: 1)
+        fill.clipsToBounds = true
+        button.addSubview(fill)
+        show(button)
+        let s = try screen()
+        let node = try XCTUnwrap(allNodes(s).first { styleMap($0)["background-color"] == "#0088ff" })
+        XCTAssertEqual(styleMap(node)["border-radius"], "17px")
+    }
+
     func testLayersThatCutOutPaintNothing() throws {
         // Liquid Glass punches holes with black layers composited destOut:
         // they hide what is under them and paint nothing themselves.

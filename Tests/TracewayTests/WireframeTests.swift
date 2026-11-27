@@ -626,3 +626,11 @@ final class WireframeColorGlyphTests: XCTestCase {
         #endif
     }
 }
+
+final class WireframeRectTests: XCTestCase {
+    func testCloseBoxesAreWithinHalfAPoint() {
+        let a = WireframeRect(x: 20, y: 165.7, width: 125.3, height: 34.3)
+        XCTAssertTrue(a.isClose(to: WireframeRect(x: 20.4, y: 165.3, width: 125.6, height: 34.3)))
+        XCTAssertFalse(a.isClose(to: WireframeRect(x: 21, y: 165.7, width: 125.3, height: 34.3)))
+    }
+}

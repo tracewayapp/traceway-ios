@@ -232,28 +232,64 @@ the session.
 
 #### Naming views
 
-Click selectors run over the view under the finger and its superviews, with
-the CSS subset the dashboard validates:
+A click step takes a selector in CSS syntax. When a finger lifts, the SDK finds
+the view it touched (the view UIKit's hit-testing returns and, below it, the
+topmost visible subview under the finger, since labels and image views do not
+take touches) and runs the selector over that view and its superviews up to the
+window. A tap matches when the view under the finger or any superview matches,
+the way a browser click matches its target or an ancestor.
 
 | Selector | Matches a view that |
 |----------|---------------------|
-| `UIButton`, `CheckoutButton` | is of that class (module and generic arguments left out, any case) |
+| `UIButton`, `CheckoutButton` | is of that class: module and generic arguments left out (`Shop.CheckoutButton<Int>` is `CheckoutButton`), any case; `*` is any view |
 | `#pay` | has `accessibilityIdentifier` `pay` |
-| `.button` | has that role from its accessibility traits or class: `button`, `link`, `header`, `image`, `textField`, `slider`, `toggle`, `selected` |
-| `[label="Delete"]` | has that `accessibilityLabel` |
-| `[text="Pay"]` | shows that text: a label's, a button's title, or the labels under it; never what is typed into a field |
-| `[key="42"]` | has that `tag` |
+| `.button` | has that role, from its accessibility traits or its class: `button`, `link`, `header`, `image` (also any `UIImageView`), `textField` (`UITextField`, `UITextView`, the search field trait), `slider` (`UISlider`, the adjustable trait), `toggle` (`UISwitch`, iOS 17's toggle button trait), `selected` |
+| `[key="42"]` | has `tag` 42 |
+| `[identifier="pay"]` | has that `accessibilityIdentifier` |
+| `[label="Delete"]` | has that `accessibilityLabel`: its own, else the first one directly below it while each view down there has a single subview (an icon button's image view) |
+| `[text="Pay"]` | shows that text: a label's text or a button's title, else that of up to three labels under it joined by a space; never what is typed into a text field or text view |
 | `[type="_Private"]` | is of a class that cannot be written as a tag |
 
-Attribute values take `=`, `^=`, `$=`, `*=`, `~=` and `|=`; combinators are
-descendant (space), child (`>`), adjacent (`+`) and general (`~`) sibling. A
-tap matches when the view under the finger or any superview does.
+```swift
+payButton.accessibilityIdentifier = "pay"     // #pay, UIButton#pay
+deleteButton.accessibilityLabel = "Delete"    // UIButton[label="Delete"]
+payButton.setTitle("Pay now", for: .normal)   // UIButton[text="Pay now"]
+cartView.accessibilityIdentifier = "cart"     // #cart UIButton: a button inside it
+```
+
+- Attribute values take `=`, `^=` (starts with), `$=` (ends with), `*=`
+  (contains), `~=` (one of its words) and `|=`. Quote a value that is not a
+  plain name.
+- A selector is at most 256 characters and cannot contain `:`, `,` or `\`,
+  also inside a quoted value (the dashboard refuses it): pseudo-classes and
+  selector lists are not available.
+- Combinators are descendant (space), child (`>`), adjacent (`+`) and general
+  (`~`) sibling, over the view hierarchy (siblings are subviews of the same
+  superview, in order). A `UIButton` holds its title in a label and, with a
+  configuration, background views: use `#cart UIButton`, not `>`, across them.
+- Text-based selectors break when the copy changes or the app is localized;
+  `accessibilityIdentifier`s, the handles UI tests already use, are stable.
+- **SwiftUI** controls have no views of their own: a tap on a SwiftUI button
+  finds the hosting view, and `.accessibilityIdentifier` on a SwiftUI view is
+  not read. Target SwiftUI journeys with navigation steps (`.tracewayScreen`)
+  and log steps. `UIViewRepresentable` views are views like any other.
+- `captureUserActions: false` turns taps, and click steps, off.
 
 Every tap is recorded as `browser.user_action.click` with the selector of the
-control that handled it (`browser.css_selector`), shown on the session
-timeline: an identifier first (`UIButton#pay`), then the shown text, the
-label, and the class alone. `accessibilityIdentifier`s (the ones UI tests use)
-are the most stable choice. Text inside a privacy mask is never sent.
+view that handled it (`browser.css_selector`), shown in a session's **Actions**:
+copy it into a click step as it is, since the SDK only records a selector it
+checked against the tapped view. The view that handled the tap is the nearest
+control above the finger (a `UIControl`, a table or collection view cell, or a
+view with its own tap or long-press recognizer; a view controller's root view
+does not count), else the nearest label or image view, else the view under the
+finger. Its selector is the first of these that exists and matches: an
+`accessibilityIdentifier` (its own, a wrapper's up to six levels above, or one
+inside it), its `tag`, the text it shows (up to 40 characters), its label, a
+role, the class with the nearest identified superview in front
+(`#cart UIButton`), and the class alone. The record also carries
+`app.widget.name`, `app.widget.id`, `app.widget.text`, `app.widget.label` and
+`app.screen.name`. Text and labels inside a privacy mask or a secure text field
+are never sent.
 
 #### Naming screens
 
@@ -279,27 +315,37 @@ TracewayOptions(screenCapture: true)
 
 Instead of pictures, the SDK records the view hierarchy. Up to `fps` times a
 second (4 by default) it walks the app's windows and turns what they show into
-HTML: views with their background colors, corners, borders, shadows,
-opacity, clipping, transforms and scroll positions, labels with their font
-size, weight and color, text fields, switches, sliders, progress views and
-activity indicators drawn from their state. What changes from one frame to the
-next becomes an rrweb mutation, so the dashboard replays the session with the
-same player as a browser session, taps and drags included. A frame is kept
-only when the screen changed.
+HTML: views with their background colors, gradients, corners, borders,
+shadows, opacity, clipping, transforms and scroll positions; labels with their
+font size, weight, style and color, alignment, line breaking and rich text
+runs; buttons, text fields and text views; switches, sliders, segmented
+controls, steppers, progress views, page controls and activity indicators drawn
+from their state; shape and text layers. SF Symbols and template images keep
+their shape (monochrome symbols in their tint, palette and multicolor symbols in
+their own colors). iOS 26's Liquid Glass bars, buttons, alerts and sheets are
+drawn as frosted shapes. What changes from one frame to the next becomes an
+rrweb mutation, so the dashboard replays the session with the same player as a
+browser session, taps and drags included. A frame is kept only when the screen
+changed.
 
 - **Small and cheap.** No pixels are read or encoded: a segment is a few
   kilobytes of JSON.
-- **Not pixel-exact.** Text is drawn in the browser's system font, template
-  and SF Symbol images are tinted icons, other images are placeholders, views
-  that draw themselves (`draw(_:)`) are dashed outlines, and web views, maps,
-  video and Metal views are labeled placeholders.
-- **SwiftUI** draws most of its content without views of its own. Its colored
-  and rounded shapes are recorded from layers, and its text from the hosting
-  view's accessibility elements; images are placeholders. Coverage is not as
-  complete as UIKit's.
+- **Not pixel-exact.** Text is drawn in the browser's system font, photos and
+  other images are placeholders, views that draw themselves (`draw(_:)`) are
+  dashed outlines, and web views, maps, video, camera and Metal views are
+  labeled placeholders.
+- **SwiftUI** draws most of its content without views of its own. Its colors,
+  shapes, gradients and symbols are recorded from its layers, and the UIKit
+  controls it hosts as UIKit. Its text is readable only through accessibility,
+  which iOS fills in while an assistive technology (VoiceOver, Voice Control,
+  Switch Control) runs; otherwise each `Text` is a neutral bar where its lines
+  are, the way masked text would be.
 - **Privacy.** Text typed into fields is replaced with `*` unless remote
-  settings set `replay.maskAllInputs: false`; secure fields always are. The
-  keyboard is a plain box, never its keys.
+  settings set `replay.maskAllInputs: false`; secure fields always show
+  bullets. The keyboard is a plain box, never its keys.
+
+How well each kind of view converts is checked on every CI run by the
+wireframe gallery (see [Testing](#testing)).
 
 Clips follow the same rules as breadcrumbs: the last `maxBufferFrames` frames
 stay on the device, an exception uploads the clip of the last 30 seconds, and
@@ -461,6 +507,25 @@ swift test            # every platform-neutral suite, on macOS or Linux
 CI (`.github/workflows/tests.yml`) runs the suite on Linux and macOS, the
 XCTest suite on the iOS Simulator, and, on manual dispatch, on a real iPhone
 via Firebase Test Lab. See [CI/README.md](CI/README.md).
+
+- **Wireframe replay.** `UIKitWireframeTests` check what each kind of view
+  becomes, and `WireframeGalleryTests` records a gallery of UIKit and SwiftUI
+  screens (layout, text, buttons, controls, forms, images, tables, collections,
+  navigation, tabs, alerts, sheets, privacy, SwiftUI, native views, motion)
+  with the real recorder while it scrolls, taps, types and navigates through
+  them. It checks the recording the way rrweb's replayer applies it and saves
+  the app's own picture of every checkpoint. `python3 CI/wireframe/run.py
+  --gh-run <run id>` then renders each checkpoint in rrweb-player and compares
+  it with that picture (SSIM, edges, color), as the Flutter SDK's wireframe
+  suite does.
+- **End to end.** `python3 CI/e2e/run.py --base http://127.0.0.1:8082 --email
+  .. --password ..` runs the real client (on macOS or Linux) against a running
+  Traceway with an iOS project and checks through the dashboard API what the
+  server holds after each phase: buffered breadcrumbs, the exception with its
+  breadcrumbs, tap selector, request span, session and replay, a recording
+  trigger, a capture from the dashboard, a remote rule built from a recorded
+  selector, and a session that survives a kill with an earlier crash reported.
+  `--gallery DIR` replays a wireframe gallery as the app's screen.
 
 ## License
 

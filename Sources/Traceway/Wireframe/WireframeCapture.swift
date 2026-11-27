@@ -242,6 +242,10 @@ final class WireframeCapture {
         var layer: CALayer?
         /// Inside a Liquid Glass lens (the selection of a tab bar).
         var lens = false
+        /// The corner radius of a view above with the same box. iOS 26's
+        /// corner configurations round a view by its ancestor's radius,
+        /// which a clipping fill of the same size takes.
+        var shapeRadius: (box: WireframeRect, radius: Double)?
 
         /// The scope of what is inside a placed layer.
         func entering(_ p: Placed, _ model: CALayer) -> Scope {
@@ -355,6 +359,9 @@ final class WireframeCapture {
         }
         var s = scope
         if info.isLens { s.lens = true }
+        if layer.cornerRadius > 0 {
+            s.shapeRadius = (p.box, min(Double(layer.cornerRadius), min(p.width, p.height) / 2))
+        }
 
         if let mode = view.tracewayPrivacyMask {
             switch mode {
@@ -431,7 +438,10 @@ final class WireframeCapture {
     ) {
         let clips = view.clipsToBounds || layer.masksToBounds || layer.mask != nil
         if clips && p.box.isEmpty { return }
-        let paint = box(layer, p, clips: clips)
+        var paint = box(layer, p, clips: clips)
+        if paint.radius.isEmpty, clips, let shape = s.shapeRadius, shape.box.isClose(to: p.box) {
+            paint.radius = WireframeCSS.radius(shape.radius)
+        }
         let opacity = Double(layer.opacity)
         let scrolls = view is UIScrollView
         let custom = info.kind == .customDraw
