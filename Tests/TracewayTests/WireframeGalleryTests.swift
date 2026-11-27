@@ -339,7 +339,7 @@ final class GalleryDriver {
             let measured = measured && view.tracewayPrivacyMask == nil
                 && !(view is UITextField || view is UITextView || view is UISegmentedControl || view is UIStepper
                     || view is UISwitch || view is UIPageControl || view is UISlider)
-                && !NSStringFromClass(type(of: view)).contains("Hosting")
+                && !NSStringFromClass(Swift.type(of: view)).contains("Hosting")
             var clip = clip
             if view.clipsToBounds || layer.masksToBounds { clip = clip.intersection(rect) }
             if let label = view as? UILabel {

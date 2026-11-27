@@ -30,6 +30,8 @@ protocol ReplaySource: AnyObject {
     func hasFrames(sinceMs: Int64?, untilMs: Int64?) -> Bool
 
     /// Makes one clip of what was on screen at or after `sinceMs` and before
-    /// `untilMs`. The frames are chosen when this is called.
+    /// `untilMs` (now when nil). The frames are chosen when this is called.
+    /// Nil when nothing was on screen then, or when the window is empty or
+    /// inverted (`sinceMs` at or after its end).
     func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload?
 }

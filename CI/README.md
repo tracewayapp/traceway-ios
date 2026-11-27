@@ -27,17 +27,66 @@ regenerate it any time with `xcodegen generate`. It defines a small host app
 
 ## Wireframe gallery
 
-`WireframeGalleryTests` shows a gallery of UIKit and SwiftUI screens in a
-window of its own, records it with the real `WireframeRecorder` on its timer
-while scenarios scroll, tap, type, present and navigate, and at every
-checkpoint saves the window's own picture. In the test it checks the recording
-the way rrweb's replayer applies it (a Meta event and a full snapshot first,
-time order, every mutation applying to the page as it is), the texts each
-checkpoint must show and hide, and that no secret appears anywhere. It writes
-`events.json`, `run.json`, `app/<checkpoint>.png` and `tree/<checkpoint>.txt`
-(the window's layer tree, for diagnosing a conversion) to
-`WIREFRAME_GALLERY_OUT` (`TEST_RUNNER_WIREFRAME_GALLERY_OUT` for
-`xcodebuild`; `.build/wireframe-gallery` by default).
+`WireframeGalleryTests` shows the 28 gallery scenarios of the SDK parity
+contract (the Android SDK's gallery has the same names) in a window of its
+own, records them with the real `WireframeRecorder` on its timer at 4 fps
+while the scenarios scroll, tap, type, present and navigate, and at every
+checkpoint saves the window's own picture and the window frames of its
+labelled views. In the test it checks the recording the way rrweb's replayer
+applies it (a Meta event and a full snapshot first, time order, every
+mutation applying to the page as it is), the texts each checkpoint must show
+and hide, that pictures are inlined only where `replay.images` allows them,
+and that no secret appears anywhere. `WIREFRAME_GALLERY_ONLY=lists,menus`
+runs some scenarios.
+
+| # | Scenario | Checkpoints | What it shows |
+| --- | --- | --- | --- |
+| 1 | `layout` | 2 | fills, borders (all sides, one side), uniform and per-corner radii, shadows, linear and radial gradients, opacity, shape and text layers, hidden and alpha-0 views |
+| 2 | `positioning` | 2 | a 3×3 Auto Layout alignment grid, margins × padding, 4 nested offsets, a child half outside its parent, a translation, overlaps ordered by `zPosition` and by subview order |
+| 3 | `transforms` | 2 | rotations of 15, 45, 90 and 180°, scales 0.5 and 2 about the center and about the top left corner, rotate + scale, nested rotation, mirrored |
+| 4 | `clipping` | 2 | clipping on and off, a rounded and a capsule clip, clips inside a scrolled view |
+| 5 | `stacks` | 2 | `UIStackView` axes × `fill`, `fillEqually`, `equalSpacing` × alignments; a hidden arranged view |
+| 6 | `constraints` | 2 | centering, multipliers, aspect ratio, leading and trailing pins, a chain; constraints changed |
+| 7 | `text` | 2 | sizes, weights, italic, monospace, alignments, wrapping, truncation, line spacing, two lines at most |
+| 8 | `rich-text` | 2 | attributed runs: colors, bold, underline, strike, background, sizes, a link |
+| 9 | `buttons` | 2 | system and configuration buttons, disabled, icon-only, image and title, Liquid Glass; a tap counter |
+| 10 | `controls` | 2 | switches, a toggle button, segmented control, slider, progress, spinner, stepper, page dots, date picker |
+| 11 | `forms` | 3 | text field border styles, side views, secure entry, a label over a field, text views; focused, typed into |
+| 12 | `keyboard` | 3 | a focused field with the system keyboard (a neutral box), typed into, dismissed |
+| 13 | `images` | 2 | photos in fill, fit, center and crop, symbols, a template image, under `replay.images = always` (pictures inlined) |
+| 14 | `images-off` | 2 | the same screen under `replay.images = off` (placeholders) |
+| 15 | `lists` | 4 | an inset grouped `UITableView` with sections: top, middle, bottom, top again |
+| 16 | `grids` | 3 | a three-column `UICollectionView`, scrolled twice |
+| 17 | `carousel` | 4 | a horizontal strip in a vertical collection view, scrolled both ways |
+| 18 | `navigation` | 3 | `UINavigationController` with a large title: push, pop |
+| 19 | `tabs` | 3 | `UITabBarController`, three tabs |
+| 20 | `dialogs` | 4 | the page, an alert and an action sheet over it, dismissed |
+| 21 | `sheets` | 3 | a page sheet at its medium detent, at large, dismissed |
+| 22 | `menus` | 2 | a popover over its anchor (`.none` adaptive style), dismissed |
+| 23 | `privacy` | 2 | blank and blur masks over text and an image, a secure field; secrets never recorded |
+| 24 | `declarative` | 3 | a SwiftUI screen: texts, shapes, a gradient, a toggle, a button, a mask, rows; state changed, scrolled |
+| 25 | `native` | 2 | web view, map and video placeholders, a view that draws itself |
+| 26 | `motion` | 3 | an animation at its start, in flight (`minMutations`) and at its end |
+| 27 | `rtl` | 2 | right-to-left layout: mirrored stacks, natural alignment, a field and a switch |
+| 28 | `dark-mode` | 2 | dynamic colors in the dark appearance, then light |
+
+It writes to `WIREFRAME_GALLERY_OUT` (`TEST_RUNNER_WIREFRAME_GALLERY_OUT` for
+`xcodebuild`; `.build/wireframe-gallery` by default; CI uploads it as the
+`wireframe-gallery` artifact of the Simulator job):
+
+- `events.json`: the rrweb events of the whole run;
+- `run.json`: `platform` (`ios`), `device`, `os`, `width` and `height` (window
+  points), `density` (the screen scale), `secrets`, and per checkpoint `name`,
+  `scenario`, `at`, `shows`, `hides`, `ignore` (areas left out of picture
+  comparisons, such as a spinner or the keyboard), `minMutations` and `boxes`:
+  `{text, x, y, w, h}` for every visible label whose text is unique on the
+  screen, its frame converted to the window (a transformed label's
+  axis-aligned bounds). Labels under a privacy mask, in fields and in controls
+  the wireframe draws from their state (segmented controls, steppers) are left
+  out, and so is a checkpoint taken mid-animation;
+- `app/<checkpoint>.png`: the window drawn by UIKit (`drawHierarchy`);
+- `tree/<checkpoint>.txt`: the window's layer tree, for diagnosing a
+  conversion.
 
 ### Checking a gallery
 
@@ -51,7 +100,7 @@ run without `platform` counts as iOS), `events.json`, `app/<checkpoint>.png`.
 ```sh
 python3 CI/wireframe/run.py --gh-run <run id>                 # a CI run's wireframe-gallery artifact (needs gh)
 python3 CI/wireframe/run.py --dir .build/wireframe-gallery     # a gallery on disk
-python3 CI/wireframe/run.py --dir … --only 'table*,alerts'     # some checkpoints or scenarios
+python3 CI/wireframe/run.py --dir … --only 'lists*,dialogs'    # some checkpoints or scenarios
 ```
 
 Per run it checks the event structure, every mutation through a strict model of

@@ -82,7 +82,7 @@ extension GalleryScenes {
                     Button("Count \(model.count)") { model.count += 1 }
                         .buttonStyle(.borderedProminent)
                     Text("Masked in SwiftUI 555-0101").tracewayPrivacyMask()
-                    ForEach(1..<6) { i in
+                    ForEach(1..<16) { i in
                         HStack {
                             Text("List row \(i)")
                             Spacer()
@@ -115,6 +115,9 @@ extension GalleryScenes {
         swiftUIModel.on = true
         swiftUIModel.count = 1
         d.checkpoint("changed", shows: readable ? ["Count 1"] : [], hides: ["555-0101"], settle: 1.2)
+        guard let scroll = find(UIScrollView.self, in: controller.view) else { return d.fail("no scroll view") }
+        d.scroll(scroll, to: CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height)))
+        d.checkpoint("scrolled", shows: readable ? ["List row 15"] : [], hides: readable ? ["Declarative"] : [], settle: 0.6)
     })
 
     // MARK: - 25 native: web, map and video placeholders, a view that draws itself

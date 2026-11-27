@@ -79,7 +79,7 @@ enum GalleryScenes {
     final class Board: UIViewController {
         let heading: String
         let canvas = UIView()
-        private let title = UILabel()
+        private let titleLabel = UILabel()
 
         init(_ heading: String) {
             self.heading = heading
@@ -91,16 +91,16 @@ enum GalleryScenes {
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .systemBackground
-            title.text = heading
-            title.font = .systemFont(ofSize: 28, weight: .bold)
-            view.addSubview(title)
+            titleLabel.text = heading
+            titleLabel.font = .systemFont(ofSize: 28, weight: .bold)
+            view.addSubview(titleLabel)
             view.addSubview(canvas)
         }
 
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             let top = view.safeAreaInsets.top
-            title.frame = CGRect(x: 20, y: top + 12, width: view.bounds.width - 40, height: 34)
+            titleLabel.frame = CGRect(x: 20, y: top + 12, width: view.bounds.width - 40, height: 34)
             canvas.frame = CGRect(x: 0, y: top + 60, width: view.bounds.width, height: view.bounds.height - top - 60)
         }
 
@@ -442,6 +442,7 @@ enum GalleryScenes {
 
         // Overlapping siblings: the first in front by its zPosition, then
         // the later one in front by order.
+        @discardableResult
         func card(_ text: String, _ color: UIColor, _ frame: CGRect, tag: Int) -> UIView {
             let view = board.place(UIView(), frame)
             view.backgroundColor = color

@@ -248,6 +248,7 @@ extension GalleryScenes {
         page.add(label("Behind the dialog", size: 17))
         return page
     }, script: { d, controller in
+        d.checkpoint(shows: ["Dialogs", "Behind the dialog"])
         let alert = UIAlertController(title: "Delete photo?", message: "This cannot be undone.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive))

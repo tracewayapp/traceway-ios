@@ -255,6 +255,8 @@ final class WireframeRecorder: ReplaySource {
         lock.unlock()
 
         let end = untilMs ?? now()
+        // An empty or inverted window holds nothing to replay.
+        if let since = sinceMs, since >= end { return nil }
         var index = sinceMs == nil ? -1 : WireframeRecorder.frameIndex(frames, at: sinceMs!)
         let start: Int64
         if index >= 0, frames[index].screen != nil {

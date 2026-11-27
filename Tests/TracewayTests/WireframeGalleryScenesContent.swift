@@ -323,8 +323,13 @@ extension GalleryScenes {
                              "Read-only terms of service are shown as they are."],
                      hides: ["jane@example.com", "hunter22"])
         let name = (controller as! Page).view.viewWithTag(1201) as! UITextField
+        d.tap(name) { _ = name.becomeFirstResponder() }
+        d.wait(upTo: 3, until: { d.keyboardFrame != nil })
+        d.checkpoint("focused", shows: ["Your name", "Email address"], ignore: d.keyboardFrame.map { [$0] } ?? [], settle: 0.8)
         d.type("Ada Lovelace", into: name)
-        d.checkpoint("filled", shows: ["*** ********"], hides: ["Your name", "Ada Lovelace"])
+        _ = name.resignFirstResponder()
+        d.wait(upTo: 3, until: { d.keyboardFrame == nil })
+        d.checkpoint("filled", shows: ["*** ********"], hides: ["Your name", "Ada Lovelace"], settle: 0.8)
     })
 
     // MARK: - 12 keyboard: a focused field and the system keyboard
