@@ -43,6 +43,7 @@ final class JourneyDriver {
     private var tabBarTop: CGFloat?
     private var notedFallbacks: Set<String> = []
     private var tabBarLooked = false
+    private var lastScene: Scene?
 
     init(config: RunConfig) {
         self.config = config
@@ -233,11 +234,14 @@ final class JourneyDriver {
         var tabButtons: [String: CGRect] = [:]
         var buttons: [String: CGRect] = [:]
         var keyboard: CGRect?
+        /// The switch inside a toggle row (a SwiftUI toggle only reacts there).
+        var switches: [String: CGRect] = [:]
         var root: XCUIElementSnapshot?
     }
 
     private func scene() -> Scene {
         var scene = Scene()
+        defer { lastScene = scene }
         guard let root = try? app.snapshot() else { return scene }
         scene.root = root
         func visit(_ node: XCUIElementSnapshot, inTabBar: Bool, inNavigationBar: Bool) {
@@ -246,6 +250,10 @@ final class JourneyDriver {
             if !frame.isEmpty {
                 let id = node.identifier
                 if !id.isEmpty, scene.ids[id] == nil { scene.ids[id] = frame }
+                if !id.isEmpty, type == .switch, scene.switches[id] == nil,
+                   let inner = node.children.first(where: { $0.elementType == .switch && !$0.frame.isEmpty }) {
+                    scene.switches[id] = inner.frame
+                }
                 switch type {
                 case .window where scene.window == nil: scene.window = frame
                 case .navigationBar where scene.navigationBar == nil: scene.navigationBar = frame
@@ -303,7 +311,8 @@ final class JourneyDriver {
     /// A real tap at the element's centre (a coordinate tap: it does not
     /// need the element to still be there when the finger lands).
     private func tap(_ id: String, step: Int, knownFrame: CGRect? = nil) {
-        guard let frame = knownFrame ?? resolveFrame(id) else { return }
+        guard var frame = knownFrame ?? resolveFrame(id) else { return }
+        if let inner = lastScene?.switches[id], frame.contains(CGPoint(x: inner.midX, y: inner.midY)) { frame = inner }
         // The middle of the part that is on screen.
         let screen = CGRect(x: 0, y: 0, width: device.width, height: device.height)
         let onScreen = device.width > 0 ? frame.intersection(screen) : frame
@@ -384,21 +393,33 @@ final class JourneyDriver {
         var drags = 0
         var now = scene()
         if let containerId = vertical, containerId != id, let containerFrame = now.ids[containerId] {
-            var towardsEnd = true
-            while drags < 14, FMClock.nowMs() - started < 8000 {
+            // Drags of at most half the visible list, so no row passes unseen:
+            // towards the end while the row does not exist yet (a lazy list
+            // creates it), back when a drag took it past the edge, and back
+            // after eight drags without it. A drag also dismisses the keyboard
+            // (the lists dismiss it on drag).
+            var direction: CGFloat = -1
+            var lastDy: CGFloat = 0
+            var seen = false
+            while drags < 14, FMClock.nowMs() - started < 10_000 {
                 let area = visibleArea(of: containerFrame, bars: bars(for: id, in: now),
                                        keyboardTop: now.keyboard?.minY).insetBy(dx: 0, dy: 4)
+                var dy: CGFloat
                 if let frame = now.ids[id] {
                     if frame.minY >= area.minY && frame.maxY <= area.maxY { break }
-                    let delta = frame.maxY > area.maxY ? -(frame.maxY - area.maxY + 24) : (area.minY - frame.minY + 24)
-                    dragContainer(area, dy: delta)
+                    seen = true
+                    dy = frame.maxY > area.maxY ? -(frame.maxY - area.maxY + 24) : (area.minY - frame.minY + 24)
                 } else {
-                    // Not created yet (a lazy list's row): half a screen further on (so
-                    // no row can pass unseen), or back after eight drags. A drag also
-                    // dismisses the keyboard (the lists dismiss it on drag).
-                    dragContainer(area, dy: towardsEnd ? -area.height * 0.5 : area.height * 0.5)
-                    if drags >= 8 { towardsEnd = false }
+                    if seen && lastDy != 0 {
+                        direction = lastDy < 0 ? 1 : -1
+                    } else if drags == 8 {
+                        direction = -direction
+                    }
+                    dy = direction * area.height * 0.5
                 }
+                dy = max(-area.height * 0.5, min(area.height * 0.5, dy))
+                dragContainer(area, dy: dy)
+                lastDy = dy
                 drags += 1
                 now = scene()
             }
@@ -437,8 +458,11 @@ final class JourneyDriver {
         let moveX = max(-maxDx, min(maxDx, dx))
         let start = CGPoint(x: area.midX - moveX / 2, y: area.midY - moveY / 2)
         let end = CGPoint(x: start.x + moveX, y: start.y + moveY)
+        // Slow, and held still before the lift, so the list stops where the
+        // finger stops: at 2,500 pt/s with a 0.12 s hold the list flung on
+        // and the row went by (second smoke run).
         coordinate(start).press(forDuration: 0.05, thenDragTo: coordinate(end),
-                                withVelocity: XCUIGestureVelocity(rawValue: 2500), thenHoldForDuration: 0.12)
+                                withVelocity: XCUIGestureVelocity(rawValue: 700), thenHoldForDuration: 0.35)
     }
 
     // MARK: - Gestures
@@ -541,6 +565,12 @@ final class JourneyDriver {
             note("type: no keyboard, tapping \(field) first")
             tap(field, step: step)
         }
+        // Typing with no focused field fails the whole test in XCUITest.
+        guard hasKeyboard() else {
+            flags.insert("type-skipped")
+            note("type \(into ?? ""): no keyboard, text not typed")
+            return
+        }
         let started = FMClock.nowMs()
         let characters = Array(text)
         switch config.typeMode {
@@ -581,6 +611,11 @@ final class JourneyDriver {
                 }
             }
         }
+        guard hasKeyboard() else {
+            flags.insert("type-skipped")
+            note("paste \(into ?? ""): no Paste menu and no keyboard, text not entered")
+            return
+        }
         note("paste: no Paste menu, typed instead")
         flags.insert("paste-typed")
         app.typeText(text)
@@ -588,7 +623,15 @@ final class JourneyDriver {
             + "\"text\":\(Out.string(text))" + (into.map { ",\"into\":\(Out.string($0))" } ?? "") + "}")
     }
 
+    private func hasKeyboard() -> Bool {
+        app.keyboards.firstMatch.waitForExistence(timeout: 1)
+    }
+
     private func key(_ name: String) {
+        if name != "back", !hasKeyboard() {
+            note("key \(name): no keyboard, not pressed")
+            return
+        }
         switch name {
         case "enter": app.typeText("\n")
         case "tab": app.typeText("\t")
