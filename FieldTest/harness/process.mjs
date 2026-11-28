@@ -106,6 +106,20 @@ function ledgerLines(file) {
 
 const allowedFlags = new Set(['late', 'noisy', 'crashed', 'retry', 'budget-exhausted', 'capture-mode', 'warmup', 'invalid']);
 
+// iOS platform note (GATE1.md, 2026-11-28): only steps that act on the app
+// count for lateness; a run is late if one starts more than lateLimitMs
+// (1,500 ms) after its planned time. Every step's lateness stays in driver.log
+// and driver.json.
+const NOT_ACTING = new Set(['checkpoint', 'mark', 'release', 'idle']);
+export function lateness(driver) {
+  const limit = driver.lateLimitMs ?? 1500;
+  const steps = driver.steps || [];
+  if (!steps.length) return { limit, maxActingMs: null, count: driver.stepsLate || 0, late: (driver.stepsLate || 0) > 0 };
+  const acting = steps.filter((step) => !NOT_ACTING.has(step.do));
+  const count = acting.filter((step) => step.lateMs > limit).length;
+  return { limit, maxActingMs: acting.length ? Math.max(...acting.map((step) => step.lateMs)) : 0, count, late: count > 0 };
+}
+
 /** `ios-S4stack-off-b01-1a2b` → tag `stack` (a sweep); `ios-S6-…` → none. */
 function tagOf(runId, scenario) {
   const second = runId.split('-')[1] || '';
@@ -120,8 +134,8 @@ function ledgerFor(root, runId, dest, evidence) {
   const mode = evidence ? 'same' : forwardMeasured;
   if (!flag('no-forward') && mode !== 'skip' && !existsSync(marker)) {
     const speed = mode === 'same' ? '1' : '0';
-    run('node', [join(tools, 'gateway', 'gateway.mjs'), 'forward', '--ledger', ledgerDir, '--run', runId,
-      '--upstream', upstream, '--speed', speed]);
+    run(benchrun, ['--no-quiet', 'node', join(tools, 'gateway', 'gateway.mjs'), 'forward', '--ledger', ledgerDir,
+      '--run', runId, '--upstream', upstream, '--speed', speed]);
     writeFileSync(marker, JSON.stringify({ at: new Date().toISOString(), upstream, speed }) + '\n');
   }
   run('node', [join(tools, 'gateway', 'ledger.mjs'), 'export', '--ledger', ledgerDir, '--run', runId, '--to', dest,
@@ -160,8 +174,9 @@ function buildRun(root, runId, planEntry, env) {
   if (capture.length) metrics['M-SDK-4'] = { averageMs: capture[capture.length - 1], reports: capture };
 
   const flags = new Set(['capture-mode']);
-  for (const f of driver.flags || []) if (allowedFlags.has(f)) flags.add(f);
-  if ((driver.stepsLate || 0) > 0) flags.add('late');
+  for (const f of driver.flags || []) if (allowedFlags.has(f) && f !== 'late') flags.add(f);
+  const late = lateness(driver);
+  if (late.late) flags.add('late');
   const crashed = end ? crashedBeforeEnd(host, end) : false;
   if (crashed && !/^S7b/.test(scenario || '')) flags.add('crashed');
   if (existsSync(join(src, 'retry.json'))) flags.add('retry');
@@ -203,7 +218,9 @@ function buildRun(root, runId, planEntry, env) {
     fixturesHash: env.fixturesHash || localHashes.fixturesHash,
     driver: {
       kind: driver.driver || 'xcuitest', t0Source: driver.t0Source || null, maxLateMs: driver.maxLateMs ?? null,
-      stepsLate: driver.stepsLate ?? null, typeMode: driver.typeMode || null, quiescence: driver.quiescence || null,
+      maxLateActingMs: late.maxActingMs, stepsLate: late.count,
+      lateRule: `acting steps (all but checkpoint, mark, release, idle) more than ${late.limit} ms late (iOS platform note)`,
+      typeMode: driver.typeMode || null, quiescence: driver.quiescence || null,
       launchToT0Ms: t0 && driver.launchStartEpochMs ? t0 - driver.launchStartEpochMs : null,
       xcodebuildStatus: runner.xcodebuildStatus ?? null, notes: driver.notes || [],
     },
@@ -317,7 +334,7 @@ for (const root of roots(artifacts)) {
       const result = buildRun(root, runId, entry, env);
       built.push(result);
       say(`${runId}: ${result.valid ? 'valid' : 'INVALID'} [${result.flags.join(', ')}] CPU ${result.metrics['M-CPU-2'] ?? '?'}%`
-        + ` mem ${result.metrics['M-MEM-1'] ?? '?'} MB, late max ${result.driver.maxLateMs ?? '?'} ms`);
+        + ` mem ${result.metrics['M-MEM-1'] ?? '?'} MB, acting steps late max ${result.driver.maxLateActingMs ?? '?'} ms`);
     }
   }
   if (existsSync(join(root, 'startup'))) say(`startup launches: ${buildStartup(root, env)}`);
@@ -343,10 +360,22 @@ for (const result of evidenceRuns) {
   }
 }
 
-// 5. Statistics, per platform folder that got measured runs.
+// 4b. The variant checks of measured runs (E-20 to E-25, E-30 from the
+// captured ledger and the forwarded session), through benchrun.
+if (!flag('no-check')) {
+  for (const result of built.filter((r) => !r.evidence && !r.startup)) {
+    run(benchrun, ['--no-quiet', 'node', join(tools, 'tw', 'check.mjs'), '--run-dir', result.dir, '--platform', 'ios',
+      '--only', 'E-01,E-20,E-21,E-22,E-23,E-24,E-25,E-30', '--no-dom', '--no-dashboard'], { tolerate: true });
+  }
+}
+
+// 5. Statistics, per platform folder that got measured runs, through benchrun; then the schema check.
 if (!flag('no-stats')) {
   for (const dir of [...new Set(built.filter((r) => !r.evidence).map((r) => join(resultsRoot, r.platform)))]) {
-    run('node', [join(tools, 'stats', 'summarize.mjs'), '--platform-dir', dir], { tolerate: true });
+    run(benchrun, ['--no-quiet', 'node', join(tools, 'stats', 'summarize.mjs'), '--platform-dir', dir], { tolerate: true });
+    if (existsSync(join(dir, 'summary.json'))) {
+      run('node', [join(tools, 'schema', 'validate.mjs'), 'summary', join(dir, 'summary.json')], { tolerate: true });
+    }
   }
 }
 say(`done: ${built.length} runs (${evidenceRuns.length} evidence) into ${platformDir}`);

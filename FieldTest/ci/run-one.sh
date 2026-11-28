@@ -39,7 +39,9 @@ sleep 2
 gateway_post /ctl/run "{\"runId\":\"$RUN_ID\"}" > "$RUN_DIR/ctl-run.json"
 
 # 3. Samplers.
-node "$FT/ci/host-sampler.mjs" --match "/$EXE\\.app/$EXE( |\$)" --out "$RUN_DIR/host-samples.jsonl" &
+TOP_ARGS=()
+if [ "${FM_PS_TOP:-0}" = 1 ]; then TOP_ARGS=(--top-out "$RUN_DIR/ps-top.jsonl"); fi
+node "$FT/ci/host-sampler.mjs" --match "/$EXE\\.app/$EXE( |\$)" --out "$RUN_DIR/host-samples.jsonl" ${TOP_ARGS[@]+"${TOP_ARGS[@]}"} &
 SAMPLER=$!
 RECORDER=""
 if [ "$EVIDENCE" = "1" ]; then

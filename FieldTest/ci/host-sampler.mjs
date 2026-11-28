@@ -1,10 +1,14 @@
 // node host-sampler.mjs --match <path fragment> --out <file> [--interval-ms 1000]
+//                       [--top-out <file> [--top-interval-ms 10000]]
 //
 // The cross-check of 03-MEASUREMENT.md §3.4 from the runner's side: a
 // Simulator app is a host process, so once a second `ps` gives its resident
 // size and CPU time. Also the CPU every other process used (hostOtherPct).
 // Keeps looking for the process until it is stopped (SIGTERM), so a
-// relaunch (S7e) is followed too.
+// relaunch (S7e) is followed too. With --top-out, every 10 s the ten
+// processes that used the most CPU time since the last look (pid, parent,
+// CPU ms, share of one core, command line): where the background load
+// comes from.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
 
@@ -17,6 +21,8 @@ const args = Object.fromEntries(
 const match = args.match;
 const out = args.out;
 const intervalMs = Number(args['interval-ms'] || 1000);
+const topOut = args['top-out'];
+const topIntervalMs = Number(args['top-interval-ms'] || 10000);
 if (!match || !out) {
   console.error('usage: host-sampler.mjs --match <fragment> --out <file>');
   process.exit(2);
@@ -80,3 +86,32 @@ function tick() {
   setTimeout(tick, Math.max(50, next));
 }
 tick();
+
+let lastTop = null;
+function top() {
+  if (stopped) return;
+  const epochMs = Date.now();
+  const now = new Map();
+  for (const row of run('ps', ['-A', '-o', 'pid=,ppid=,time=,comm=']).trim().split('\n')) {
+    const [p, pp, time, ...name] = row.trim().split(/\s+/);
+    if (p) now.set(p, { ppid: Number(pp), cpuMs: Math.round(seconds(time) * 1000), name: name.join(' ') });
+  }
+  if (lastTop) {
+    const span = epochMs - lastTop.epochMs;
+    const used = [...now].map(([p, v]) => ({ pid: Number(p), ppid: v.ppid, name: v.name.split('/').pop(),
+      cpuMs: v.cpuMs - (lastTop.procs.get(p)?.cpuMs ?? 0) }))
+      .filter((v) => v.cpuMs > 0).sort((a, b) => b.cpuMs - a.cpuMs).slice(0, 10);
+    const commands = new Map(run('ps', ['-o', 'pid=,args=', '-p', used.map((v) => v.pid).join(',') || '1']).trim()
+      .split('\n').map((row) => { const m = row.trim().match(/^(\d+)\s+(.*)$/); return m ? [Number(m[1]), m[2].slice(0, 200)] : null; })
+      .filter(Boolean));
+    const total = [...now].reduce((sum, [p, v]) => sum + Math.max(0, v.cpuMs - (lastTop.procs.get(p)?.cpuMs ?? v.cpuMs)), 0);
+    appendFileSync(topOut, JSON.stringify({ epochMs, spanMs: span, totalCpuPct: Math.round((total / span) * 1000) / 10,
+      top: used.map((v) => ({ ...v, pct: Math.round((v.cpuMs / span) * 1000) / 10, command: commands.get(v.pid) || '' })) }) + '\n');
+  }
+  lastTop = { epochMs, procs: now };
+  setTimeout(top, topIntervalMs);
+}
+if (topOut) {
+  writeFileSync(topOut, '');
+  top();
+}

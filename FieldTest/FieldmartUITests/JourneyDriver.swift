@@ -14,6 +14,10 @@ import FieldmartCore
 /// `tree/<checkpoint>.json`.
 final class JourneyDriver {
     static let platform = "ios"
+    /// The steps that do not act on the app; every other step counts for
+    /// lateness (iOS platform note, GATE1.md, 2026-11-28).
+    static let notActing: Set<String> = ["checkpoint", "mark", "release", "idle"]
+    static func acts(_ action: String) -> Bool { !notActing.contains(action) }
 
     let config: RunConfig
     let app: XCUIApplication
@@ -97,9 +101,8 @@ final class JourneyDriver {
             let timing = StepTiming(index: index, action: step.action.name, dueEpochMs: due, startEpochMs: start,
                                     endEpochMs: end)
             timings.append(timing)
-            // A waitFor is the one step allowed to wait on the app: the first
-            // one starts when launch() returns, after FM_READY (T0).
-            if timing.lateMs > lateLimitMs, step.action != .waitFor { flags.insert("late") }
+            // iOS platform note (GATE1.md): only steps that act on the app count.
+            if timing.lateMs > lateLimitMs, JourneyDriver.acts(step.action.name) { flags.insert("late") }
             log.write("step \(index) \(step.action.name) \(step.id ?? step.name ?? step.into ?? "") t=\(step.t) "
                 + "late=\(timing.lateMs) took=\(end - start)")
         }
@@ -949,7 +952,7 @@ final class JourneyDriver {
         if config.evidence {
             Out.write("{\n" + boxes.joined(separator: ",\n") + "\n}\n", to: config.out.appendingPathComponent("boxes.json"))
         }
-        let late = timings.filter { $0.action != "waitFor" }.map(\.lateMs)
+        let late = timings.filter { JourneyDriver.acts($0.action) }.map(\.lateMs)
         let stepLines = timings.map {
             "{\"i\":\($0.index),\"do\":\(Out.string($0.action)),\"dueEpochMs\":\($0.dueEpochMs),"
                 + "\"startEpochMs\":\($0.startEpochMs),\"endEpochMs\":\($0.endEpochMs),\"lateMs\":\($0.lateMs)}"
@@ -972,14 +975,16 @@ final class JourneyDriver {
             "\"lateLimitMs\":\(lateLimitMs)",
             "\"typeMode\":\(Out.string(config.typeMode))",
             "\"quiescence\":\(Out.string(config.quiescence))",
-            "\"maxLateMs\":\(late.max() ?? 0)",
-            "\"stepsLate\":\(timings.filter { $0.lateMs > lateLimitMs && $0.action != "waitFor" }.count)",
+            "\"maxLateMs\":\(timings.map(\.lateMs).max() ?? 0)",
+            "\"maxLateActingMs\":\(late.max() ?? 0)",
+            "\"stepsLate\":\(late.filter { $0 > lateLimitMs }.count)",
+            "\"lateRule\":\"acting steps (all but checkpoint, mark, release, idle) more than lateLimitMs late\"",
             "\"flags\":\(Out.strings(flags.sorted()))",
             "\"notes\":\(Out.strings(notes))",
             "\"steps\":[\n" + stepLines.joined(separator: ",\n") + "\n]",
         ]
         Out.write("{\n" + summary.joined(separator: ",\n") + "\n}\n", to: config.out.appendingPathComponent("driver.json"))
-        log.write("done: \(timings.count) steps, max late \(late.max() ?? 0) ms, flags \(flags.sorted())")
+        log.write("done: \(timings.count) steps, max late of acting steps \(late.max() ?? 0) ms, flags \(flags.sorted())")
     }
 
     private func note(_ text: String) {

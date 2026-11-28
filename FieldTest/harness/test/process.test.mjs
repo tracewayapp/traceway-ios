@@ -79,6 +79,15 @@ test('a late run is invalid and flagged', () => {
   const run = json('runs/ios-S1-off2-b01-0002/run.json');
   assert.equal(run.valid, false);
   assert.deepEqual(run.flags, ['capture-mode', 'late']);
+  assert.equal(run.driver.maxLateActingMs, 1700);
+});
+
+test('a late checkpoint alone does not make a run late (iOS platform note)', () => {
+  const run = json('runs/ios-S1-off-b01-0001/run.json');
+  assert.equal(run.valid, true);
+  assert.equal(run.driver.maxLateMs, 300);
+  assert.equal(run.driver.maxLateActingMs, 300);
+  assert.equal(run.driver.stepsLate, 0);
 });
 
 test('an evidence run', () => {

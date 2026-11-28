@@ -1,4 +1,4 @@
-// node plan.mjs --mode <build|smoke|plan> --scenario S6 --variants off,off2,core,buffer,stream-img
+// node plan.mjs --mode <build|smoke|pace|plan> --scenario S6 --variants off,off2,core,buffer,stream-img
 //               --repetitions 5 [--warmup 1] [--evidence stream-img,buffer] [--seed 1112970949]
 //               [--extra "-fmToolkit stack"] [--tag stack]
 //
@@ -70,6 +70,11 @@ if (mode === 'smoke') {
   // The smoke gate: S6 in stream-img with evidence, one block of S1 with off and off2.
   shuffled(['off', 'off2']).forEach((variant, order) => add('S1', variant, 1, order, false));
   add('S6', 'stream-img', null, 0, true);
+} else if (mode === 'pace') {
+  // The iOS pace check (GATE1.md, iOS platform note): one off run of each of
+  // S2–S5 in one job; a scenario is measured on iOS only if its acting steps
+  // keep within 1,500 ms.
+  ['S2', 'S3', 'S4', 'S5'].forEach((scenarioId, order) => add(scenarioId, 'off', 1, order, false));
 } else if (mode === 'build') {
   // After the build: one S0 run in off and one in core (launch, driver, probe, gateway, artifact).
   add('S0', 'off', 1, 0, false);

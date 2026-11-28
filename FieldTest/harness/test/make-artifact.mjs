@@ -64,7 +64,14 @@ runs.forEach((plan, index) => {
     device: { width: 440, height: 956, scale: 3 },
     durationMs, endEpochMs: end, typeMode: 'paced', quiescence: 'wait', maxLateMs: plan.variant === 'off2' ? 1700 : 300,
     stepsLate: plan.variant === 'off2' ? 1 : 0, flags: plan.variant === 'off2' ? ['late'] : [], notes: [],
-    steps: [{ i: 0, do: 'waitFor', dueEpochMs: t0, startEpochMs: t0 + 10, endEpochMs: t0 + 20, lateMs: 10 }],
+    lateLimitMs: 1500,
+    // off2: an acting step 1.7 s late (late); every run: a checkpoint 2.5 s late, which does not count (iOS platform note).
+    steps: [
+      { i: 0, do: 'waitFor', dueEpochMs: t0, startEpochMs: t0 + 10, endEpochMs: t0 + 20, lateMs: 10 },
+      { i: 1, do: 'fling', dueEpochMs: t0 + 2000, startEpochMs: t0 + 2000 + (plan.variant === 'off2' ? 1700 : 300),
+        endEpochMs: t0 + 4000, lateMs: plan.variant === 'off2' ? 1700 : 300 },
+      { i: 2, do: 'checkpoint', dueEpochMs: t0 + 2300, startEpochMs: t0 + 4800, endEpochMs: t0 + 5400, lateMs: 2500 },
+    ],
   }));
   write(`${out}/runner.json`, JSON.stringify({ runId: plan.runId, scenario: plan.scenario, variant: plan.variant,
     evidence: plan.evidence, app: plan.variant.startsWith('off') ? 'com.tracewayapp.fieldmart.off' : 'com.tracewayapp.fieldmart',

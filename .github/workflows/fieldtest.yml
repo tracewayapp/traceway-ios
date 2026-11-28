@@ -4,6 +4,7 @@ name: Field test
 # Started by hand only, never by a push:
 #
 #   gh workflow run fieldtest.yml -f mode=build
+#   gh workflow run fieldtest.yml -f mode=pace
 #   gh workflow run fieldtest.yml -f mode=plan -f scenario=S6 -f evidence=stream-img
 #
 # The runner cannot reach a Traceway server: the gateway runs next to the
@@ -13,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "build: build, sizes, launch check, S0 off+core | smoke: S6 stream-img evidence, S1 off+off2 | plan | startup | autopilot"
+        description: "build: build, sizes, launch check, S0 off+core | smoke: S6 stream-img evidence, S1 off+off2 | pace: one off run of S2-S5 | plan | startup | autopilot"
         type: choice
-        options: [build, smoke, plan, startup, autopilot]
+        options: [build, smoke, pace, plan, startup, autopilot]
         default: build
       scenario:
         description: "plan: scenario ids, comma-separated, one job each (S0 … S8, S7a …)"
@@ -97,6 +98,8 @@ jobs:
       FM_DRIVER: ${{ inputs.driver }}
       FM_SEED: ${{ inputs.seed }}
       FM_CAMPAIGN: ${{ inputs.campaign }}
+      # ps-top.jsonl (the busiest processes every 10 s) in this many first runs of a job.
+      FM_PS_TOP_RUNS: ${{ inputs.mode == 'pace' && '99' || '1' }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
     defaults:
@@ -141,7 +144,7 @@ jobs:
         run: ci/launch-check.sh
 
       - name: Runs
-        if: inputs.mode == 'build' || inputs.mode == 'smoke' || inputs.mode == 'plan'
+        if: inputs.mode == 'build' || inputs.mode == 'smoke' || inputs.mode == 'pace' || inputs.mode == 'plan'
         run: |
           read -r FM_TYPE_MODE FM_QUIESCENCE <<< "$FM_DRIVER"
           export FM_TYPE_MODE FM_QUIESCENCE

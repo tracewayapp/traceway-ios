@@ -19,6 +19,8 @@ for index in $(seq 0 $((COUNT - 1))); do
   ' "$PLAN" "$index")
   IFS=$'\t' read -r RUN_ID SCENARIO VARIANT EVIDENCE EXTRA <<< "$LINE"
   log "[$((index + 1))/$COUNT] $RUN_ID"
+  # The busiest processes every 10 s (ps-top.jsonl) in the first runs of a job.
+  if [ "$index" -lt "${FM_PS_TOP_RUNS:-1}" ]; then export FM_PS_TOP=1; else export FM_PS_TOP=0; fi
   # shellcheck disable=SC2086
   "$FT/ci/run-one.sh" "$RUN_ID" "$SCENARIO" "$VARIANT" "$EVIDENCE" $EXTRA
   if [ ! -s "$OUT/runs/$RUN_ID/driver.json" ]; then
