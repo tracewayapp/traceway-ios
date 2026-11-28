@@ -43,7 +43,9 @@ node "$FT/ci/host-sampler.mjs" --match "/$EXE\\.app/$EXE( |\$)" --out "$RUN_DIR/
 SAMPLER=$!
 RECORDER=""
 if [ "$EVIDENCE" = "1" ]; then
-  node "$FT/ci/record.mjs" --udid "$UDID" --out "$RUN_DIR/screen.raw.mp4" --meta "$RUN_DIR/screen-recorder.json" &
+  if [ ! -f "$OUT/encoder-check.txt" ]; then "$FT/ci/encoder-check.sh" > "$OUT/encoder-check.txt" 2>&1 || true; fi
+  node "$FT/ci/record.mjs" --udid "$UDID" --out "$RUN_DIR/screen.raw.mp4" --meta "$RUN_DIR/screen-recorder.json" \
+    --renice "${FM_RECORDER_NICE:--15}" &
   RECORDER=$!
   sleep 2
 fi

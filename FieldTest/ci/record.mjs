@@ -8,7 +8,12 @@
 //   spawnEpochMs     recordVideo was started
 //   startedEpochMs   it printed that the recording started (the first frame)
 //   stoppedEpochMs   it was asked to stop
-import { spawn } from 'node:child_process';
+//   cpu[]            every 5 s: %CPU and CPU time of the recording processes
+//   renice           with --renice <n>: the recording processes' priority
+//                    raised to n (sudo renice), so a busy runner does not
+//                    starve the recorder (it then stamps a backlog of frames
+//                    with one time: 716 frames in the fourth smoke run)
+import { spawn, spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const args = Object.fromEntries(
@@ -32,6 +37,27 @@ function onData(chunk) {
 child.stdout.on('data', onData);
 child.stderr.on('data', onData);
 
+// The recording runs in simctl (xcrun may start it as a child).
+function recorderPids() {
+  const found = spawnSync('pgrep', ['-f', `simctl io ${args.udid} recordVideo`], { encoding: 'utf8' });
+  const pids = (found.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  return [...new Set([String(child.pid), ...pids])];
+}
+function sampleCpu() {
+  const pids = recorderPids();
+  const ps = spawnSync('ps', ['-o', 'pid=,ni=,%cpu=,time=', '-p', pids.join(',')], { encoding: 'utf8' });
+  meta.cpu = meta.cpu || [];
+  meta.cpu.push({ epochMs: Date.now(), ps: (ps.stdout || '').trim().split('\n').map((l) => l.trim().split(/\s+/).join(' ')) });
+}
+if (args.renice) {
+  setTimeout(() => {
+    const pids = recorderPids();
+    const result = spawnSync('sudo', ['-n', 'renice', '-n', String(args.renice), '-p', ...pids], { encoding: 'utf8' });
+    meta.renice = { pids, value: Number(args.renice), status: result.status, output: `${result.stdout || ''}${result.stderr || ''}`.trim() };
+  }, 500);
+}
+const cpuTimer = setInterval(sampleCpu, 5000);
+
 function save() {
   writeFileSync(args.meta, JSON.stringify(meta, null, 2) + '\n');
 }
@@ -40,6 +66,8 @@ let stopping = false;
 function stop() {
   if (stopping) return;
   stopping = true;
+  sampleCpu();
+  clearInterval(cpuTimer);
   meta.stoppedEpochMs = Date.now();
   child.kill('SIGINT');
   setTimeout(() => { child.kill('SIGKILL'); }, 20000).unref();
