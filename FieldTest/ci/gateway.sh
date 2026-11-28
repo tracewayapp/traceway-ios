@@ -18,10 +18,10 @@ LEDGER="$OUT/ledger"
 case "${1:-start}" in
   start)
     mkdir -p "$LEDGER"
-    if [ ! -f "$FIXTURES_DIR/.generated" ]; then
+    # The generator writes fixtures.lock.json last: its presence means the set is complete.
+    if [ ! -f "$FIXTURES_DIR/fixtures.lock.json" ]; then
       log "generating fixtures"
       node "$FIXTURES_GEN" --out "$FIXTURES_DIR" > "$OUT/fixtures-gen.log" 2>&1
-      touch "$FIXTURES_DIR/.generated"
     fi
     node "$FIXTURES_GEN" --check "$FIXTURES_DIR" --lock "$SHARED/fixtures.lock.json" > "$OUT/fixtures-check.log" 2>&1 \
       || { cat "$OUT/fixtures-check.log"; log "fixtures do not match the lock"; exit 1; }
