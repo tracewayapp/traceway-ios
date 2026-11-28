@@ -1,0 +1,173 @@
+name: Field test
+
+# Fieldmart (FieldTest/) on the iOS Simulator for the cross-SDK field test.
+# Started by hand only, never by a push:
+#
+#   gh workflow run fieldtest.yml -f mode=build
+#   gh workflow run fieldtest.yml -f mode=plan -f scenario=S6 -f evidence=stream-img
+#
+# The runner cannot reach a Traceway server: the gateway runs next to the
+# Simulator in capture mode and everything the SDK sent comes back in the
+# artifact, to be forwarded into a Traceway instance afterwards. No secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "build: build, sizes, launch check, S0 off+core | smoke: S6 stream-img evidence, S1 off+off2 | plan | startup | autopilot"
+        type: choice
+        options: [build, smoke, plan, startup, autopilot]
+        default: build
+      scenario:
+        description: "plan: scenario ids, comma-separated, one job each (S0 … S8, S7a …)"
+        type: string
+        default: S6
+      variants:
+        description: "plan and startup: the variants"
+        type: string
+        default: off,off2,core,buffer,stream-img
+      repetitions:
+        description: "plan: blocks after the warm-up block; startup: launches per variant and pass"
+        type: string
+        default: "5"
+      evidence:
+        description: "plan: variants that also get one evidence run (video, screenshots, SDK debug log), or none"
+        type: string
+        default: none
+      extra:
+        description: "Extra launch arguments for every run, e.g. -fmToolkit stack or -fmFps 15"
+        type: string
+        default: ""
+      tag:
+        description: "A label for run ids and the artifact, e.g. stack or fps15"
+        type: string
+        default: ""
+      driver:
+        description: "XCUITest typing (paced, chars or chunk) and idle waits (wait or skip)"
+        type: string
+        default: paced wait
+      seed:
+        description: "Seed of the variant order inside each block"
+        type: string
+        default: "1112970949"
+      campaign:
+        description: "The fm.campaign attribute"
+        type: string
+        default: FT-20261128-1
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Jobs
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.split.outputs.list }}
+    steps:
+      - id: split
+        env:
+          MODE: ${{ inputs.mode }}
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          if [ "$MODE" = plan ]; then
+            LIST=$(python3 -c 'import json, os, re; print(json.dumps([s for s in re.split(r"[,\s]+", os.environ["SCENARIO"]) if re.fullmatch(r"S[0-9][A-Za-z0-9-]*", s)]))')
+          else
+            LIST="[\"$MODE\"]"
+          fi
+          if [ "$LIST" = "[]" ]; then echo "no scenario in '$SCENARIO'"; exit 1; fi
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+
+  fieldtest:
+    name: ${{ inputs.mode }} ${{ matrix.job }}
+    needs: setup
+    runs-on: macos-26
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.setup.outputs.list) }}
+    env:
+      FM_MODE: ${{ inputs.mode }}
+      FM_SCENARIO: ${{ matrix.job }}
+      FM_VARIANTS: ${{ inputs.variants }}
+      FM_REPETITIONS: ${{ inputs.repetitions }}
+      FM_EVIDENCE_VARIANTS: ${{ inputs.evidence }}
+      FM_EXTRA: ${{ inputs.extra }}
+      FM_TAG: ${{ inputs.tag }}
+      FM_DRIVER: ${{ inputs.driver }}
+      FM_SEED: ${{ inputs.seed }}
+      FM_CAMPAIGN: ${{ inputs.campaign }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    defaults:
+      run:
+        working-directory: FieldTest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          # ffmpeg re-encodes the screen videos of evidence runs (H.264, about 2.5 Mbit/s).
+          if [ "$FM_MODE" = smoke ] || [ "$FM_MODE" = autopilot ] || [ "$FM_EVIDENCE_VARIANTS" != none ] \
+            || [[ "$FM_SCENARIO" == S7* ]]; then
+            brew install ffmpeg
+          fi
+
+      - uses: actions/cache@v4
+        with:
+          path: FieldTest/.spm
+          key: fieldtest-spm-${{ hashFiles('Package.swift', 'FieldTest/FieldmartCore/Package.swift') }}
+
+      - name: Fixtures and gateway (capture mode)
+        run: ci/gateway.sh start
+
+      - name: Simulator
+        run: ci/setup-sim.sh
+
+      - name: Build (Release, for testing)
+        run: ci/build.sh
+
+      - name: Launch check (30 s per app, no UI test)
+        if: inputs.mode == 'build'
+        run: ci/launch-check.sh
+
+      - name: Runs
+        if: inputs.mode == 'build' || inputs.mode == 'smoke' || inputs.mode == 'plan'
+        run: |
+          read -r FM_TYPE_MODE FM_QUIESCENCE <<< "$FM_DRIVER"
+          export FM_TYPE_MODE FM_QUIESCENCE
+          node ci/plan.mjs --mode "$FM_MODE" --scenario "$FM_SCENARIO" --variants "$FM_VARIANTS" \
+            --repetitions "$FM_REPETITIONS" --evidence "$FM_EVIDENCE_VARIANTS" --seed "$FM_SEED" \
+            --extra "$FM_EXTRA" --tag "$FM_TAG" > out/plan.json
+          ci/run-plan.sh out/plan.json
+
+      - name: Startup
+        if: inputs.mode == 'startup'
+        run: ci/startup.sh "$FM_VARIANTS" "$FM_REPETITIONS" "$FM_SEED"
+
+      - name: Autopilot (no UI test attached)
+        if: inputs.mode == 'autopilot'
+        run: ci/autopilot.sh S6 stream-img
+
+      - name: Environment
+        if: always()
+        run: ci/finish.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fieldtest-ios-${{ inputs.mode }}-${{ matrix.job }}${{ inputs.tag != '' && format('-{0}', inputs.tag) || '' }}
+          path: |
+            FieldTest/out
+            !FieldTest/out/**/*.xcresult
+          retention-days: 14
+          if-no-files-found: warn

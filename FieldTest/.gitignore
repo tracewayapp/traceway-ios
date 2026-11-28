@@ -1,0 +1,10 @@
+# xcodegen output and builds
+/Generated/
+*.xcodeproj
+DerivedData/
+.build/
+.swiftpm/
+# what a CI run writes (uploaded as an artifact, processed on the lead's machine)
+/out/
+# fixtures are generated from shared/ on the runner
+/fixtures/

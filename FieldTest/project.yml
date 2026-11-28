@@ -1,0 +1,129 @@
+# Fieldmart, the SDK field-test app (sdk-field-test 02-APP-SPEC.md), and its
+# XCUITest driver. Generate with `xcodegen generate` in this folder; the
+# generated FieldTest.xcodeproj and Generated/ are git-ignored.
+#
+#   Fieldmart         the app with the Traceway SDK (compilation flag FM_SDK);
+#                     the variant (core, buffer, stream-img, …) is a launch
+#                     argument, so the SDK variants share this one binary
+#   FieldmartOff      the same sources without FM_SDK and without the package:
+#                     the `off` and `off2` baseline
+#   FieldmartUITests  JourneyTests (the driver) and StartupTests, for either
+#                     app (FM_APP is its bundle id)
+name: FieldTest
+
+options:
+  bundleIdPrefix: com.tracewayapp
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  Traceway:
+    path: ..
+  FieldmartCore:
+    path: FieldmartCore
+
+settings:
+  base:
+    MARKETING_VERSION: "2.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    ONLY_ACTIVE_ARCH: YES
+    COMPILER_INDEX_STORE_ENABLE: NO
+
+targets:
+  Fieldmart:
+    type: application
+    platform: iOS
+    sources:
+      - path: Fieldmart
+      # The autopilot plays the same journey (fmAutopilot=1).
+      - path: shared/journey.json
+        buildPhase: resources
+    dependencies:
+      - package: Traceway
+        product: Traceway
+      - package: FieldmartCore
+        product: FieldmartCore
+    info:
+      path: Generated/Fieldmart-Info.plist
+      properties: &appInfo
+        CFBundleDisplayName: Fieldmart
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).SceneDelegate"
+        # The gateway and the data API are on http://127.0.0.1:18190.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.fieldmart
+        PRODUCT_NAME: Fieldmart
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FM_SDK"
+
+  FieldmartOff:
+    type: application
+    platform: iOS
+    sources:
+      - path: Fieldmart
+      - path: shared/journey.json
+        buildPhase: resources
+    dependencies:
+      - package: FieldmartCore
+        product: FieldmartCore
+    info:
+      path: Generated/FieldmartOff-Info.plist
+      properties: *appInfo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.fieldmart.off
+        PRODUCT_NAME: FieldmartOff
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
+
+  FieldmartUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: FieldmartUITests
+      - path: shared/journey.json
+        buildPhase: resources
+    dependencies:
+      - target: Fieldmart
+      - package: FieldmartCore
+        product: FieldmartCore
+    info:
+      path: Generated/FieldmartUITests-Info.plist
+      properties: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.fieldmart.uitests
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+
+schemes:
+  FieldTest:
+    build:
+      targets:
+        Fieldmart: all
+        FieldmartOff: all
+        FieldmartUITests: [test]
+    test:
+      config: Release
+      gatherCoverageData: false
+      disableMainThreadChecker: true
+      captureScreenshotsAutomatically: false
+      deleteScreenshotsWhenEachTestSucceeds: true
+      targets:
+        - FieldmartUITests
