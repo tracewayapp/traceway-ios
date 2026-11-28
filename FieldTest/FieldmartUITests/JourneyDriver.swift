@@ -41,6 +41,8 @@ final class JourneyDriver {
     private var device: (width: CGFloat, height: CGFloat, scale: CGFloat) = (0, 0, 0)
     /// The top of the tab bar (it does not move), once known.
     private var tabBarTop: CGFloat?
+    private var notedFallbacks: Set<String> = []
+    private var tabBarLooked = false
 
     init(config: RunConfig) {
         self.config = config
@@ -62,6 +64,7 @@ final class JourneyDriver {
             + "evidence \(config.evidence) type \(config.typeMode) quiescence \(config.quiescence)")
         if !scenario.exists(on: JourneyDriver.platform) { note("scenario \(scenarioKey) is not for iOS") }
         if config.quiescence == "skip" { log.write(Quiescence.skip()) }
+        log.write(Quiescence.interruptionMethods())
         if config.evidence {
             for folder in ["app", "tree"] {
                 try? FileManager.default.createDirectory(at: config.out.appendingPathComponent(folder),
@@ -103,8 +106,8 @@ final class JourneyDriver {
         writeOutputs()
     }
 
-    private func measureDevice() {
-        let window = app.windows.firstMatch.frame
+    private func measureDevice(_ known: Scene? = nil) {
+        let window = (known ?? scene()).window ?? .zero
         device = (window.width, window.height, UIScreen.main.scale)
         log.write("device \(Out.number(window.width)) x \(Out.number(window.height)) @\(UIScreen.main.scale)x")
     }
@@ -148,24 +151,31 @@ final class JourneyDriver {
                 flags.insert("waitFor-failed")
                 note("waitFor \(id) timed out")
             }
+            if device.width == 0 {
+                // The screen and the tab bar, once, while nothing is due.
+                let now = scene()
+                measureDevice(now)
+                if tabBarTop == nil { tabBarTop = now.tabBar?.minY }
+            }
         case .tap:
             guard let id = step.id else { return }
-            if step.reveal == true { reveal(id) }
-            tap(id, step: index)
+            let revealed = step.reveal == true ? reveal(id) : nil
+            tap(id, step: index, knownFrame: revealed)
         case .longPress:
             guard let id = step.id else { return }
-            if step.reveal == true { reveal(id) }
-            guard let target = resolve(id) else { return }
+            let revealed = step.reveal == true ? reveal(id) : nil
+            guard let frame = revealed ?? resolveFrame(id) else { return }
             let started = FMClock.nowMs()
-            target.press(forDuration: Double(step.ms ?? 800) / 1000)
-            action("longPress", step: index, id: id, start: started, point: CGPoint(x: target.frame.midX, y: target.frame.midY))
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            coordinate(center).press(forDuration: Double(step.ms ?? 800) / 1000)
+            action("longPress", step: index, id: id, start: started, point: center)
         case .fling:
             guard let id = step.id else { return }
-            if step.reveal == true { reveal(id) }
+            if step.reveal == true { _ = reveal(id) }
             fling(id, dir: step.dir ?? "up", distance: step.distance ?? 0.6, durationMs: step.durationMs ?? 250, step: index)
         case .drag:
             guard let id = step.id else { return }
-            if step.reveal == true { reveal(id) }
+            if step.reveal == true { _ = reveal(id) }
             drag(step, id: id, index: index)
         case .release:
             if let drag = releasedBy[index] {
@@ -182,7 +192,7 @@ final class JourneyDriver {
             key(step.name ?? step.value ?? "enter")
         case .pick:
             guard let id = step.id else { return }
-            if step.reveal == true { reveal(id) }
+            if step.reveal == true { _ = reveal(id) }
             pick(id, value: step.value ?? "", step: index)
         case .idle:
             break
@@ -210,44 +220,98 @@ final class JourneyDriver {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
 
-    /// The element for `id`, waiting up to a second; the fallbacks for ids
-    /// the system does not expose (tabs and menu items by label, the back button).
-    private func resolve(_ id: String) -> XCUIElement? {
-        let direct = element(id)
-        if direct.waitForExistence(timeout: 1) { return direct }
-        if let title = FMText.tabs[id] {
-            let tab = app.tabBars.buttons[title].firstMatch
-            if tab.exists {
-                note("\(id): tab found by its title")
-                return tab
+    /// One look at the screen: a single accessibility snapshot of the app,
+    /// from which every lookup of a step is answered. (A query costs a
+    /// snapshot of the whole app each time, 0.3–1 s on the runner, and an
+    /// element found by one query can be gone by the next.)
+    struct Scene {
+        var ids: [String: CGRect] = [:]
+        var window: CGRect?
+        var navigationBar: CGRect?
+        var navigationButtons: [CGRect] = []
+        var tabBar: CGRect?
+        var tabButtons: [String: CGRect] = [:]
+        var buttons: [String: CGRect] = [:]
+        var keyboard: CGRect?
+        var root: XCUIElementSnapshot?
+    }
+
+    private func scene() -> Scene {
+        var scene = Scene()
+        guard let root = try? app.snapshot() else { return scene }
+        scene.root = root
+        func visit(_ node: XCUIElementSnapshot, inTabBar: Bool, inNavigationBar: Bool) {
+            let frame = node.frame
+            let type = node.elementType
+            if !frame.isEmpty {
+                let id = node.identifier
+                if !id.isEmpty, scene.ids[id] == nil { scene.ids[id] = frame }
+                switch type {
+                case .window where scene.window == nil: scene.window = frame
+                case .navigationBar where scene.navigationBar == nil: scene.navigationBar = frame
+                case .tabBar where scene.tabBar == nil: scene.tabBar = frame
+                case .keyboard where scene.keyboard == nil: scene.keyboard = frame
+                case .button:
+                    let label = node.label
+                    if inTabBar, !label.isEmpty, scene.tabButtons[label] == nil { scene.tabButtons[label] = frame }
+                    if inNavigationBar { scene.navigationButtons.append(frame) }
+                    if !label.isEmpty, scene.buttons[label] == nil { scene.buttons[label] = frame }
+                default: break
+                }
+            }
+            for child in node.children {
+                visit(child, inTabBar: inTabBar || type == .tabBar,
+                      inNavigationBar: inNavigationBar || type == .navigationBar)
             }
         }
-        if id == "fm-nav-back" {
-            let back = app.navigationBars.buttons.firstMatch
-            if back.exists {
-                note("fm-nav-back: first navigation bar button")
-                return back
-            }
-        }
+        visit(root, inTabBar: false, inNavigationBar: false)
+        return scene
+    }
+
+    /// The frame of `id` in `scene`, with the fallbacks for ids the system
+    /// does not expose: tabs by their title, the back button, menu items by
+    /// label.
+    private func lookup(_ id: String, in scene: Scene) -> (frame: CGRect, how: String?)? {
+        if let frame = scene.ids[id] { return (frame, nil) }
+        if let title = FMText.tabs[id], let frame = scene.tabButtons[title] { return (frame, "tab found by its title") }
+        if id == "fm-nav-back", let frame = scene.navigationButtons.first { return (frame, "first navigation bar button") }
         if id.hasPrefix("fm-checkout-menu-item-"), let index = Int(id.dropFirst("fm-checkout-menu-item-".count)),
-           index >= 0, index < FMText.menuItems.count {
-            let byLabel = app.buttons[FMText.menuItems[index]].firstMatch
-            if byLabel.waitForExistence(timeout: 1) {
-                note("\(id): menu item found by label")
-                return byLabel
-            }
+           index >= 0, index < FMText.menuItems.count, let frame = scene.buttons[FMText.menuItems[index]] {
+            return (frame, "menu item found by label")
         }
+        return nil
+    }
+
+    /// The frame of `id`, looking again for up to a second.
+    private func resolveFrame(_ id: String) -> CGRect? {
+        let deadline = Date().addingTimeInterval(1)
+        repeat {
+            if let found = lookup(id, in: scene()) {
+                if let how = found.how, !notedFallbacks.contains(id) {
+                    notedFallbacks.insert(id)
+                    log.write("\(id): \(how)")
+                }
+                return found.frame
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        } while Date() < deadline
         flags.insert("element-missing")
         note("element \(id) not found")
         return nil
     }
 
-    private func tap(_ id: String, step: Int) {
-        guard let target = resolve(id) else { return }
-        let frame = target.frame
+    /// A real tap at the element's centre (a coordinate tap: it does not
+    /// need the element to still be there when the finger lands).
+    private func tap(_ id: String, step: Int, knownFrame: CGRect? = nil) {
+        guard let frame = knownFrame ?? resolveFrame(id) else { return }
+        // The middle of the part that is on screen.
+        let screen = CGRect(x: 0, y: 0, width: device.width, height: device.height)
+        let onScreen = device.width > 0 ? frame.intersection(screen) : frame
+        let target = onScreen.isNull || onScreen.isEmpty ? frame : onScreen
+        let center = CGPoint(x: target.midX, y: target.midY)
         let started = FMClock.nowMs()
-        target.tap()
-        action("tap", step: step, id: id, start: started, point: CGPoint(x: frame.midX, y: frame.midY))
+        coordinate(center).tap()
+        action("tap", step: step, id: id, start: started, point: center)
         frameCache.removeAll()
         lastTextId = id
     }
@@ -282,24 +346,23 @@ final class JourneyDriver {
         var bottom: CGFloat = .greatestFiniteMagnitude
     }
 
-    private func bars(for id: String) -> Bars {
+    private func bars(for id: String, in scene: Scene) -> Bars {
         var bars = Bars()
-        let navigation = app.navigationBars.firstMatch
-        if navigation.exists { bars.top = navigation.frame.maxY }
-        bars.bottom = currentTabBarTop()
-        if id.hasPrefix("fm-product-") {
-            let add = element("fm-product-add")
-            if add.exists { bars.bottom = min(bars.bottom, add.frame.minY - 14) }
+        if let navigation = scene.navigationBar { bars.top = navigation.maxY }
+        if tabBarTop == nil { tabBarTop = scene.tabBar?.minY }
+        bars.bottom = tabBarTop ?? .greatestFiniteMagnitude
+        if id.hasPrefix("fm-product-"), let add = scene.ids["fm-product-add"] {
+            bars.bottom = min(bars.bottom, add.minY - 14)
         }
         return bars
     }
 
     private func currentTabBarTop() -> CGFloat {
-        if let known = tabBarTop { return known }
-        let tabBar = app.tabBars.firstMatch
-        let top = tabBar.exists ? tabBar.frame.minY : CGFloat.greatestFiniteMagnitude
-        tabBarTop = top
-        return top
+        if tabBarTop == nil, !tabBarLooked {
+            tabBarLooked = true
+            tabBarTop = scene().tabBar?.minY
+        }
+        return tabBarTop ?? .greatestFiniteMagnitude
     }
 
     /// The part of `container` the user can see: not under the bars or the keyboard.
@@ -310,71 +373,58 @@ final class JourneyDriver {
         return CGRect(x: container.minX, y: top, width: container.width, height: max(0, bottom - top))
     }
 
-    private func keyboardTop() -> CGFloat? {
-        let keyboard = app.keyboards.firstMatch
-        return keyboard.exists ? keyboard.frame.minY : nil
-    }
-
     /// Makes `id` fully visible (`journey.md` rules: a drag of its scroll
     /// container, which also dismisses a keyboard that covers it). An
     /// element that does not exist yet (a lazy list's row) is searched for by
     /// dragging towards the end of the list.
-    private func reveal(_ id: String) {
+    @discardableResult
+    private func reveal(_ id: String) -> CGRect? {
         let started = FMClock.nowMs()
         let (vertical, horizontal) = JourneyDriver.containers(for: id)
         var drags = 0
-        if let containerId = vertical, containerId != id, let containerFrame = existingFrame(containerId) {
-            let bars = self.bars(for: id)
-            var keyboard = keyboardTop()
+        var now = scene()
+        if let containerId = vertical, containerId != id, let containerFrame = now.ids[containerId] {
             var towardsEnd = true
             while drags < 14, FMClock.nowMs() - started < 8000 {
-                let area = visibleArea(of: containerFrame, bars: bars, keyboardTop: keyboard).insetBy(dx: 0, dy: 4)
-                let target = element(id)
-                if target.exists {
-                    let frame = target.frame
+                let area = visibleArea(of: containerFrame, bars: bars(for: id, in: now),
+                                       keyboardTop: now.keyboard?.minY).insetBy(dx: 0, dy: 4)
+                if let frame = now.ids[id] {
                     if frame.minY >= area.minY && frame.maxY <= area.maxY { break }
                     let delta = frame.maxY > area.maxY ? -(frame.maxY - area.maxY + 24) : (area.minY - frame.minY + 24)
                     dragContainer(area, dy: delta)
                 } else {
                     // Not created yet (a lazy list's row): half a screen further on (so
-                    // no row can pass unseen), or back after eight drags.
+                    // no row can pass unseen), or back after eight drags. A drag also
+                    // dismisses the keyboard (the lists dismiss it on drag).
                     dragContainer(area, dy: towardsEnd ? -area.height * 0.5 : area.height * 0.5)
                     if drags >= 8 { towardsEnd = false }
                 }
                 drags += 1
-                // The drag dismisses a keyboard (the lists dismiss it on drag).
-                if keyboard != nil { keyboard = keyboardTop() }
+                now = scene()
             }
         }
-        if let containerId = horizontal, let containerFrame = existingFrame(containerId) {
+        if let containerId = horizontal, let containerFrame = now.ids[containerId] {
             var sideDrags = 0
-            while sideDrags < 4 {
-                let target = element(id)
-                guard target.exists else { break }
-                let frame = target.frame
+            while sideDrags < 4, let frame = now.ids[id] {
                 let area = containerFrame.insetBy(dx: 4, dy: 0)
                 if frame.minX >= area.minX && frame.maxX <= area.maxX { break }
                 let delta = frame.maxX > area.maxX ? -(frame.maxX - area.maxX + 24) : (area.minX - frame.minX + 24)
                 dragContainer(area, dx: delta)
                 sideDrags += 1
                 drags += 1
+                now = scene()
             }
         }
         if drags > 0 {
             frameCache.removeAll()
             log.write("reveal \(id): \(drags) drag(s), \(FMClock.nowMs() - started) ms")
         }
-        if !element(id).exists {
+        guard let final = lookup(id, in: now)?.frame else {
             flags.insert("reveal-failed")
             note("reveal \(id): not found after \(drags) drag(s)")
+            return nil
         }
-    }
-
-    private func existingFrame(_ id: String) -> CGRect? {
-        let container = element(id)
-        guard container.exists else { return nil }
-        let frame = container.frame
-        return frame.isEmpty ? nil : frame
+        return final
     }
 
     /// A drag with the finger held at the end, so the content stops where it
@@ -395,9 +445,7 @@ final class JourneyDriver {
 
     private func frame(_ id: String) -> CGRect? {
         if let cached = frameCache[id] { return cached }
-        guard let target = resolve(id) else { return nil }
-        let frame = target.frame
-        guard !frame.isEmpty else { return nil }
+        guard let frame = resolveFrame(id) else { return nil }
         frameCache[id] = frame
         return frame
     }
@@ -522,8 +570,8 @@ final class JourneyDriver {
     private func paste(_ text: String, into: String?, step: Int) {
         UIPasteboard.general.string = text
         let started = FMClock.nowMs()
-        if let id = into ?? lastTextId, let field = resolve(id) {
-            field.press(forDuration: 1.0)
+        if let id = into ?? lastTextId, let field = resolveFrame(id) {
+            coordinate(CGPoint(x: field.midX, y: field.midY)).press(forDuration: 1.0)
             for candidate in [app.menuItems["Paste"].firstMatch, app.buttons["Paste"].firstMatch] {
                 if candidate.waitForExistence(timeout: 1.5) {
                     candidate.tap()
@@ -665,8 +713,9 @@ final class JourneyDriver {
     /// rows of the checkpoint's `list`, and the chart and hero regions; and
     /// the whole tree in `tree/<checkpoint>.json`.
     private func dumpTree(name: String, step: Step) {
-        if device.width == 0 { measureDevice() }
-        guard let root = try? app.snapshot() else {
+        let now = scene()
+        if device.width == 0 { measureDevice(now) }
+        guard let root = now.root else {
             note("\(name): no accessibility snapshot")
             return
         }

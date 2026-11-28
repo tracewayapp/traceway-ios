@@ -110,6 +110,23 @@ enum Quiescence {
         return replaced.isEmpty ? "quiescence: no method found" : "quiescence skipped: " + replaced.joined(separator: ", ")
     }
 
+    /// The runner's methods about interrupting UI (system alerts), which
+    /// XCUITest checks before events: listed in driver.log, not changed.
+    static func interruptionMethods() -> String {
+        var names: [String] = []
+        for className in ["XCUIApplication", "XCUIApplicationImpl", "XCUIApplicationProcess", "XCUIElement", "XCUICoordinate"] {
+            guard let cls = NSClassFromString(className) else { continue }
+            var count: UInt32 = 0
+            guard let methods = class_copyMethodList(cls, &count) else { continue }
+            defer { free(methods) }
+            for index in 0..<Int(count) {
+                let name = NSStringFromSelector(method_getName(methods[index]))
+                if name.lowercased().contains("interrupt") { names.append("\(className).\(name)") }
+            }
+        }
+        return "interruption methods: " + (names.isEmpty ? "none" : names.joined(separator: ", "))
+    }
+
     /// A block that ignores its arguments and returns nothing (or YES).
     private static func noOp(arguments: Int, returnType: String) -> Any? {
         switch (arguments, returnType) {
@@ -121,6 +138,9 @@ enum Quiescence {
             return block
         case (2, "v"):
             let block: @convention(block) (AnyObject, Int, Int) -> Void = { _, _, _ in }
+            return block
+        case (3, "v"):
+            let block: @convention(block) (AnyObject, Int, Int, Int) -> Void = { _, _, _, _ in }
             return block
         case (0, "B"), (0, "c"):
             let block: @convention(block) (AnyObject) -> Bool = { _ in true }

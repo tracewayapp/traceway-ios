@@ -1,8 +1,8 @@
 import UIKit
 
 /// A `UITableView` whose accessibility (what UI automation and VoiceOver see)
-/// holds only what is on screen: the table header, the visible section
-/// headers and the visible cells.
+/// holds only what is on screen: the table header and footer, the visible
+/// section headers and the visible cells.
 ///
 /// UIKit otherwise offers every row of a table to accessibility and creates a
 /// cell for each one it is asked about, so one UI-automation query of the
@@ -19,6 +19,7 @@ final class FMTableView: UITableView {
         }
         let cells = visibleCells.sorted { $0.frame.minY < $1.frame.minY }
         elements.append(contentsOf: cells)
+        if let footer = tableFooterView { elements.append(footer) }
         return elements
     }
 
