@@ -80,6 +80,15 @@ fi
 kill -TERM "$SAMPLER" 2>/dev/null || true
 wait "$SAMPLER" 2>/dev/null || true
 
+# The driver's files, if the test runner had to write them into its own container.
+if [ ! -s "$RUN_DIR/driver.json" ]; then
+  RUNNER_DATA=$(xcrun simctl get_app_container "$UDID" com.tracewayapp.fieldmart.uitests.xctrunner data 2>/dev/null || true)
+  if [ -n "$RUNNER_DATA" ] && [ -d "$RUNNER_DATA/Documents/fm-out/$RUN_ID" ]; then
+    cp -R "$RUNNER_DATA/Documents/fm-out/$RUN_ID/." "$RUN_DIR/"
+    echo "copied from the test runner's container" > "$RUN_DIR/driver-files-from-runner-container.txt"
+  fi
+fi
+
 # 5. What the app wrote, and its log.
 DATA=$(xcrun simctl get_app_container "$UDID" "$APP_ID" data 2>/dev/null || true)
 if [ -n "$DATA" ]; then

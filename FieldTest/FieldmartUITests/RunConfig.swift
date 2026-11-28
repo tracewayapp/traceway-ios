@@ -33,8 +33,19 @@ struct RunConfig {
             return raw
         }
         let run = value("FM_RUN") ?? "ios-manual-\(Int(Date().timeIntervalSince1970))"
-        let out = value("FM_OUT").map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("fm-\(run)", isDirectory: true)
+        // FM_OUT on the runner's disk; if the test runner cannot write there,
+        // its own Documents/fm-out/<run>/ (ci/run-one.sh copies it out).
+        let fallback = (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory).appendingPathComponent("fm-out/\(run)", isDirectory: true)
+        var out = value("FM_OUT").map { URL(fileURLWithPath: $0, isDirectory: true) } ?? fallback
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let probe = out.appendingPathComponent(".writable")
+        if FileManager.default.createFile(atPath: probe.path, contents: Data()) {
+            try? FileManager.default.removeItem(at: probe)
+        } else {
+            out = fallback
+            try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        }
         return RunConfig(
             run: run,
             scenario: value("FM_SCENARIO") ?? "S0",

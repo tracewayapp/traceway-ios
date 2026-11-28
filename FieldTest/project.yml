@@ -111,6 +111,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.tracewayapp.fieldmart.uitests
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
+        # The driver is not measured: no optimiser in the test runner.
+        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
 
 schemes:
   FieldTest:

@@ -6,7 +6,7 @@ import FieldmartCore
 /// on the app `FM_APP` (see `RunConfig`). Run it with
 /// `xcodebuild test-without-building -only-testing:FieldmartUITests/JourneyTests/testRun`
 /// and `TEST_RUNNER_FM_*` variables.
-final class JourneyTests: XCTestCase {
+class JourneyTests: XCTestCase {
     private var log: DriverLog?
 
     override func setUp() {
@@ -16,8 +16,12 @@ final class JourneyTests: XCTestCase {
         continueAfterFailure = true
     }
 
-    func testRun() throws {
+    /// Not `throws`: an error is written to `driver-error.txt` and recorded
+    /// as an XCTest failure.
+    func testRun() {
         let config = RunConfig.fromEnvironment()
+        XCTContext.runActivity(named: "FM driver start: out \(config.out.path), run \(config.run), "
+            + "scenario \(config.scenario), app \(config.app)") { _ in }
         // What the test runner was given, before anything can go wrong.
         let environment = ProcessInfo.processInfo.environment.filter { $0.key.hasPrefix("FM_") }
             .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
@@ -27,6 +31,7 @@ final class JourneyTests: XCTestCase {
         let wrote = FileManager.default.createFile(atPath: config.out.appendingPathComponent("driver-start.txt").path,
                                                    contents: Data(start.utf8))
         print("FMDRIVER \(start)wrote driver-start.txt: \(wrote)")
+        XCTContext.runActivity(named: "FM driver-start.txt written: \(wrote)") { _ in }
         let driver = JourneyDriver(config: config)
         log = driver.log
         do {
@@ -36,8 +41,9 @@ final class JourneyTests: XCTestCase {
             print("FMDRIVER " + text)
             FileManager.default.createFile(atPath: config.out.appendingPathComponent("driver-error.txt").path,
                                            contents: Data(text.utf8))
-            throw error
+            XCTFail(text)
         }
+        XCTContext.runActivity(named: "FM driver finished") { _ in }
         print("FMDRIVER testRun finished")
     }
 
@@ -50,8 +56,8 @@ final class JourneyTests: XCTestCase {
 /// App launch time (`03-MEASUREMENT.md` §4, M-ST-1): `XCTApplicationLaunchMetric`
 /// over `FM_ITERATIONS` launches of `FM_APP`. The app's own `FM_PROC_START`
 /// and `FM_READY` markers for every launch land in `FM_OUT/markers.jsonl`.
-final class StartupTests: XCTestCase {
-    func testLaunch() throws {
+class StartupTests: XCTestCase {
+    func testLaunch() {
         let config = RunConfig.fromEnvironment()
         try? FileManager.default.createDirectory(at: config.out, withIntermediateDirectories: true)
         let app = XCUIApplication(bundleIdentifier: config.app)
