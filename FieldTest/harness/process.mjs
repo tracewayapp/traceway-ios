@@ -165,8 +165,9 @@ function buildRun(root, runId, planEntry, env) {
   if (existsSync(join(src, 'retry.json'))) flags.add('retry');
   const other = host.map((h) => h.hostOtherPct).filter((v) => typeof v === 'number');
   const otherAvg = other.length ? other.reduce((a, b) => a + b, 0) / other.length : null;
-  // A Simulator runner always has system processes busy; only a whole core of them is "noisy" here.
-  if (otherAvg !== null && otherAvg > 100) flags.add('noisy');
+  // Not flagged `noisy`: on a Simulator runner the system's own processes
+  // (SpringBoard, testmanagerd, xcodebuild) are always busy; the off/off2
+  // noise floor says how much that matters. The average is kept in run.json.
   if (planEntry?.warmup) flags.add('warmup');
   const finished = Boolean(driver.steps?.length || driver.doneEpochMs);
   const valid = finished && !flags.has('late') && !flags.has('crashed');

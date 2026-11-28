@@ -77,9 +77,6 @@ final class JourneyDriver {
         launchEndMs = FMClock.nowMs()
         log.write("launched in \(launchEndMs - launchStartMs) ms")
         findT0()
-        let window = app.windows.firstMatch.frame
-        device = (window.width, window.height, UIScreen.main.scale)
-        log.write("device \(Out.number(window.width)) x \(Out.number(window.height)) @\(UIScreen.main.scale)x")
 
         for (index, step) in steps.enumerated() {
             guard step.runs(on: JourneyDriver.platform) else {
@@ -94,13 +91,22 @@ final class JourneyDriver {
             let timing = StepTiming(index: index, action: step.action.name, dueEpochMs: due, startEpochMs: start,
                                     endEpochMs: end)
             timings.append(timing)
-            if timing.lateMs > lateLimitMs { flags.insert("late") }
+            // A waitFor is the one step allowed to wait on the app: the first
+            // one starts when launch() returns, after FM_READY (T0).
+            if timing.lateMs > lateLimitMs, step.action != .waitFor { flags.insert("late") }
             log.write("step \(index) \(step.action.name) \(step.id ?? step.name ?? step.into ?? "") t=\(step.t) "
                 + "late=\(timing.lateMs) took=\(end - start)")
         }
         sleep(until: t0Ms + Int64(scenario.durationMs))
+        if device.width == 0 { measureDevice() }
         standardEnding()
         writeOutputs()
+    }
+
+    private func measureDevice() {
+        let window = app.windows.firstMatch.frame
+        device = (window.width, window.height, UIScreen.main.scale)
+        log.write("device \(Out.number(window.width)) x \(Out.number(window.height)) @\(UIScreen.main.scale)x")
     }
 
     // MARK: - T0
@@ -658,6 +664,7 @@ final class JourneyDriver {
     /// rows of the checkpoint's `list`, and the chart and hero regions; and
     /// the whole tree in `tree/<checkpoint>.json`.
     private func dumpTree(name: String, step: Step) {
+        if device.width == 0 { measureDevice() }
         guard let root = try? app.snapshot() else {
             note("\(name): no accessibility snapshot")
             return
@@ -796,7 +803,7 @@ final class JourneyDriver {
         if config.evidence {
             Out.write("{\n" + boxes.joined(separator: ",\n") + "\n}\n", to: config.out.appendingPathComponent("boxes.json"))
         }
-        let late = timings.map(\.lateMs)
+        let late = timings.filter { $0.action != "waitFor" }.map(\.lateMs)
         let stepLines = timings.map {
             "{\"i\":\($0.index),\"do\":\(Out.string($0.action)),\"dueEpochMs\":\($0.dueEpochMs),"
                 + "\"startEpochMs\":\($0.startEpochMs),\"endEpochMs\":\($0.endEpochMs),\"lateMs\":\($0.lateMs)}"
@@ -820,7 +827,7 @@ final class JourneyDriver {
             "\"typeMode\":\(Out.string(config.typeMode))",
             "\"quiescence\":\(Out.string(config.quiescence))",
             "\"maxLateMs\":\(late.max() ?? 0)",
-            "\"stepsLate\":\(timings.filter { $0.lateMs > lateLimitMs }.count)",
+            "\"stepsLate\":\(timings.filter { $0.lateMs > lateLimitMs && $0.action != "waitFor" }.count)",
             "\"flags\":\(Out.strings(flags.sorted()))",
             "\"notes\":\(Out.strings(notes))",
             "\"steps\":[\n" + stepLines.joined(separator: ",\n") + "\n]",
