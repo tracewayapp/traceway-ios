@@ -51,8 +51,8 @@ ls -la "$PRODUCTS" > "$OUT/build/products.txt"
     app="$PRODUCTS/$name.app"
     kb=$(du -sk "$app" | cut -f1)
     exe_bytes=$(stat -f %z "$app/$name")
-    text=$(size -m "$app/$name" | awk '/^Segment __TEXT:/ {print $3; exit}')
-    frameworks=$(ls "$app/Frameworks" 2>/dev/null | tr '\n' ' ')
+    text=$(size -m "$app/$name" | awk '/^Segment __TEXT:/ {print $3; exit}' || true)
+    frameworks=$(ls "$app/Frameworks" 2>/dev/null | tr '\n' ' ' || true)
     [ $first -eq 1 ] || echo ","
     first=0
     printf '  "%s": {"appKb": %s, "executableBytes": %s, "textSegmentBytes": %s, "frameworks": "%s"}' \
@@ -61,7 +61,7 @@ ls -la "$PRODUCTS" > "$OUT/build/products.txt"
   echo
   echo "}"
 } > "$OUT/build/size.json"
-for name in Fieldmart FieldmartOff; do size -m "$PRODUCTS/$name.app/$name" > "$OUT/build/size-m-$name.txt"; done
+for name in Fieldmart FieldmartOff; do size -m "$PRODUCTS/$name.app/$name" > "$OUT/build/size-m-$name.txt" || true; done
 cat "$OUT/build/size.json"
 
 # FieldmartOff must not contain the SDK: no Traceway or OpenTelemetry
