@@ -104,6 +104,24 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertTrue(fresh.contains(glyph))
     }
 
+    func testAClipCarriesThePicturesItShowsNotEveryRuleThatStillLingers() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        // A grid scrolled through 40 pictures in the last 30 s; six are on
+        // screen. All 40 rules would take 320 KiB, past a segment's 128 KiB.
+        let start = clock
+        r.push(frame(gridScreen(shown: Array(34..<40), lingering: Array(0..<40))))
+        clock += 250
+        let clip = try XCTUnwrap(r.captureRecording(clipId: "grid", sinceMs: start, untilMs: clock))
+        let encoded = JSON.array(clip.events).encoded()
+        for n in 34..<40 { XCTAssertTrue(encoded.contains(gridRule(n)), "p\(n) is on screen") }
+        for n in 0..<34 { XCTAssertFalse(encoded.contains(".im.p\(n){"), "p\(n) is not on screen") }
+        let pictures = replay(clip.events).pictures()
+        XCTAssertEqual(pictures.used, Set((34..<40).map { "p\($0)" }))
+        XCTAssertEqual(pictures.drawn, pictures.used)
+    }
+
     func testAClipReplaysToTheLastScreenTouchesIncluded() {
         let r = recorder()
         r.start()

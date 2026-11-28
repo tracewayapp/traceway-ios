@@ -451,6 +451,52 @@ final class ReplayControllerTests: XCTestCase {
         XCTAssertEqual(source.captures.count, 1)
     }
 
+    /// The field test's Home grid (ios-002): a fling every 2.5 s brings six
+    /// new pictures. One segment's worth of them is more than its 128 KiB,
+    /// but what is on screen at any time is far less. Every segment keeps
+    /// the pictures it shows.
+    func testAScrollingPictureGridKeepsItsPicturesInEverySegment() throws {
+        let clock = ManualClock()
+        let recorder = WireframeRecorder(maxFrames: 150, fps: 4, now: clock.now)
+        #if canImport(UIKit)
+        recorder.windows = { [] }
+        #endif
+        let c = controller(clock, segmentMs: 600_000)
+        onQueue {
+            c.attach(recorder)
+            c.apply(.stream, maxAgeMs: 600_000)
+        }
+        var lingering: [Int] = []
+        var everShown = Set<String>()
+        for fling in 0..<4 {
+            let shown = Array(fling * 6..<fling * 6 + 6)
+            lingering += shown
+            everShown.formUnion(shown.map { "p\($0)" })
+            for _ in 0..<10 {
+                recorder.push(WireframeFrame(screen: gridScreen(shown: shown, lingering: lingering), width: 390,
+                                             height: 844, timestampMs: clock.now(), href: "/home"))
+                clock.advance(250)
+            }
+        }
+        onQueue { c.onPaused() }
+        XCTAssertTrue(drain(c))
+
+        let segments = uploaded()
+        XCTAssertGreaterThan(segments.count, 1, "10 s of this grid do not fit one segment's allowance")
+        var drawn = Set<String>()
+        for (i, segment) in segments.enumerated() {
+            let events = try XCTUnwrap(segment["events"]?.array)
+            XCTAssertTrue(JSON.array(events).encoded().contains("data:image/jpeg"), "segment \(i) keeps its pictures")
+            let pictures = replay(events).pictures()
+            XCTAssertFalse(pictures.used.isEmpty)
+            XCTAssertEqual(pictures.drawn.intersection(pictures.used), pictures.used, "segment \(i)")
+            drawn.formUnion(pictures.drawn)
+            if i > 0 { XCTAssertEqual(segment["startedAt"], segments[i - 1]["endedAt"], "segment \(i) starts where \(i - 1) ended") }
+        }
+        XCTAssertEqual(drawn, everShown)
+        XCTAssertEqual(segments.compactMap { $0["segmentIndex"]?.int }, Array(0..<segments.count))
+    }
+
     func testAttachingAnotherRecorderStopsThePreviousOne() {
         let first = ClipSource()
         let second = ClipSource()

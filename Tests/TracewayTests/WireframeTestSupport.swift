@@ -219,6 +219,48 @@ extension DomNode {
     }
 }
 
+// MARK: - Picture grids
+
+/// The rule of grid picture `n`: 6 KiB of JPEG, 8 KiB of base64, so sixteen
+/// of them take the 128 KiB a segment allows.
+func gridRule(_ n: Int) -> String {
+    WireframeImageEncoding.rule(cls: "p\(n)", mime: "image/jpeg", data: Data(repeating: UInt8(n % 251), count: 6 * 1024))
+}
+
+/// A screen of a scrolling picture grid as the capture draws it: a style
+/// node for every picture shown in the last 30 s (`lingering`), first and in
+/// id order, then one image node per cell showing the pictures `shown`.
+func gridScreen(shown: [Int], lingering: [Int]) -> VNode {
+    let styles = Set(lingering + shown).sorted().map { n in
+        VNode(element: 1000 + n, tag: "style", attributes: ["_cssText": gridRule(n)], children: [])
+    }
+    let cells = shown.enumerated().map { slot, n in
+        VNode(element: 3000 + slot, tag: "div",
+              attributes: ["class": "im p\(n)", "style": "left:\(slot % 2 * 195)px;top:\(slot / 2 * 160)px;width:190px;height:152px"],
+              children: [])
+    }
+    return VNode(element: screenNodeId, tag: "div", attributes: ["id": "tw", "style": "width:390px;height:844px"],
+                 children: styles + cells)
+}
+
+extension Mirror {
+    /// The picture classes (`pN`) nodes on the page use, and those whose
+    /// rule is on the page with its data.
+    func pictures() -> (used: Set<String>, drawn: Set<String>) {
+        var used = Set<String>(), drawn = Set<String>()
+        for node in byId.values {
+            for cls in (node.attributes["class"] ?? "").split(separator: " ") where cls.hasPrefix("p") {
+                used.insert(String(cls))
+            }
+            if let css = node.attributes["_cssText"], css.hasPrefix(".im."), css.contains("url(data:image/"),
+               let brace = css.firstIndex(of: "{") {
+                drawn.insert(String(css[css.index(css.startIndex, offsetBy: 4)..<brace]))
+            }
+        }
+        return (used, drawn)
+    }
+}
+
 /// Plays a recording's events through the mirror after checking the order
 /// rrweb's replayer needs: time never goes back, a Meta and a full snapshot
 /// come first, and every interaction names a node on the page.
