@@ -12,6 +12,12 @@
   app version the session had. Sessions ended by `shutdown`, and sessions
   older than a day, are not ended again. Before, a killed app's session kept
   the zero counts of its `session.start`.
+- **Replay pictures on scrolling screens.** A clip carries the picture and
+  glyph rules of what it shows instead of every rule still lingering from
+  the last 30 seconds, and a streamed segment that would pass its 128 KiB of
+  data URLs ends at that frame, the next one starting there with its own
+  allowance. Before, every segment of a scrolled picture grid passed the
+  allowance and was sent as layout only, so its pictures were placeholders.
 
 ## 2.1.0 — unreleased
 

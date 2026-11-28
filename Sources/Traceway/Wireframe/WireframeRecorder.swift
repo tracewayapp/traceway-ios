@@ -300,7 +300,19 @@ final class WireframeRecorder: ReplaySource {
         }
 
         var screenEvents: [JSON] = []
-        func snapshot(_ frame: WireframeFrame, at ms: Int64) {
+        // Each frame as the clip shows it: with the rules of the pictures
+        // the clip shows, not of every one the frame still holds.
+        var rasters = ClipRasters()
+        func view(_ frame: WireframeFrame, fresh: Bool) -> VNode? {
+            guard let screen = frame.screen else {
+                rasters.clearScreen()
+                return nil
+            }
+            let step = rasters.step(screen, FrameRasters(screen), fresh: fresh)
+            rasters.take(step)
+            return step.view
+        }
+        func snapshot(_ frame: WireframeFrame, _ shown: VNode?, at ms: Int64) {
             screenEvents.append([
                 "type": 4,
                 "data": [
@@ -313,7 +325,7 @@ final class WireframeRecorder: ReplaySource {
             screenEvents.append([
                 "type": 2,
                 "data": [
-                    "node": serializeDocument(frame.screen ?? WireframeRecorder.awayScreen(frame.width, frame.height)),
+                    "node": serializeDocument(shown ?? WireframeRecorder.awayScreen(frame.width, frame.height)),
                     "initialOffset": ["left": 0, "top": 0],
                 ],
                 "timestamp": JSON(ms),
@@ -321,18 +333,22 @@ final class WireframeRecorder: ReplaySource {
         }
 
         var previous = frames[index]
-        snapshot(previous, at: start)
+        var previousView = view(previous, fresh: true)
+        snapshot(previous, previousView, at: start)
         var i = index + 1
         while i < frames.count {
             let frame = frames[i]
             if frame.timestampMs >= end { break }
-            if let before = previous.screen, let after = frame.screen,
-               previous.width == frame.width, previous.height == frame.height {
+            if let before = previousView, frame.screen != nil,
+               previous.width == frame.width, previous.height == frame.height,
+               let after = view(frame, fresh: false) {
                 if let mutation = diffScreens(before, after) {
                     screenEvents.append(["type": 3, "data": mutation, "timestamp": JSON(frame.timestampMs)])
                 }
+                previousView = after
             } else {
-                snapshot(frame, at: frame.timestampMs)
+                previousView = view(frame, fresh: true)
+                snapshot(frame, previousView, at: frame.timestampMs)
             }
             previous = frame
             i += 1
@@ -358,6 +374,53 @@ final class WireframeRecorder: ReplaySource {
                   Double(end - start) / 1000)
         }
         return clip
+    }
+
+    /// The most pieces one window of a session is cut into.
+    static let maxRasterCuts = 15
+
+    func rasterCuts(sinceMs: Int64, untilMs: Int64) -> [Int64] {
+        lock.lock()
+        let frames = self.frames
+        lock.unlock()
+        guard sinceMs < untilMs else { return [] }
+        // The frame the clip opens with, as `captureRecording` picks it.
+        var index = WireframeRecorder.frameIndex(frames, at: sinceMs)
+        if index < 0 || frames[index].screen == nil {
+            guard let first = frames.firstIndex(where: {
+                $0.screen != nil && $0.timestampMs >= sinceMs && $0.timestampMs < untilMs
+            }) else { return [] }
+            index = first
+        }
+        let limit = WireframeRasterBudget.maxBytes
+        var cuts: [Int64] = []
+        var rasters = ClipRasters()
+        var previous = frames[index]
+        if let screen = previous.screen { rasters.take(rasters.step(screen, FrameRasters(screen), fresh: true)) }
+        for frame in frames[(index + 1)...] {
+            if frame.timestampMs >= untilMs { break }
+            defer { previous = frame }
+            guard let screen = frame.screen else {
+                rasters.clearScreen()
+                continue
+            }
+            let fresh = previous.screen == nil || previous.width != frame.width || previous.height != frame.height
+            let frameRasters = FrameRasters(screen)
+            let step = rasters.step(screen, frameRasters, fresh: fresh)
+            if rasters.bytes + step.added > limit, cuts.count < WireframeRecorder.maxRasterCuts {
+                // A segment from this frame on starts with its pictures only:
+                // worth it when they fit.
+                let opening = ClipRasters().step(screen, frameRasters, fresh: true)
+                if opening.added <= limit {
+                    cuts.append(frame.timestampMs)
+                    rasters = ClipRasters()
+                    rasters.take(opening)
+                    continue
+                }
+            }
+            rasters.take(step)
+        }
+        return cuts
     }
 
     /// The index of the frame showing at `at`: the last one taken at or
