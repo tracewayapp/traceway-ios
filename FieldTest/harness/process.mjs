@@ -240,7 +240,7 @@ function buildRun(root, runId, planEntry, env) {
   writeFileSync(join(dest, 'checkpoints.json'), JSON.stringify(checkpoints, null, 2) + '\n');
   writeFileSync(join(dest, 'app.log'), logText(readJsonLines(join(src, 'app.log.ndjson'))));
   for (const name of ['driver.log', 'driver.json', 'actions.json', 'xcodebuild.log', 'host-samples.jsonl', 'runner.json',
-    'fxlog-counts.json', 'quiet.json', 'autopilot.log', 'autopilot-app.log']) {
+    'fxlog-counts.json', 'quiet.json', 'ps-top.jsonl', 'autopilot.log', 'autopilot-app.log']) {
     if (existsSync(join(src, name))) copyFileSync(join(src, name), join(dest, name));
   }
   if (evidence) copyEvidence(src, dest, processLog);

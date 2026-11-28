@@ -490,6 +490,12 @@ final class JourneyDriver {
             }
         }
         if drags > 0 {
+            // A drag leaves the list gliding (XCUITest lifts the finger with the
+            // drag's speed) and a tap on a gliding list only stops it: the S2 pace
+            // run's product 17 did not open. Let it come to rest, then look again.
+            let restAt = lastGestureEndMs + 2500
+            if FMClock.nowMs() < restAt { sleep(until: restAt) }
+            now = scene()
             frameCache.removeAll()
             log.write("reveal \(id): \(drags) drag(s), \(FMClock.nowMs() - started) ms")
         }

@@ -64,18 +64,15 @@ function tick() {
   const epochMs = Date.now();
   if (!pid) pid = findPid();
   if (pid) {
-    const line = run('ps', ['-o', 'pid=,rss=,time=,%cpu=', '-p', String(pid)]).trim();
-    if (!line) {
+    // One `ps` a second for the app and everything else.
+    const rows = run('ps', ['-A', '-o', 'pid=,rss=,time=,%cpu=']).trim().split('\n').map((row) => row.trim().split(/\s+/));
+    const mine = rows.find((row) => Number(row[0]) === pid);
+    if (!mine) {
       appendFileSync(out, JSON.stringify({ epochMs, pid, gone: true }) + '\n');
       pid = null;
     } else {
-      const [, rss, time, cpu] = line.split(/\s+/);
-      let otherPct = null;
-      const all = run('ps', ['-A', '-o', 'pid=,%cpu=']).trim().split('\n');
-      otherPct = all.reduce((sum, row) => {
-        const [p, c] = row.trim().split(/\s+/);
-        return Number(p) === pid ? sum : sum + (Number(c) || 0);
-      }, 0);
+      const [, rss, time, cpu] = mine;
+      const otherPct = rows.reduce((sum, row) => (Number(row[0]) === pid ? sum : sum + (Number(row[3]) || 0)), 0);
       appendFileSync(out, JSON.stringify({
         epochMs, pid, rssKb: Number(rss), cpuMs: Math.round(seconds(time) * 1000), cpuPct: Number(cpu),
         hostOtherPct: Math.round(otherPct * 10) / 10,

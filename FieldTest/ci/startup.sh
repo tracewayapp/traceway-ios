@@ -22,6 +22,21 @@ mkdir -p "$DIR"
 ORDER=$(node "$FT/ci/shuffle.mjs" "$VARIANTS" "$SEED")
 log "startup order: $ORDER"
 
+# Not measured: the background load with no UI test attached. FieldmartOff,
+# launched with simctl, idles 60 s while the busiest processes are logged
+# every 10 s (ps-top-baseline.jsonl), to compare with ps-top.jsonl of runs.
+read -r BASE_APP BASE_EXE <<< "$(app_for_variant off)"
+xcrun simctl install "$UDID" "$PRODUCTS/$BASE_EXE.app"
+node "$FT/ci/host-sampler.mjs" --match "/$BASE_EXE\\.app/$BASE_EXE( |\$)" --out "$DIR/host-samples-baseline.jsonl" \
+  --top-out "$DIR/ps-top-baseline.jsonl" &
+BASE_SAMPLER=$!
+xcrun simctl launch "$UDID" "$BASE_APP" -fmRun "ios-S0baseline-off-$(printf '%04x' $((RANDOM % 65536)))" -fmVariant off \
+  -fmScenario S0-startup -fmMarkers "$DIR/markers-baseline.jsonl" > /dev/null 2>&1 || true
+sleep 65
+xcrun simctl terminate "$UDID" "$BASE_APP" > /dev/null 2>&1 || true
+kill "$BASE_SAMPLER" 2> /dev/null || true
+wait "$BASE_SAMPLER" 2> /dev/null || true
+
 for PASS in clean restored; do
   for VARIANT in $ORDER; do
     read -r APP_ID EXE <<< "$(app_for_variant "$VARIANT")"
