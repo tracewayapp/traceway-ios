@@ -239,6 +239,7 @@ final class JourneyDriver {
         var keyboard: CGRect?
         /// The switch inside a toggle row (a SwiftUI toggle only reacts there).
         var switches: [String: CGRect] = [:]
+        var switchValues: [String: String] = [:]
         var root: XCUIElementSnapshot?
     }
 
@@ -256,6 +257,7 @@ final class JourneyDriver {
                 if !id.isEmpty, type == .switch, scene.switches[id] == nil,
                    let inner = node.children.first(where: { $0.elementType == .switch && !$0.frame.isEmpty }) {
                     scene.switches[id] = inner.frame
+                    scene.switchValues[id] = (node.value as? String) ?? "\(node.value ?? "")"
                 }
                 switch type {
                 case .window where scene.window == nil: scene.window = frame
@@ -316,7 +318,9 @@ final class JourneyDriver {
     private func tap(_ id: String, step: Int, knownFrame: CGRect? = nil) {
         guard var frame = knownFrame ?? resolveFrame(id) else { return }
         if let inner = lastScene?.switches[id], frame.contains(CGPoint(x: inner.midX, y: inner.midY)) { frame = inner }
-        if let keyboard = lastScene?.keyboard, keyboard.contains(CGPoint(x: frame.midX, y: frame.midY)) {
+        // The keyboard's window reaches the bottom of the screen (its
+        // accessibility frame stops above the home indicator area).
+        if let keyboard = lastScene?.keyboard, frame.midY >= keyboard.minY {
             // The keyboard covers it (a tab after typing): a short drag down on
             // the screen above the keyboard dismisses it, as a user would.
             let x = keyboard.midX
@@ -337,6 +341,16 @@ final class JourneyDriver {
         action("tap", step: step, id: id, start: started, point: center)
         frameCache.removeAll()
         lastTextId = id
+        if let before = lastScene?.switchValues[id] {
+            // A toggle that did not change (seen once in six smoke runs, with a
+            // keyboard up): one more tap, noted.
+            Thread.sleep(forTimeInterval: 0.3)
+            if let after = scene().switchValues[id], after == before {
+                note("tap \(id): the switch stayed \(before), tapped again")
+                coordinate(center).tap()
+                action("tap", step: step, id: id, start: FMClock.nowMs(), point: center)
+            }
+        }
     }
 
     // MARK: - Reveal
