@@ -1,24 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- **Sessions the app was killed in are ended, with their counts.** Going to
-  the background and `Traceway.flush` send `traceway.session.update` with the
-  collection counters (`traceway.collection.*`, `traceway.replay.image_bytes`),
-  unless nothing changed since the session's last event, and keep them with
-  the session on disk with its memory peak. The next start after such a
-  session expired sends its `session.end` first: at the time the app left
-  the foreground (or its last activity), with the counters, attributes and
-  app version the session had. Sessions ended by `shutdown`, and sessions
-  older than a day, are not ended again. Before, a killed app's session kept
-  the zero counts of its `session.start`.
-- **Replay pictures on scrolling screens.** A clip carries the picture and
-  glyph rules of what it shows instead of every rule still lingering from
-  the last 30 seconds, and a streamed segment that would pass its 128 KiB of
-  data URLs ends at that frame, the next one starting there with its own
-  allowance. Before, every segment of a scrolled picture grid passed the
-  allowance and was sent as layout only, so its pictures were placeholders.
-
 ## 2.1.0 — unreleased
 
 Rebuilt on the official OpenTelemetry Swift SDK, at parity with the browser,
@@ -182,6 +163,16 @@ this release.
 - **Sessions**: `session.start`, `traceway.session.update` and `session.end`,
   15 minutes of inactivity or one hour at most; a restart within the window
   continues the session.
+- **Sessions the app was killed in are ended, with their counts.** Going to
+  the background and `Traceway.flush` send `traceway.session.update` with the
+  collection counters (`traceway.collection.*`, `traceway.replay.image_bytes`),
+  unless nothing changed since the session's last event, and keep them with
+  the session on disk with its memory peak. The next start after such a
+  session expired sends its `session.end` first: at the time the app left
+  the foreground (or its last activity), with the counters, attributes and
+  app version the session had. Sessions ended by `shutdown`, and sessions
+  older than a day, are not ended again. Before, a killed app's session kept
+  the zero counts of its `session.start`.
 - **Other OpenTelemetry backends** with `TracewayOptions.telemetry`, next to
   Traceway or standalone without a token.
 - **Outbox**: batches that fail for a reason that may pass are kept on disk per
@@ -242,6 +233,12 @@ this release.
   and each new segment has its own allowance. Privacy masks exclude pictures. `wifi` means unmetered (`NWPathMonitor`: not
   cellular, a hotspot or Low Data Mode), decided for each frame. Session
   events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
+- **Replay pictures on scrolling screens.** A clip carries the picture and
+  glyph rules of what it shows instead of every rule still lingering from
+  the last 30 seconds, and a streamed segment that would pass its 128 KiB of
+  data URLs ends at that frame, the next one starting there with its own
+  allowance. Before, every segment of a scrolled picture grid passed the
+  allowance and was sent as layout only, so its pictures were placeholders.
 - **Wireframe**: the shared stylesheet is byte for byte the Android and
   Flutter SDKs' (Apple's font stack is now inline on the screen node).
   `WireframeRoots` finds the windows, the SwiftUI converters live in
