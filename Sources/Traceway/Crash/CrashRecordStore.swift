@@ -3,6 +3,21 @@ import Foundation
 import Darwin
 #endif
 
+/// A hard crash recorded by the signal handler in an earlier run.
+struct CrashRecord {
+    /// `Fatal Signal SIGSEGV (11)`.
+    var header: String
+    /// The wire trace the server symbolicates against uploaded dSYMs.
+    var stackTrace: String
+    var recordedAtMs: Int64
+    /// What the SDK knew when the app crashed: device, session, attributes.
+    var attributes: [String: String]?
+    /// The app version of the run that crashed.
+    var appVersion: String? = nil
+    /// The signal number the handler wrote (Darwin numbering).
+    var signal: Int = 0
+}
+
 enum CrashRecordStore {
 
     static let directoryName = "traceway_crashes"
@@ -39,30 +54,33 @@ enum CrashRecordStore {
         return bytes
     }
 
-    static func convertPending(dir: URL) -> [ExceptionStackTrace] {
+    static func convertPending(dir: URL) -> [CrashRecord] {
         let fileManager = FileManager.default
         guard let files = try? fileManager.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil
         ) else { return [] }
 
-        var result: [ExceptionStackTrace] = []
+        var result: [CrashRecord] = []
         for file in files where file.pathExtension == "tw" {
-            if let record = parse(file: file) {
+            // Removed before it is read: a file that cannot be reported must
+            // not come back at every start.
+            let text = try? String(contentsOf: file, encoding: .utf8)
+            try? fileManager.removeItem(at: file)
+            if let text = text, let record = parse(text: text) {
                 result.append(record)
             }
-            try? fileManager.removeItem(at: file)
         }
         return result
     }
 
-    static func parse(file: URL) -> ExceptionStackTrace? {
+    static func parse(file: URL) -> CrashRecord? {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         return parse(text: text)
     }
 
     private enum Section { case header, images, frames }
 
-    static func parse(text: String) -> ExceptionStackTrace? {
+    static func parse(text: String) -> CrashRecord? {
         var lines = text.components(separatedBy: "\n")
         guard lines.first == magic else { return nil }
         lines.removeFirst()
@@ -70,6 +88,7 @@ enum CrashRecordStore {
         var signo = 0
         var timeSec: Int64 = 0
         var arch = ""
+        var appVersion: String?
         var attributes: [String: String] = [:]
         var imageLines: [Substring] = []
         var frames: [String] = []
@@ -93,6 +112,8 @@ enum CrashRecordStore {
                     timeSec = Int64(line.dropFirst("time=".count)) ?? 0
                 } else if line.hasPrefix("arch=") {
                     arch = String(line.dropFirst("arch=".count))
+                } else if line.hasPrefix("appVersion=") {
+                    appVersion = String(line.dropFirst("appVersion=".count))
                 } else if line.hasPrefix("attr.") {
                     let rest = line.dropFirst("attr.".count)
                     if let eq = rest.firstIndex(of: "=") {
@@ -104,7 +125,7 @@ enum CrashRecordStore {
             }
         }
 
-        let header = "Fatal Signal \(signalName(Int32(signo))) (\(signo))"
+        let header = "Fatal Signal \(Int32(exactly: signo).map(signalName) ?? "SIG\(signo)") (\(signo))"
         let stackTrace: String
         if imageLines.isEmpty {
 
@@ -114,18 +135,35 @@ enum CrashRecordStore {
             let addresses = frames.compactMap { parseHexAddress($0) }
             stackTrace = renderWireTrace(header: header, arch: arch, images: images, addresses: addresses)
         }
-        return ExceptionStackTrace(
+        return CrashRecord(
+            header: header,
             stackTrace: stackTrace,
-            recordedAtMs: timeSec > 0 ? timeSec * 1000 : ISO8601.nowMillis(),
+            recordedAtMs: recordedAt(timeSec),
             attributes: attributes.isEmpty ? nil : attributes,
-            isMessage: false
+            appVersion: appVersion,
+            signal: signo
         )
     }
 
+    /// When the crash happened, from the seconds the handler wrote; now when
+    /// the file holds no time, or one no clock could have written.
+    private static func recordedAt(_ seconds: Int64) -> Int64 {
+        let now = ISO8601.nowMillis()
+        let (ms, overflow) = seconds.multipliedReportingOverflow(by: 1000)
+        guard seconds > 0, !overflow, ms <= Int64.saturatingSum(now, 86_400_000) else { return now }
+        return ms
+    }
+
     static func renderWireTrace(header: String, arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {
+        header + wireTraceBody(arch: arch, images: images, addresses: addresses)
+    }
+
+    /// What follows the header line of a wire trace: the separator, the OS
+    /// and architecture line and one line per frame.
+    static func wireTraceBody(arch: String, images: [BinaryImages.LoadedImage], addresses: [UInt]) -> String {
         let archToken = arch.isEmpty ? BinaryImages.currentArch() : arch
 
-        var out = header
+        var out = ""
         out += "\n*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***"
         out += "\nos: ios arch: \(archToken)"
 

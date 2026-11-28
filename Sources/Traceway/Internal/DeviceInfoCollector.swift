@@ -19,7 +19,8 @@ enum DeviceInfoCollector {
         var info: [String: String] = [:]
         info["os.name"] = "ios"
         let version = systemVersion()
-        info["os.version"] = "iOS \(version)"
+        // The bare version, as on Android: `os.name` says the platform.
+        info["os.version"] = version
         info["device.systemVersion"] = "iOS \(version)"
         info["device.model"] = hardwareModel()
         info["device.manufacturer"] = "Apple"
@@ -29,9 +30,14 @@ enum DeviceInfoCollector {
         info["runtime.version"] = swiftRuntimeVersion()
         info["telemetry.sdk.language"] = "swift"
 
+        if let major = version.split(separator: ".").first, !major.isEmpty {
+            info["os.major"] = String(major)
+        }
+
         let screen = screenInfo()
         if let resolution = screen.resolution { info["screen.resolution"] = resolution }
         if let density = screen.density { info["screen.density"] = density }
+        if let formFactor = screen.formFactor { info["device.form_factor"] = formFactor }
 
         return info
     }
@@ -57,12 +63,16 @@ enum DeviceInfoCollector {
             return id
         }
         #endif
+        #if canImport(Darwin)
         var size = 0
         sysctlbyname("hw.machine", nil, &size, nil, 0)
         guard size > 0 else { return "" }
         var machine = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.machine", &machine, &size, nil, 0)
         return String(cString: machine)
+        #else
+        return ""
+        #endif
     }
 
     private static func isPhysicalDevice() -> Bool {
@@ -92,27 +102,39 @@ enum DeviceInfoCollector {
         #endif
     }
 
-    private static func screenInfo() -> (resolution: String?, density: String?) {
+    private static func screenInfo() -> (resolution: String?, density: String?, formFactor: String?) {
         #if canImport(UIKit)
-        let read: () -> (String?, String?) = {
+        let read: () -> (String?, String?, String?) = {
             let screen = UIScreen.main
             let scale = screen.scale
             let bounds = screen.bounds
             let width = Int((bounds.width * scale).rounded())
             let height = Int((bounds.height * scale).rounded())
-            return ("\(width)x\(height)", String(format: "%.1f", scale))
+            let formFactor = UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
+            return ("\(width)x\(height)", String(format: "%.1f", scale), formFactor)
         }
-        if Thread.isMainThread {
-            return read()
-        } else {
-            return DispatchQueue.main.sync(execute: read)
+        if Thread.isMainThread { return read() }
+        // `UIScreen` is read on the main thread, but never with `main.sync`:
+        // an app that waits on main for `initialize` (a dispatch group, a
+        // semaphore) would deadlock at launch. Without an answer soon the
+        // screen is left out.
+        let result = Locked<(String?, String?, String?)>((nil, nil, nil))
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            result.value = read()
+            done.signal()
         }
+        _ = done.wait(timeout: .now() + 0.5)
+        return result.value
         #else
-        return (nil, nil)
+        return (nil, nil, nil)
         #endif
     }
 
     private static func firstNonLoopbackIPv4() -> String? {
+        #if !canImport(Darwin)
+        return nil
+        #else
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else { return nil }
         defer { freeifaddrs(ifaddrPtr) }
@@ -143,5 +165,6 @@ enum DeviceInfoCollector {
             cursor = interface.ifa_next
         }
         return nil
+        #endif
     }
 }

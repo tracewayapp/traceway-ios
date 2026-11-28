@@ -21,11 +21,29 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # The platform-neutral suite (control plane, OpAMP, routing, outbox,
+  # wireframe DOM and diff, selectors, client) on Linux. No secrets.
+  # ---------------------------------------------------------------------------
+  linux-tests:
+    name: Swift tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Signal disposition and forwarding tests
+        run: CI/signals/test.sh
+
+      - name: swift test
+        run: swift test
+
+  # ---------------------------------------------------------------------------
   # Fast logic suite on the macOS host + iOS compile verification. No secrets.
+  # The OpenTelemetry Swift dependencies need Xcode 26.4+ (Swift 6.3).
   # ---------------------------------------------------------------------------
   swift-tests:
     name: Swift tests + iOS build
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -33,8 +51,17 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Test symbol upload destinations
+        run: CI/test_upload_url.sh
+
+      - name: Test simulator release gate
+        run: ruby CI/test_release_gate.rb
+
       - name: swift build
         run: swift build
+
+      - name: Signal disposition and forwarding tests
+        run: CI/signals/test.sh
 
       - name: swift test (host = macOS)
         run: swift test
@@ -49,43 +76,7 @@ jobs:
   # Exercises the UIKit device-info paths that the macOS host can't. No secrets.
   # ---------------------------------------------------------------------------
   simulator-tests:
-    name: XCTest on iOS Simulator
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Pick an available simulator
-        id: sim
-        run: |
-          NAME=$(xcrun simctl list devices available \
-            | grep -oE 'iPhone [0-9]+( Pro( Max)?)?' | sort -V | tail -1)
-          echo "name=${NAME:-iPhone 16}" >> "$GITHUB_OUTPUT"
-          echo "Using simulator: ${NAME:-iPhone 16}"
-
-      - name: Run XCTest
-        run: |
-          xcodebuild test \
-            -project TracewayCI.xcodeproj \
-            -scheme TracewayCI \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            -resultBundlePath sim-results.xcresult
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: simulator-xcresult
-          path: sim-results.xcresult
-          if-no-files-found: ignore
+    uses: ./.github/workflows/simulator.yml
 
   # ---------------------------------------------------------------------------
   # Build the signed device test bundle for Firebase Test Lab.
@@ -95,13 +86,13 @@ jobs:
   build-device-bundle:
     name: Build device test bundle
     if: github.event_name == 'workflow_dispatch' && inputs.run_firebase
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.2'
+          xcode-version: latest-stable
 
       - name: Install XcodeGen
         run: brew install xcodegen

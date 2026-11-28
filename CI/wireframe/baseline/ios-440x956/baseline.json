@@ -1,0 +1,1183 @@
+{
+ "checkpoints": {
+  "buttons": {
+   "fidelity": {
+    "color": 0.9749,
+    "edges": 0.9287,
+    "ssim": 0.9474
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "buttons-tapped": {
+   "fidelity": {
+    "color": 0.9749,
+    "edges": 0.9287,
+    "ssim": 0.9476
+   },
+   "golden": {
+    "changed": 2e-05,
+    "strict": 6e-05
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "carousel": {
+   "fidelity": {
+    "color": 0.9862,
+    "edges": 0.9976,
+    "ssim": 0.9623
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "carousel-back": {
+   "fidelity": {
+    "color": 0.9862,
+    "edges": 0.9976,
+    "ssim": 0.9623
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "carousel-scrolled": {
+   "fidelity": {
+    "color": 0.9825,
+    "edges": 0.9953,
+    "ssim": 0.9664
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "carousel-strip": {
+   "fidelity": {
+    "color": 0.9858,
+    "edges": 0.9977,
+    "ssim": 0.9608
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "clipping": {
+   "fidelity": {
+    "color": 0.9939,
+    "edges": 1,
+    "ssim": 0.9536
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "clipping-scrolled": {
+   "fidelity": {
+    "color": 0.995,
+    "edges": 1,
+    "ssim": 0.9638
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "constraints": {
+   "fidelity": {
+    "color": 0.9961,
+    "edges": 1,
+    "ssim": 0.9812
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "constraints-changed": {
+   "fidelity": {
+    "color": 0.9959,
+    "edges": 1,
+    "ssim": 0.9808
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "controls": {
+   "fidelity": {
+    "color": 0.9935,
+    "edges": 0.9818,
+    "ssim": 0.9659
+   },
+   "golden": {
+    "changed": 0.02243,
+    "strict": 0.02253
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "controls-changed": {
+   "fidelity": {
+    "color": 0.9928,
+    "edges": 0.9823,
+    "ssim": 0.967
+   },
+   "golden": {
+    "changed": 0.03148,
+    "strict": 0.03164
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dark-mode": {
+   "fidelity": {
+    "color": 0.9869,
+    "edges": 0.9289,
+    "ssim": 0.9329
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dark-mode-light": {
+   "fidelity": {
+    "color": 0.9947,
+    "edges": 0.9983,
+    "ssim": 0.9715
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "declarative": {
+   "fidelity": {
+    "color": 0.9744,
+    "edges": 0.7791,
+    "ssim": 0.8676
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "declarative-changed": {
+   "fidelity": {
+    "color": 0.9741,
+    "edges": 0.7816,
+    "ssim": 0.8687
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "declarative-scrolled": {
+   "fidelity": {
+    "color": 0.9857,
+    "edges": 0.5744,
+    "ssim": 0.8471
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dialogs": {
+   "fidelity": {
+    "color": 0.9986,
+    "edges": 1,
+    "ssim": 0.9941
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dialogs-action-sheet": {
+   "fidelity": {
+    "color": 0.9856,
+    "edges": 0.9061,
+    "ssim": 0.9553
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dialogs-alert": {
+   "fidelity": {
+    "color": 0.9847,
+    "edges": 0.9085,
+    "ssim": 0.961
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "dialogs-dismissed": {
+   "fidelity": {
+    "color": 0.9986,
+    "edges": 1,
+    "ssim": 0.9941
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "forms": {
+   "fidelity": {
+    "color": 0.9896,
+    "edges": 0.9436,
+    "ssim": 0.9357
+   },
+   "golden": {
+    "changed": 0.01983,
+    "strict": 0.02039
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "forms-filled": {
+   "fidelity": {
+    "color": 0.9881,
+    "edges": 0.9341,
+    "ssim": 0.9293
+   },
+   "golden": {
+    "changed": 0.01983,
+    "strict": 0.02039
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "forms-focused": {
+   "fidelity": {
+    "color": 0.9894,
+    "edges": 0.9488,
+    "ssim": 0.9349
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "grids": {
+   "fidelity": {
+    "color": 0.9864,
+    "edges": 1,
+    "ssim": 0.9707
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "grids-further": {
+   "fidelity": {
+    "color": 0.9828,
+    "edges": 0.9953,
+    "ssim": 0.9618
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "grids-scrolled": {
+   "fidelity": {
+    "color": 0.9833,
+    "edges": 0.9967,
+    "ssim": 0.9671
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "images": {
+   "fidelity": {
+    "color": 0.9945,
+    "edges": 1,
+    "ssim": 0.9909
+   },
+   "golden": {
+    "changed": 0.22128,
+    "strict": 0.22151
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "images-changed": {
+   "fidelity": {
+    "color": 0.9944,
+    "edges": 1,
+    "ssim": 0.9909
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "images-off": {
+   "fidelity": {
+    "color": 0.8584,
+    "edges": 0.7906,
+    "ssim": 0.8804
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "images-off-changed": {
+   "fidelity": {
+    "color": 0.8519,
+    "edges": 0.7881,
+    "ssim": 0.8762
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "keyboard": {
+   "fidelity": {
+    "color": 0.9977,
+    "edges": 0.9962,
+    "ssim": 0.9859
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "keyboard-hidden": {
+   "fidelity": {
+    "color": 0.9969,
+    "edges": 0.9642,
+    "ssim": 0.9847
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "keyboard-typed": {
+   "fidelity": {
+    "color": 0.9968,
+    "edges": 0.9641,
+    "ssim": 0.9843
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "layout": {
+   "fidelity": {
+    "color": 0.984,
+    "edges": 1,
+    "ssim": 0.9568
+   },
+   "golden": {
+    "changed": 0.10157,
+    "strict": 0.10198
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "layout-changed": {
+   "fidelity": {
+    "color": 0.9837,
+    "edges": 1,
+    "ssim": 0.9547
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "lists": {
+   "fidelity": {
+    "color": 0.9909,
+    "edges": 0.9786,
+    "ssim": 0.9297
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "lists-bottom": {
+   "fidelity": {
+    "color": 0.9924,
+    "edges": 0.9998,
+    "ssim": 0.934
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "lists-middle": {
+   "fidelity": {
+    "color": 0.9921,
+    "edges": 0.9971,
+    "ssim": 0.9303
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "lists-top": {
+   "fidelity": {
+    "color": 0.9918,
+    "edges": 0.9967,
+    "ssim": 0.934
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "menus": {
+   "fidelity": {
+    "color": 0.9829,
+    "edges": 0.9356,
+    "ssim": 0.9708
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "menus-dismissed": {
+   "fidelity": {
+    "color": 0.9974,
+    "edges": 1,
+    "ssim": 0.9851
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-end": {
+   "fidelity": {
+    "color": 0.9989,
+    "edges": 1,
+    "ssim": 0.9985
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-moving": {
+   "fidelity": {
+    "color": 0.9802,
+    "edges": 0.5578,
+    "ssim": 0.9739
+   },
+   "golden": {
+    "changed": 0.0009,
+    "strict": 0.00128
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "motion-start": {
+   "fidelity": {
+    "color": 0.9989,
+    "edges": 1,
+    "ssim": 0.9983
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "native": {
+   "fidelity": {
+    "color": 0.8199,
+    "edges": 0.6037,
+    "ssim": 0.7451
+   },
+   "golden": {
+    "changed": 0.06067,
+    "strict": 0.06134
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "native-changed": {
+   "fidelity": {
+    "color": 0.8395,
+    "edges": 0.8813,
+    "ssim": 0.8225
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation": {
+   "fidelity": {
+    "color": 0.9971,
+    "edges": 0.9941,
+    "ssim": 0.9896
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation-popped": {
+   "fidelity": {
+    "color": 0.9968,
+    "edges": 0.9837,
+    "ssim": 0.9884
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "navigation-pushed": {
+   "fidelity": {
+    "color": 0.9979,
+    "edges": 0.9986,
+    "ssim": 0.9894
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "positioning": {
+   "fidelity": {
+    "color": 0.9924,
+    "edges": 0.9991,
+    "ssim": 0.9624
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "positioning-moved": {
+   "fidelity": {
+    "color": 0.9924,
+    "edges": 0.9991,
+    "ssim": 0.9623
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "privacy": {
+   "fidelity": {
+    "color": 0.9414,
+    "edges": 0.5663,
+    "ssim": 0.9092
+   },
+   "golden": {
+    "changed": 0.0033,
+    "strict": 0.00334
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "privacy-changed": {
+   "fidelity": {
+    "color": 0.941,
+    "edges": 0.5794,
+    "ssim": 0.9071
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "rich-text": {
+   "fidelity": {
+    "color": 0.9631,
+    "edges": 0.8711,
+    "ssim": 0.9084
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "rich-text-changed": {
+   "fidelity": {
+    "color": 0.9634,
+    "edges": 0.8708,
+    "ssim": 0.9099
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "rtl": {
+   "fidelity": {
+    "color": 0.994,
+    "edges": 0.9965,
+    "ssim": 0.9572
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "rtl-changed": {
+   "fidelity": {
+    "color": 0.9944,
+    "edges": 0.9964,
+    "ssim": 0.9621
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "sheets": {
+   "fidelity": {
+    "color": 0.8826,
+    "edges": 0.9691,
+    "ssim": 0.9655
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "sheets-dismissed": {
+   "fidelity": {
+    "color": 0.9987,
+    "edges": 1,
+    "ssim": 0.9952
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "sheets-large": {
+   "fidelity": {
+    "color": 0.9971,
+    "edges": 0.95,
+    "ssim": 0.9846
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "stacks": {
+   "fidelity": {
+    "color": 0.9929,
+    "edges": 1,
+    "ssim": 0.9865
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "stacks-changed": {
+   "fidelity": {
+    "color": 0.993,
+    "edges": 1,
+    "ssim": 0.9853
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "tabs": {
+   "fidelity": {
+    "color": 0.9958,
+    "edges": 0.9708,
+    "ssim": 0.9907
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "tabs-profile": {
+   "fidelity": {
+    "color": 0.9957,
+    "edges": 0.9682,
+    "ssim": 0.9889
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "tabs-search": {
+   "fidelity": {
+    "color": 0.996,
+    "edges": 0.9718,
+    "ssim": 0.9891
+   },
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "text": {
+   "fidelity": {
+    "color": 0.9786,
+    "edges": 0.9959,
+    "ssim": 0.8559
+   },
+   "golden": {
+    "changed": 0.05536,
+    "strict": 0.05885
+   },
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "text-changed": {
+   "fidelity": {
+    "color": 0.9782,
+    "edges": 0.996,
+    "ssim": 0.8522
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "transforms": {
+   "fidelity": {
+    "color": 0.9936,
+    "edges": 1,
+    "ssim": 0.979
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  },
+  "transforms-changed": {
+   "fidelity": {
+    "color": 0.9937,
+    "edges": 1,
+    "ssim": 0.9784
+   },
+   "golden": null,
+   "size": [
+    440,
+    956,
+    440,
+    956
+   ]
+  }
+ },
+ "scenarios": {
+  "buttons": {
+   "bytes": 14141,
+   "events": 8,
+   "mutations": 2
+  },
+  "carousel": {
+   "bytes": 31001,
+   "events": 52,
+   "mutations": 12
+  },
+  "clipping": {
+   "bytes": 11278,
+   "events": 14,
+   "mutations": 4
+  },
+  "constraints": {
+   "bytes": 5047,
+   "events": 2,
+   "mutations": 2
+  },
+  "controls": {
+   "bytes": 18323,
+   "events": 26,
+   "mutations": 6
+  },
+  "dark-mode": {
+   "bytes": 6438,
+   "events": 3,
+   "mutations": 2
+  },
+  "declarative": {
+   "bytes": 16901,
+   "events": 15,
+   "mutations": 5
+  },
+  "dialogs": {
+   "bytes": 12771,
+   "events": 10,
+   "mutations": 10
+  },
+  "forms": {
+   "bytes": 9780,
+   "events": 16,
+   "mutations": 10
+  },
+  "grids": {
+   "bytes": 40866,
+   "events": 28,
+   "mutations": 8
+  },
+  "images": {
+   "bytes": 43575,
+   "events": 4,
+   "mutations": 4
+  },
+  "images-off": {
+   "bytes": 6548,
+   "events": 3,
+   "mutations": 3
+  },
+  "keyboard": {
+   "bytes": 4850,
+   "events": 18,
+   "mutations": 9
+  },
+  "layout": {
+   "bytes": 12537,
+   "events": 4,
+   "mutations": 2
+  },
+  "lists": {
+   "bytes": 144588,
+   "events": 53,
+   "mutations": 14
+  },
+  "menus": {
+   "bytes": 7970,
+   "events": 13,
+   "mutations": 7
+  },
+  "motion": {
+   "bytes": 3469,
+   "events": 8,
+   "mutations": 8
+  },
+  "native": {
+   "bytes": 3816,
+   "events": 2,
+   "mutations": 2
+  },
+  "navigation": {
+   "bytes": 32496,
+   "events": 19,
+   "mutations": 13
+  },
+  "positioning": {
+   "bytes": 13144,
+   "events": 2,
+   "mutations": 2
+  },
+  "privacy": {
+   "bytes": 3253,
+   "events": 2,
+   "mutations": 2
+  },
+  "rich-text": {
+   "bytes": 6457,
+   "events": 2,
+   "mutations": 2
+  },
+  "rtl": {
+   "bytes": 6033,
+   "events": 3,
+   "mutations": 3
+  },
+  "sheets": {
+   "bytes": 11650,
+   "events": 10,
+   "mutations": 10
+  },
+  "stacks": {
+   "bytes": 9336,
+   "events": 2,
+   "mutations": 2
+  },
+  "tabs": {
+   "bytes": 12828,
+   "events": 13,
+   "mutations": 7
+  },
+  "text": {
+   "bytes": 8250,
+   "events": 2,
+   "mutations": 2
+  },
+  "transforms": {
+   "bytes": 8518,
+   "events": 2,
+   "mutations": 2
+  }
+ }
+}

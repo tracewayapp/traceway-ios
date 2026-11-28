@@ -11,3 +11,7 @@ Package.resolved
 CI/Generated/
 ftl_bundle/
 *.zip
+
+# The example app's token (Examples/README.md)
+Examples/TracewayExample/Traceway.xcconfig
+Traceway.xcconfig

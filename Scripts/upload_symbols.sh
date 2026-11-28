@@ -2,18 +2,24 @@
 #
 # Uploads this build's dSYM debug symbols to Traceway. The backend parses the
 # Mach-O + DWARF and builds its symbol cache; this script only *sends* the raw
-# dSYMs (no parsing client-side). Intended as an Xcode "Run Script" build phase
-# on Release builds, but also runnable by hand:
+# dSYMs (no parsing client-side). Intended as the last Xcode "Run Script" build
+# phase of the app target (see "Upload dSYMs" in the README), but also runnable
+# by hand:
 #
 #   TRACEWAY_UPLOAD_TOKEN=<token> ./Scripts/upload_symbols.sh [--dsym-dir DIR] [--url URL] [--dry-run]
 #
-# It no-ops safely (exit 0) on non-Release builds or when the token is unset, so
-# it never fails a debug build.
+# Build settings reach it as environment variables: TRACEWAY_UPLOAD_TOKEN (the
+# upload token `traceway setup` creates), TRACEWAY_URL (a self-hosted server;
+# Traceway Cloud otherwise) and TRACEWAY_UPLOAD_DEBUG=YES to upload from Debug
+# builds too. It never fails a build: problems are Xcode warnings
+# ("warning: traceway: ..."), and non-Release builds are skipped unless
+# TRACEWAY_UPLOAD_DEBUG is set.
 set -euo pipefail
 
 token="${TRACEWAY_UPLOAD_TOKEN:-}"
 url="${TRACEWAY_URL:-https://cloud.tracewayapp.com}"
 dsym_dir="${DWARF_DSYM_FOLDER_PATH:-}"
+upload_debug="${TRACEWAY_UPLOAD_DEBUG:-NO}"
 dry_run=0
 
 while [ "$#" -gt 0 ]; do
@@ -26,27 +32,88 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "${CONFIGURATION:-Release}" != "Release" ]; then
-  echo "traceway: skipping symbol upload (CONFIGURATION=${CONFIGURATION:-unset})"
+warn() { echo "warning: traceway: $*"; }
+
+# A blank --url or TRACEWAY_URL is Traceway Cloud, as an unset one is.
+url="$(printf '%s' "$url" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+[ -n "$url" ] || url="https://cloud.tracewayapp.com"
+
+case "$upload_debug" in
+  YES|yes|Yes|1|true|TRUE) upload_debug=1 ;;
+  *) upload_debug=0 ;;
+esac
+if [ "${CONFIGURATION:-Release}" != "Release" ] && [ "$upload_debug" != "1" ]; then
+  echo "traceway: skipping symbol upload (CONFIGURATION=${CONFIGURATION:-unset}; TRACEWAY_UPLOAD_DEBUG=YES uploads it too)"
   exit 0
 fi
 if [ "$dry_run" != "1" ] && [ -z "$token" ]; then
-  echo "traceway: TRACEWAY_UPLOAD_TOKEN not set — skipping symbol upload" >&2
+  warn "TRACEWAY_UPLOAD_TOKEN is not set, so no dSYM was uploaded and crashes of this build stay unsymbolicated. Set it in Traceway.xcconfig or the CI environment."
   exit 0
 fi
 if [ -z "$dsym_dir" ]; then
-  echo "traceway: no dSYM dir (set DWARF_DSYM_FOLDER_PATH or --dsym-dir) — skipping" >&2
+  warn "no dSYM folder (DWARF_DSYM_FOLDER_PATH is empty; pass --dsym-dir). Set Debug Information Format to \"DWARF with dSYM File\"."
   exit 0
 fi
 
-# Derive the upload URL from a base URL or a report URL.
-if printf '%s' "$url" | grep -q '/api/report'; then
-  upload_url="$(printf '%s' "$url" | sed 's|/api/report|/api/symbols/upload|')"
-elif printf '%s' "$url" | grep -q '/api/symbols/upload$'; then
-  upload_url="$url"
-else
-  upload_url="${url%/}/api/symbols/upload"
-fi
+# The server's base URL by the rules every Traceway SDK uses: trimmed, https://
+# added without a scheme (http:// for a local host), query, fragment and
+# trailing slashes dropped, then a trailing /api/report, else /api.
+symbol_upload_url() {
+  local u="$1" authority host scheme path
+  u="$(printf '%s' "$u" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$u" in
+    *://*) ;;
+    *)
+      authority="${u%%[/?#]*}"
+      case "$authority" in
+        \[*) host="${authority%%]*}]" ;;
+        *) host="${authority%%:*}" ;;
+      esac
+      case "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" in
+        localhost|127.0.0.1|10.0.2.2|"[::1]") u="http://$u" ;;
+        *) u="https://$u" ;;
+      esac
+      ;;
+  esac
+  u="${u%%#*}"
+  u="${u%%\?*}"
+  scheme="${u%%://*}"
+  authority="${u#*://}"
+  authority="${authority%%/*}"
+  [ -n "$authority" ] || return 1
+  path="${u#"$scheme://$authority"}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  while [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  case "$path" in
+    */api/report) path="${path%/api/report}" ;;
+    */api) path="${path%/api}" ;;
+  esac
+  while [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  case "$path" in
+    */api/symbols/upload) ;;
+    *) path="$path/api/symbols/upload" ;;
+  esac
+  printf '%s' "$scheme://$authority$path"
+}
+
+upload_url="$(symbol_upload_url "$url" || true)"
+case "$upload_url" in
+  http://*|https://*) ;;
+  *) warn "\"$url\" is not a Traceway server URL; expected https://host"; exit 0 ;;
+esac
+
+# Every DWARF file of the build's dSYMs. Under User Script Sandboxing the
+# folder itself may not be listable; then only the app's own dSYM is, when the
+# phase lists $(DWARF_DSYM_FOLDER_PATH)/$(DWARF_DSYM_FILE_NAME) as an input.
+dwarf_files() {
+  local found
+  found="$(find "$dsym_dir" -type f -path '*.dSYM/Contents/Resources/DWARF/*' 2>/dev/null || true)"
+  if [ -z "$found" ] && [ -n "${DWARF_DSYM_FILE_NAME:-}" ] && [ -d "$dsym_dir/$DWARF_DSYM_FILE_NAME" ]; then
+    found="$(find "$dsym_dir/$DWARF_DSYM_FILE_NAME" -type f -path '*/Contents/Resources/DWARF/*' 2>/dev/null || true)"
+  fi
+  [ -n "$found" ] && printf '%s\n' "$found"
+  return 0
+}
 
 count=0
 while IFS= read -r dwarf; do
@@ -58,11 +125,18 @@ while IFS= read -r dwarf; do
     continue
   fi
   echo "traceway: uploading $name"
-  if curl -fsS --retry 2 --retry-connrefused -H "Authorization: Bearer $token" -F "files=@$dwarf" "$upload_url" >/dev/null; then
-    count=$((count + 1))
-  else
-    echo "traceway: upload failed for $name" >&2
-  fi
-done < <(find "$dsym_dir" -type f -path '*.dSYM/Contents/Resources/DWARF/*')
+  status="$(curl -sS --retry 2 --retry-connrefused -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $token" -F "files=@$dwarf" "$upload_url" || true)"
+  case "$status" in
+    2??) count=$((count + 1)) ;;
+    401|403) warn "upload of $name rejected (HTTP $status): check TRACEWAY_UPLOAD_TOKEN" ;;
+    000|"") warn "upload of $name failed: $upload_url did not answer" ;;
+    *) warn "upload of $name failed (HTTP $status at $upload_url)" ;;
+  esac
+done < <(dwarf_files)
+
+if [ "$count" = "0" ] && [ -z "$(dwarf_files)" ]; then
+  warn "no dSYM found in $dsym_dir. Set Debug Information Format to \"DWARF with dSYM File\" (Debug builds have none by default), and User Script Sandboxing to No for the app target."
+fi
 
 echo "traceway: ${count} dSYM binary(ies) $([ "$dry_run" = "1" ] && echo 'would be uploaded' || echo 'uploaded') -> $upload_url"
