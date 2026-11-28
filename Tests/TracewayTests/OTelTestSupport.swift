@@ -59,4 +59,9 @@ extension ReadableLogRecord {
         if case .string(let value)? = attributes[key] { return value }
         return nil
     }
+
+    func int(_ key: String) -> Int? {
+        if case .int(let value)? = attributes[key] { return value }
+        return nil
+    }
 }

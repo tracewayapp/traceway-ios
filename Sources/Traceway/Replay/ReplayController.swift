@@ -153,13 +153,17 @@ final class ReplayController {
             clipped = true
         }
         guard source.hasFrames(sinceMs: from, untilMs: until) else { return clipped }
-        encode(
-            sinceMs: from,
-            untilMs: until,
-            exceptionId: hasException && !clipped ? exceptionId : nil,
-            session: session,
-            index: session == nil ? nil : nextSegmentIndex()
-        )
+        if let session = session, !hasException || clipped {
+            encodeSegments(sinceMs: from, untilMs: until, session: session)
+        } else {
+            encode(
+                sinceMs: from,
+                untilMs: until,
+                exceptionId: hasException && !clipped ? exceptionId : nil,
+                session: session,
+                index: session == nil ? nil : nextSegmentIndex()
+            )
+        }
         if session != nil { sessionCursor = until }
         return true
     }
@@ -175,7 +179,18 @@ final class ReplayController {
         let since = sessionCursor ?? until - Int64(segmentMs)
         sessionCursor = until
         guard since < until, source.hasFrames(sinceMs: since, untilMs: until) else { return }
-        encode(sinceMs: since, untilMs: until, session: id, index: nextSegmentIndex())
+        encodeSegments(sinceMs: since, untilMs: until, session: id)
+    }
+
+    /// The session's frames from `sinceMs` to `untilMs` as consecutive
+    /// segments: one, or more where one would carry more pictures than a
+    /// segment allows (it would lose all of them).
+    private func encodeSegments(sinceMs: Int64, untilMs: Int64, session: String) {
+        var from = sinceMs
+        for cut in (source?.rasterCuts(sinceMs: sinceMs, untilMs: untilMs) ?? []) + [untilMs] where cut > from && cut <= untilMs {
+            encode(sinceMs: from, untilMs: cut, session: session, index: nextSegmentIndex())
+            from = cut
+        }
     }
 
     private func encode(
@@ -230,6 +245,14 @@ final class ReplayController {
     /// The app went to the background and may be killed there: a streaming
     /// session uploads what it has.
     func onPaused() { cutSegment() }
+
+    /// Runs `completion` on the client's queue once the clips asked for so
+    /// far are assembled and counted against the budget, without waiting
+    /// for their upload.
+    func afterEncodes(_ completion: @escaping () -> Void) {
+        let done = Unchecked(completion)
+        encoder.async { [queue] in queue.async { done.value() } }
+    }
 
     /// Waits (off the client's queue) for clips being assembled and for
     /// their upload, then runs `completion` on the client's queue.

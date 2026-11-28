@@ -39,14 +39,16 @@ final class WireframeRecorderTests: XCTestCase {
         defer { r.stop() }
         for extra in [0, 1] {
             var styles: [VNode] = []
+            var shown: [VNode] = []
             // Four PNG data URLs: four 22-byte prefixes, three 32,744-byte
             // base64 payloads and one 32,752-byte payload total 131,072.
             for (i, size) in [24558, 24558, 24558, 24564 + extra].enumerated() {
                 let css = WireframeImageEncoding.rule(cls: "p\(i)", mime: "image/png",
                                                       data: Data(repeating: 0, count: size))
                 styles.append(VNode(element: 210 + i, tag: "style", attributes: ["_cssText": css], children: []))
+                shown.append(VNode(element: 220 + i, tag: "div", attributes: ["class": "im p\(i)"], children: []))
             }
-            r.push(frame(screen([], from: styles)))
+            r.push(frame(screen([], from: styles + shown)))
             let clip = try XCTUnwrap(r.captureRecording(clipId: "boundary", sinceMs: clock, untilMs: clock + 1))
             XCTAssertEqual(JSON.array(clip.events).encoded().components(separatedBy: "data:image/png;base64,").count - 1,
                            extra == 0 ? 4 : 0)
@@ -68,7 +70,10 @@ final class WireframeRecorderTests: XCTestCase {
         func content(_ styles: [VNode]) -> VNode {
             let title = VNode(element: 200, tag: "div", attributes: ["style": "width:91px;height:32px"],
                               children: [VNode(text: 201, text: "Pay ****")])
-            return screen([], from: [title] + styles)
+            // The nodes that show the photo and the glyph.
+            let photoNode = VNode(element: 202, tag: "div", attributes: ["class": "im p1"], children: [])
+            let glyphNode = VNode(element: 203, tag: "div", attributes: ["class": "ic g2"], children: [])
+            return screen([], from: [title, photoNode, glyphNode] + styles)
         }
         let initial = content([style(210, photo)])
         r.push(frame(initial))
@@ -102,6 +107,84 @@ final class WireframeRecorderTests: XCTestCase {
         let fresh = JSON.array(next.events).encoded()
         XCTAssertTrue(fresh.contains(photo))
         XCTAssertTrue(fresh.contains(glyph))
+    }
+
+    func testAClipCarriesThePicturesItShowsNotEveryRuleThatStillLingers() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        // A grid scrolled through 40 pictures in the last 30 s; six are on
+        // screen. All 40 rules would take 320 KiB, past a segment's 128 KiB.
+        let start = clock
+        r.push(frame(gridScreen(shown: Array(34..<40), lingering: Array(0..<40))))
+        clock += 250
+        let clip = try XCTUnwrap(r.captureRecording(clipId: "grid", sinceMs: start, untilMs: clock))
+        let encoded = JSON.array(clip.events).encoded()
+        for n in 34..<40 { XCTAssertTrue(encoded.contains(gridRule(n)), "p\(n) is on screen") }
+        for n in 0..<34 { XCTAssertFalse(encoded.contains(".im.p\(n){"), "p\(n) is not on screen") }
+        let pictures = replay(clip.events).pictures()
+        XCTAssertEqual(pictures.used, Set((34..<40).map { "p\($0)" }))
+        XCTAssertEqual(pictures.drawn, pictures.used)
+    }
+
+    func testAPictureThatComesBackWithinAClipIsNotSentAgain() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        let start = clock
+        for shown in [[0, 1], [2, 3], [0, 1]] {
+            r.push(frame(gridScreen(shown: shown, lingering: [0, 1, 2, 3])))
+            clock += 250
+        }
+        let clip = try XCTUnwrap(r.captureRecording(clipId: "back", sinceMs: start, untilMs: clock))
+        let encoded = JSON.array(clip.events).encoded()
+        for n in 0..<4 { XCTAssertEqual(encoded.components(separatedBy: gridRule(n)).count - 1, 1, "p\(n)") }
+        let pictures = replay(clip.events).pictures()
+        XCTAssertEqual(pictures.used, ["p0", "p1"])
+        XCTAssertEqual(pictures.drawn, ["p0", "p1", "p2", "p3"])
+    }
+
+    func testAScreenWhosePicturesAloneTakeMoreThanTheAllowanceIsNotCutAndShowsItsLayout() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        let start = clock
+        // Twenty pictures on screen at once: 160 KiB.
+        for _ in 0..<3 {
+            r.push(frame(gridScreen(shown: Array(0..<20), lingering: [])))
+            clock += 250
+        }
+        XCTAssertEqual(r.rasterCuts(sinceMs: start, untilMs: clock), [])
+        let clip = try XCTUnwrap(r.captureRecording(clipId: "full", sinceMs: start, untilMs: clock))
+        XCTAssertFalse(JSON.array(clip.events).encoded().contains("data:image/"))
+        XCTAssertEqual(replay(clip.events).pictures().used.count, 20)
+    }
+
+    func testCutsFallWhereTheNextFrameWouldPassTheAllowance() throws {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        let start = clock
+        var lingering: [Int] = []
+        var flings: [Int64] = []
+        // Each "fling" shows ten new pictures (80 KiB): two do not fit one segment.
+        for fling in 0..<3 {
+            let shown = Array(fling * 10..<fling * 10 + 10)
+            lingering += shown
+            flings.append(clock)
+            for _ in 0..<4 {
+                r.push(frame(gridScreen(shown: shown, lingering: lingering)))
+                clock += 250
+            }
+        }
+        XCTAssertEqual(r.rasterCuts(sinceMs: start, untilMs: clock), [flings[1], flings[2]])
+        // Each piece keeps its pictures.
+        for (from, until) in [(start, flings[1]), (flings[1], flings[2]), (flings[2], clock)] {
+            let clip = try XCTUnwrap(r.captureRecording(clipId: "piece", sinceMs: from, untilMs: until))
+            let pictures = replay(clip.events).pictures()
+            XCTAssertEqual(pictures.used.count, 10)
+            XCTAssertEqual(pictures.drawn, pictures.used)
+        }
     }
 
     func testAClipReplaysToTheLastScreenTouchesIncluded() {

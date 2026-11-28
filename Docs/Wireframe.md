@@ -189,8 +189,15 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   Each independently playable clip or segment also allows 128 KiB of serialized
   raster data URLs, including PNG glyph masks. Their UTF-8 byte count includes
   the prefix, base64 data and repeated appearances in snapshots and mutations.
-  An over-budget segment uses the base wireframe styles throughout, preserving
-  its layout, text, masked placeholders, timing and input events.
+  A frame holds the rules of every picture and glyph that still lingers; a
+  clip carries only those its frames show (`ClipRasters`): its first frame's,
+  then each rule when a frame first shows it, kept while the frames hold it, and
+  sent again when it changes. A streamed segment that would pass the
+  allowance ends at that frame and the next one starts there
+  (`ReplaySource.rasterCuts`, at most 15 cuts per window, only where the new
+  segment's first frame fits). An over-budget clip that is left uses the base
+  wireframe styles throughout, preserving its layout, text, masked
+  placeholders, timing and input events.
 - **Reported**: session events carry `traceway.replay.images` (the policy at
   session start) and `traceway.replay.image_bytes`.
 
@@ -289,7 +296,7 @@ gzipped, to `/api/recordings`; an exception's clip carries its
 | glyphs per recorder | 300, at most 512 px a side; a rule lingers 10 s |
 | pictures per recorder | 128, the one shown longest ago evicted first; a rule lingers 30 s |
 | picture size | 384 px longest side (JPEG), 192 px with transparency (PNG), 48 KiB encoded |
-| inline raster data per playable clip or segment | 128 KiB of serialized data URLs |
+| inline raster data per playable clip or segment | 128 KiB of serialized data URLs; a streamed segment ends early instead of passing it |
 | image data per session | 4 MiB |
 | replay per session | 50 MiB and 10,000 rrweb events (`CollectionBudget`) |
 | upload queue | 10 MiB, retries after 5 s, 30 s and 120 s |

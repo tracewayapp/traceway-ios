@@ -9,7 +9,13 @@
 #   4. the XCUITest driver (JourneyTests/testJourney) plays the scenario and the
 #      standard ending (Home, 5 s, terminate);
 #   5. the probe file and markers from the app's container, the unified log,
-#      and a wait until the gateway has been quiet for 5 s.
+#      and a wait until the gateway has been quiet for 5 s;
+#   6. with -fmRelaunchAfterMs <ms> among the extra arguments (SDK builds
+#      only): the app is opened again that long after the driver killed it,
+#      without the driver, as run <run id>-relaunch, and killed 20 s later.
+#      Its start ends the session the killed app could not end; what it sends
+#      lands in this run's ledger slice. Pair it with -fmSessionInactivityMs
+#      below <ms>, so the killed session has expired by then.
 # Everything lands in out/runs/<run id>/.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
@@ -115,6 +121,26 @@ fi
 # the gateway's folder; the harness exports each run's slice.
 curl -s -m 40 "$GATEWAY/ctl/quiet?run=$RUN_ID&ms=5000&timeout=30000" > "$RUN_DIR/quiet.json" || true
 curl -s -m 5 "$GATEWAY/ctl/fxlog?run=$RUN_ID" > "$RUN_DIR/fxlog-counts.json" || true
+
+# 6. The relaunch.
+RELAUNCH_MS=$(sed -nE 's/(^|.*[[:space:]])-fmRelaunchAfterMs[[:space:]]+([0-9]+).*/\2/p' <<< "$EXTRA")
+if [ -n "$RELAUNCH_MS" ] && [ "$APP_ID" = "$SDK_APP_ID" ]; then
+  WAIT_MS=$((RELAUNCH_MS - ($(now_ms) - END_MS)))
+  if [ "$WAIT_MS" -gt 0 ]; then sleep $(((WAIT_MS + 999) / 1000)); fi
+  read -r -a EXTRA_ARGS <<< "$EXTRA"
+  RELAUNCH_START=$(now_ms)
+  log "relaunch of $RUN_ID $((RELAUNCH_START - END_MS)) ms after the driver ended"
+  xcrun simctl launch "$UDID" "$APP_ID" -fmRun "$RUN_ID-relaunch" -fmVariant "$VARIANT" -fmScenario "$SCENARIO" \
+    -fmEvidence 0 -fmCampaign "${FM_CAMPAIGN:-manual}" -fmTarget "ios-simulator $SIM_NAME $SIM_RUNTIME" \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} > "$RUN_DIR/relaunch.log" 2>&1 || true
+  sleep 20
+  xcrun simctl terminate "$UDID" "$APP_ID" >> "$RUN_DIR/relaunch.log" 2>&1 || true
+  RELAUNCH_END=$(now_ms)
+  curl -s -m 40 "$GATEWAY/ctl/quiet?run=$RUN_ID&ms=5000&timeout=30000" > "$RUN_DIR/relaunch-quiet.json" || true
+  cat > "$RUN_DIR/relaunch.json" <<EOF2
+{"runId": "$RUN_ID-relaunch", "afterMs": $RELAUNCH_MS, "startEpochMs": $RELAUNCH_START, "endEpochMs": $RELAUNCH_END}
+EOF2
+fi
 
 # The result bundle is only kept when the driver wrote nothing (it is large);
 # XCTest issues of a finished run are in driver.log.

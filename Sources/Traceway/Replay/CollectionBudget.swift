@@ -3,7 +3,10 @@ import Foundation
 /// Bounds what replay uploads per session, as the browser SDK does: 50 MiB
 /// and 10,000 events (rrweb events of the segments admitted). A streaming
 /// capture that runs for hours stops uploading once a session has used its
-/// budget; the counts are reported on the session's lifecycle events.
+/// budget; the counts are reported on the session's lifecycle events (its
+/// start, the update sent when the app goes to the background or flushes,
+/// and its end, also when the next start ends a session the app was killed
+/// in).
 ///
 /// Within that, the pictures the wireframe inlines get at most
 /// `maxImageBytes` of encoded data per session; past it images stay

@@ -19,7 +19,8 @@ final class SessionManagerTests: XCTestCase {
             maxDurationMs: maxDurationMs,
             now: clock.now,
             onStart: { session, resumed in self.events.append("\(resumed ? "resume" : "start"):\(session.id)") },
-            onEnd: { session, endedAt in self.events.append("end:\(session.id)@\(endedAt)") }
+            onEnd: { session, endedAt in self.events.append("end:\(session.id)@\(endedAt)") },
+            onStoredEnd: { session, endedAt in self.events.append("stored-end:\(session.id)@\(endedAt)") }
         )
     }
 
@@ -149,5 +150,87 @@ final class SessionManagerTests: XCTestCase {
         m.check()
         XCTAssertNil(m.currentId)
         XCTAssertEqual(events.last, "end:\(first)@\(1_000_999)")
+    }
+
+    // MARK: - A session the app was killed in (field test ios-001)
+
+    func testTheNextStartEndsASessionTheAppWasKilledInAtTheTimeItLeftTheForeground() throws {
+        let dir = scratchDirectory(self)
+        let first = StateStore(directory: dir)
+        first.load()
+        let a = manager(first)
+        a.start()
+        let id = try XCTUnwrap(a.currentId)
+        clock.advance(30_000)
+        a.markActivity()
+        clock.advance(10_000)
+        let left = clock.now()
+        a.paused()
+        first.flush()
+        // Killed in the background, and opened again 20 minutes later.
+        clock.advance(20 * 60_000)
+        let second = StateStore(directory: dir)
+        second.load()
+        let b = manager(second)
+        b.start()
+        defer { b.stop() }
+        let next = try XCTUnwrap(b.currentId)
+        XCTAssertNotEqual(next, id)
+        XCTAssertEqual(events, ["start:\(id)", "stored-end:\(id)@\(left)", "start:\(next)"])
+    }
+
+    func testASessionKilledInTheForegroundEndsAtItsLastActivity() throws {
+        let store = StateStore(directory: nil)
+        let a = manager(store)
+        a.start()
+        let id = try XCTUnwrap(a.currentId)
+        clock.advance(6000)
+        a.markActivity()
+        let last = clock.now()
+        clock.advance(SessionManager.defaultInactivityMs + 1)
+        let b = manager(store)
+        b.start()
+        defer { b.stop() }
+        XCTAssertEqual(events[1], "stored-end:\(id)@\(last)")
+    }
+
+    func testAComebackAfterTheBackgroundGoesOnWithoutAnEnd() throws {
+        let store = StateStore(directory: nil)
+        let a = manager(store)
+        a.start()
+        let id = try XCTUnwrap(a.currentId)
+        a.paused()
+        clock.advance(60_000)
+        let b = manager(store)
+        b.start()
+        defer { b.stop() }
+        XCTAssertEqual(events, ["start:\(id)", "resume:\(id)"])
+    }
+
+    func testASessionWhoseEndWasReportedIsNotEndedAgain() throws {
+        let store = StateStore(directory: nil)
+        let a = manager(store)
+        a.start()
+        let id = try XCTUnwrap(a.currentId)
+        a.stop(ended: true)
+        clock.advance(SessionManager.defaultInactivityMs)
+        let b = manager(store)
+        b.start()
+        defer { b.stop() }
+        XCTAssertFalse(events.contains { $0.hasPrefix("stored-end:") })
+        XCTAssertNotEqual(b.currentId, id)
+    }
+
+    func testAnExpiryWhileRunningEndsWhenTheAppLeftTheForeground() throws {
+        let m = manager(StateStore(directory: nil))
+        m.start()
+        defer { m.stop() }
+        let id = try XCTUnwrap(m.currentId)
+        clock.advance(5000)
+        m.paused()
+        let left = clock.now()
+        clock.advance(SessionManager.defaultInactivityMs)
+        m.check()
+        XCTAssertEqual(events.last, "end:\(id)@\(left)")
     }
 }

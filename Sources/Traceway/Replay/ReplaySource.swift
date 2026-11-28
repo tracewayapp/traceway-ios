@@ -46,4 +46,15 @@ protocol ReplaySource: AnyObject {
     /// Nil when nothing was on screen then, or when the window is empty or
     /// inverted (`sinceMs` at or after its end).
     func captureRecording(clipId: String, sinceMs: Int64?, untilMs: Int64?) -> SessionRecordingPayload?
+
+    /// Where the session's frames from `sinceMs` to `untilMs` have to be
+    /// cut into segments of their own, so that each keeps its pictures
+    /// within the 128 KiB of data URLs a segment allows
+    /// (`WireframeRasterBudget`): the start of each segment after the
+    /// first, in order. Empty when one segment holds them.
+    func rasterCuts(sinceMs: Int64, untilMs: Int64) -> [Int64]
+}
+
+extension ReplaySource {
+    func rasterCuts(sinceMs: Int64, untilMs: Int64) -> [Int64] { [] }
 }

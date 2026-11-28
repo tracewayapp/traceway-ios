@@ -297,6 +297,15 @@ There is no `setUser`: `user.id` is an attribute like any other. At most 64
 attributes are kept. `Traceway.instanceId` (`service.instance.id`) and
 `Traceway.currentSessionId` (`session.id`) name this installation and session.
 
+A session ends after 15 minutes without activity or an hour in all; a restart
+or a return from the background inside that time goes on with it. Going to
+the background and `Traceway.flush` send `traceway.session.update` with the
+session's counters (the replay budget used, picture bytes) and keep them with
+the session on disk, with its memory peak. The app is usually killed in the
+background: when it is next opened after the session expired, the SDK first
+sends that session's `session.end`, at the time the app left the foreground,
+with the counters and attributes the session had, then starts a new session.
+
 ### Interactions
 
 ```swift
@@ -653,9 +662,13 @@ seen for the first time is encoded off the main thread: the frame that first
 shows it has the placeholder, a later one the picture. Cells showing the same
 picture share its style rule. Each playable clip or streamed segment allows
 128 KiB of serialized PNG and JPEG data URLs, including glyphs. Every copy in a
-snapshot or update counts. If a segment exceeds that limit, it contains the
-wireframe layout, text and interactions with placeholders for its raster images.
-The next segment has its own allowance.
+snapshot or update counts. A clip carries the rules of the pictures it shows,
+from its first frame on, not those of every picture still lingering from
+earlier screens. Where a streamed segment would pass the limit (a grid being
+scrolled), it ends at that frame and the next segment, with its own
+allowance, starts there. A clip that still exceeds the limit (a single screen
+with more pictures than that) contains the wireframe layout, text and
+interactions with placeholders for its raster images.
 
 | `replay.images` (setting) | Pictures |
 |---|---|
