@@ -44,6 +44,8 @@ final class JourneyDriver {
     private var notedFallbacks: Set<String> = []
     private var tabBarLooked = false
     private var lastScene: Scene?
+    /// When the last drag or fling ended: a list may still be moving.
+    private var lastGestureEndMs: Int64 = 0
 
     init(config: RunConfig) {
         self.config = config
@@ -117,7 +119,8 @@ final class JourneyDriver {
 
     /// `FM_READY` from the marker file; else the first `waitFor` success.
     private func findT0() {
-        let deadline = FMClock.nowMs() + 15_000
+        // Up to 60 s: one first launch after install took 25 s to FM_READY.
+        let deadline = FMClock.nowMs() + 60_000
         while FMClock.nowMs() < deadline {
             if let ready = readMarkers().first(where: { $0.kind == .ready }) {
                 t0Ms = ready.epochMs
@@ -313,6 +316,17 @@ final class JourneyDriver {
     private func tap(_ id: String, step: Int, knownFrame: CGRect? = nil) {
         guard var frame = knownFrame ?? resolveFrame(id) else { return }
         if let inner = lastScene?.switches[id], frame.contains(CGPoint(x: inner.midX, y: inner.midY)) { frame = inner }
+        if let keyboard = lastScene?.keyboard, keyboard.contains(CGPoint(x: frame.midX, y: frame.midY)) {
+            // The keyboard covers it (a tab after typing): a short drag down on
+            // the screen above the keyboard dismisses it, as a user would.
+            let x = keyboard.midX
+            let from = CGPoint(x: x, y: max(150, keyboard.minY - 160))
+            coordinate(from).press(forDuration: 0.05, thenDragTo: coordinate(CGPoint(x: x, y: from.y + 100)),
+                                   withVelocity: XCUIGestureVelocity(rawValue: 700), thenHoldForDuration: 0.35)
+            lastGestureEndMs = FMClock.nowMs()
+            note("tap \(id): under the keyboard, keyboard dismissed with a drag first")
+            if let again = resolveFrame(id) { frame = again }
+        }
         // The middle of the part that is on screen.
         let screen = CGRect(x: 0, y: 0, width: device.width, height: device.height)
         let onScreen = device.width > 0 ? frame.intersection(screen) : frame
@@ -401,12 +415,26 @@ final class JourneyDriver {
             var direction: CGFloat = -1
             var lastDy: CGFloat = 0
             var seen = false
+            var previous: CGRect?
+            var looks = 0
             while drags < 14, FMClock.nowMs() - started < 10_000 {
                 let area = visibleArea(of: containerFrame, bars: bars(for: id, in: now),
                                        keyboardTop: now.keyboard?.minY).insetBy(dx: 0, dy: 4)
                 var dy: CGFloat
                 if let frame = now.ids[id] {
-                    if frame.minY >= area.minY && frame.maxY <= area.maxY { break }
+                    if frame.minY >= area.minY && frame.maxY <= area.maxY {
+                        // In view; done once the list has stopped (a tap on a moving
+                        // list only stops it: the fourth smoke run missed product 17).
+                        let still = previous.map { abs($0.minY - frame.minY) < 1 }
+                            ?? (drags == 0 && FMClock.nowMs() - lastGestureEndMs > 3000)
+                        if still || looks >= 4 { break }
+                        previous = frame
+                        looks += 1
+                        Thread.sleep(forTimeInterval: 0.15)
+                        now = scene()
+                        continue
+                    }
+                    previous = nil
                     seen = true
                     dy = frame.maxY > area.maxY ? -(frame.maxY - area.maxY + 24) : (area.minY - frame.minY + 24)
                 } else {
@@ -434,6 +462,14 @@ final class JourneyDriver {
                 sideDrags += 1
                 drags += 1
                 now = scene()
+            }
+            // The row must have stopped too.
+            var looks = 0
+            while sideDrags > 0, looks < 4, let before = now.ids[id] {
+                Thread.sleep(forTimeInterval: 0.15)
+                now = scene()
+                looks += 1
+                if let after = now.ids[id], abs(after.minX - before.minX) < 1 { break }
             }
         }
         if drags > 0 {
@@ -463,6 +499,7 @@ final class JourneyDriver {
         // and the row went by (second smoke run).
         coordinate(start).press(forDuration: 0.05, thenDragTo: coordinate(end),
                                 withVelocity: XCUIGestureVelocity(rawValue: 700), thenHoldForDuration: 0.35)
+        lastGestureEndMs = FMClock.nowMs()
     }
 
     // MARK: - Gestures
@@ -514,6 +551,7 @@ final class JourneyDriver {
         let started = FMClock.nowMs()
         coordinate(start).press(forDuration: 0.01, thenDragTo: coordinate(end),
                                 withVelocity: XCUIGestureVelocity(rawValue: velocity), thenHoldForDuration: 0)
+        lastGestureEndMs = FMClock.nowMs()
         action("fling", step: step, id: id, start: started, point: start)
     }
 
@@ -549,6 +587,7 @@ final class JourneyDriver {
         coordinate(start).press(forDuration: Double(pressMs) / 1000, thenDragTo: coordinate(end),
                                 withVelocity: XCUIGestureVelocity(rawValue: velocity),
                                 thenHoldForDuration: Double(holdMs) / 1000)
+        lastGestureEndMs = FMClock.nowMs()
         action("drag", step: index, id: id, start: started, point: start)
         if holdMs > 0 { log.write("drag \(id): finger held \(holdMs) ms") }
     }
