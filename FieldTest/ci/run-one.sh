@@ -101,7 +101,12 @@ fi
 curl -s -m 40 "$GATEWAY/ctl/quiet?run=$RUN_ID&ms=5000&timeout=30000" > "$RUN_DIR/quiet.json" || true
 curl -s -m 5 "$GATEWAY/ctl/fxlog?run=$RUN_ID" > "$RUN_DIR/fxlog-counts.json" || true
 
-# The result bundle is only kept when the driver failed (it is large).
+# The result bundle is only kept when the driver failed or wrote nothing (it is large).
+if [ ! -s "$RUN_DIR/driver.json" ] && [ -d "$RUN_DIR/result.xcresult" ]; then
+  xcrun xcresulttool get log --path "$RUN_DIR/result.xcresult" --type console > "$RUN_DIR/xcresult-console.txt" 2>&1 || true
+  xcrun xcresulttool get test-results tests --path "$RUN_DIR/result.xcresult" > "$RUN_DIR/xcresult-tests.json" 2>&1 || true
+  STATUS=99
+fi
 if [ $STATUS -eq 0 ]; then
   rm -rf "$RUN_DIR/result.xcresult"
 else

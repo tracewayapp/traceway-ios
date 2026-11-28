@@ -73,7 +73,9 @@ OFF="$PRODUCTS/FieldmartOff.app/FieldmartOff"
   echo "nm OpenTelemetry symbols: $(nm "$OFF" 2>/dev/null | grep -ci 'opentelemetry' || true)"
   echo "strings matching traceway (all): $(strings - "$OFF" | grep -ci 'traceway' || true)"
   echo "strings matching traceway (beyond com.tracewayapp.fieldmart and traceway-mask):"
-  strings - "$OFF" | grep -i 'traceway' | grep -v -e 'com\.tracewayapp\.fieldmart' -e '^traceway-mask$' | sort -u || true
+  strings - "$OFF" | grep -i 'traceway' | grep -v -e 'com\.tracewayapp\.fieldmart' -e '^traceway-mask$' -e '/traceway-ios/' \
+    | sort -u || true
+  echo "(build paths of the checkout folder traceway-ios/ are left out: they name the folder, not the SDK)"
   echo "otool -L:"
   otool -L "$OFF"
   echo "Frameworks folder: $(ls "$PRODUCTS/FieldmartOff.app/Frameworks" 2>/dev/null | tr '\n' ' ')"

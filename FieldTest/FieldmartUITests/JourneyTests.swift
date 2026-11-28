@@ -18,9 +18,27 @@ final class JourneyTests: XCTestCase {
 
     func testRun() throws {
         let config = RunConfig.fromEnvironment()
+        // What the test runner was given, before anything can go wrong.
+        let environment = ProcessInfo.processInfo.environment.filter { $0.key.hasPrefix("FM_") }
+            .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+        let start = "testRun started \(Date())\nout \(config.out.path)\nbundle \(Bundle(for: JourneyTests.self).bundlePath)\n"
+            + environment + "\n"
+        try? FileManager.default.createDirectory(at: config.out, withIntermediateDirectories: true)
+        let wrote = FileManager.default.createFile(atPath: config.out.appendingPathComponent("driver-start.txt").path,
+                                                   contents: Data(start.utf8))
+        print("FMDRIVER \(start)wrote driver-start.txt: \(wrote)")
         let driver = JourneyDriver(config: config)
         log = driver.log
-        try driver.run()
+        do {
+            try driver.run()
+        } catch {
+            let text = "driver error: \(error)\n"
+            print("FMDRIVER " + text)
+            FileManager.default.createFile(atPath: config.out.appendingPathComponent("driver-error.txt").path,
+                                           contents: Data(text.utf8))
+            throw error
+        }
+        print("FMDRIVER testRun finished")
     }
 
     override func record(_ issue: XCTIssue) {
