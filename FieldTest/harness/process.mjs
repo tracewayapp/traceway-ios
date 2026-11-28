@@ -2,6 +2,7 @@
 // node FieldTest/harness/process.mjs --campaign <id> (--gh-run <workflow run id> | --artifacts <dir>)
 //      [--results <campaign results dir>] [--tools <sdk-field-test/tools>]
 //      [--no-forward] [--no-align] [--no-check] [--no-render] [--no-stats] [--only <run id,…>]
+//      [--measured-platform ios@smoke]  (measured runs of a smoke or trial job, kept out of ios/runs)
 //
 // Turns the artifacts of a `fieldtest.yml` run into results/<campaign>/ios/
 // (05-RESULTS-FORMAT.md), on the lead's machine (AGENT-5 step 4):
@@ -53,6 +54,7 @@ const platformDir = join(resultsRoot, 'ios');
 const only = option('only') ? new Set(option('only').split(',')) : null;
 const upstream = option('upstream', 'http://127.0.0.1:18182');
 const forwardMeasured = option('forward-measured', 'fast');
+const measuredPlatform = option('measured-platform');
 const benchrun = join(tools, 'bin', 'benchrun');
 const localHashes = {
   journeyHash: journeyHash(join(here, '..', 'shared', 'journey.json')),
@@ -134,7 +136,7 @@ function buildRun(root, runId, planEntry, env) {
   const evidence = Boolean(runner.evidence ?? planEntry?.evidence ?? driver.evidence);
   const scenarioKey = driver.scenario || runner.scenario || planEntry?.scenario;
   const tag = tagOf(runId, scenarioKey);
-  const platform = tag ? `ios@${tag.toLowerCase()}` : 'ios';
+  const platform = tag ? `ios@${tag.toLowerCase()}` : !evidence && measuredPlatform ? measuredPlatform : 'ios';
   const dest = join(resultsRoot, platform, evidence ? 'evidence' : 'runs', runId);
   mkdirSync(dest, { recursive: true });
   ledgerFor(root, runId, dest, evidence);

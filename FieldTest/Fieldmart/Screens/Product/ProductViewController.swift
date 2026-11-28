@@ -8,7 +8,7 @@ import FieldmartCore
 final class ProductViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     let productId: Int
     private let env = AppEnvironment.shared
-    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let tableView = FMTableView(frame: .zero, style: .plain)
     private let header = ProductHeaderView()
     private let bar = UIView()
     private let barPrice = UILabel.fm("", size: 18, weight: .bold)

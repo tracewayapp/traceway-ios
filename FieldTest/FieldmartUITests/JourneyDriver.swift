@@ -327,7 +327,7 @@ final class JourneyDriver {
             let bars = self.bars(for: id)
             var keyboard = keyboardTop()
             var towardsEnd = true
-            while drags < 10, FMClock.nowMs() - started < 6000 {
+            while drags < 14, FMClock.nowMs() - started < 8000 {
                 let area = visibleArea(of: containerFrame, bars: bars, keyboardTop: keyboard).insetBy(dx: 0, dy: 4)
                 let target = element(id)
                 if target.exists {
@@ -336,9 +336,10 @@ final class JourneyDriver {
                     let delta = frame.maxY > area.maxY ? -(frame.maxY - area.maxY + 24) : (area.minY - frame.minY + 24)
                     dragContainer(area, dy: delta)
                 } else {
-                    // Not created yet (a lazy list's row): further on, or back after six drags.
-                    dragContainer(area, dy: towardsEnd ? -area.height * 0.9 : area.height * 0.9)
-                    if drags >= 6 { towardsEnd = false }
+                    // Not created yet (a lazy list's row): half a screen further on (so
+                    // no row can pass unseen), or back after eight drags.
+                    dragContainer(area, dy: towardsEnd ? -area.height * 0.5 : area.height * 0.5)
+                    if drags >= 8 { towardsEnd = false }
                 }
                 drags += 1
                 // The drag dismisses a keyboard (the lists dismiss it on drag).

@@ -8,7 +8,7 @@ final class FeedViewController: UIViewController, UITableViewDataSource, UITable
     private let env = AppEnvironment.shared
     private let store = FeedStore()
     private let controls = FeedControlsView()
-    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let tableView = FMTableView(frame: .zero, style: .plain)
     private let refreshControl = UIRefreshControl()
     private var expanded = Set<Int>()
 

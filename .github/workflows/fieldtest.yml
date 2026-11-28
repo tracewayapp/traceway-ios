@@ -42,9 +42,9 @@ on:
         type: string
         default: ""
       driver:
-        description: "XCUITest typing (paced, chars or chunk) and idle waits (wait or skip)"
+        description: "XCUITest typing (paced, chars or chunk) and idle waits (skip or wait)"
         type: string
-        default: paced wait
+        default: paced skip
       seed:
         description: "Seed of the variant order inside each block"
         type: string

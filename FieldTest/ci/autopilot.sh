@@ -47,7 +47,7 @@ fi
 xcrun simctl spawn "$UDID" log show --style ndjson --info --debug --start "$START_LOG" \
   --predicate 'subsystem == "com.tracewayapp.fieldmart"' > "$RUN_DIR/app.log.ndjson" 2> /dev/null || true
 xcrun simctl spawn "$UDID" log show --style ndjson --info --debug --start "$START_LOG" \
-  --predicate "process == \"$EXE\"" > "$RUN_DIR/process.log.ndjson" 2> /dev/null || true
+  --predicate "process == \"$EXE\" AND eventMessage CONTAINS \"[Traceway]\"" > "$RUN_DIR/process.log.ndjson" 2> /dev/null || true
 "$FT/ci/encode-video.sh" "$RUN_DIR" || true
 curl -s -m 40 "$GATEWAY/ctl/quiet?run=$RUN_ID&ms=5000&timeout=30000" > "$RUN_DIR/quiet.json" || true
 curl -s -m 5 "$GATEWAY/ctl/fxlog?run=$RUN_ID" > "$RUN_DIR/fxlog-counts.json" || true

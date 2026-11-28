@@ -27,7 +27,7 @@ for EXE in FieldmartOff Fieldmart; do
   [ -n "$DATA" ] && cp "$DATA/Documents/fm-probe/$RUN_ID.jsonl" "$DIR/probe.jsonl" 2>/dev/null
   [ -n "$DATA" ] && cp "$DATA/Documents/fm-markers/$RUN_ID.jsonl" "$DIR/markers.container.jsonl" 2>/dev/null
   xcrun simctl spawn "$UDID" log show --style ndjson --info --debug --start "$START_LOG" \
-    --predicate "process == \"$EXE\"" > "$DIR/process.log.ndjson" 2> /dev/null || true
+    --predicate "process == \"$EXE\" AND eventMessage CONTAINS \"[Traceway]\"" > "$DIR/process.log.ndjson" 2> /dev/null || true
   curl -s -m 5 "$GATEWAY/ctl/ledger?run=$RUN_ID" > "$DIR/ledger.json" || true
   echo "{\"runId\": \"$RUN_ID\", \"launchEpochMs\": $LAUNCH_MS}" > "$DIR/launch.json"
   if grep -q FM_READY "$DIR/markers.jsonl" 2>/dev/null || grep -q FM_READY "$DIR/markers.container.jsonl" 2>/dev/null; then

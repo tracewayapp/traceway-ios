@@ -76,25 +76,63 @@ class StartupTests: XCTestCase {
     }
 }
 
-/// XCUITest waits for the app to be idle before each event. With
-/// `FM_QUIESCENCE=skip` that wait is replaced by nothing (private API of
-/// the test runner only; the app is untouched). Off by default.
+/// XCUITest waits for the app to be idle around each event, and a list
+/// that is still decelerating after a fling counts as busy: in the first
+/// smoke run every fling took 3–5 s and every run came out late. With
+/// `FM_QUIESCENCE=skip` (the default) every "quiescence" method of the test
+/// runner's application classes returns at once. This touches the UI test
+/// runner only (private API of XCTest), never the app. What was replaced is
+/// written to driver.log.
 enum Quiescence {
     static func skip() -> String {
-        guard let cls = NSClassFromString("XCUIApplicationProcess") else { return "quiescence: class not found" }
         var replaced: [String] = []
-        let one = NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:")
-        if let method = class_getInstanceMethod(cls, one) {
-            let block: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
-            method_setImplementation(method, imp_implementationWithBlock(block))
-            replaced.append(NSStringFromSelector(one))
+        for className in ["XCUIApplicationProcess", "XCUIApplicationImpl", "XCUIApplication"] {
+            guard let cls = NSClassFromString(className) else { continue }
+            var count: UInt32 = 0
+            guard let methods = class_copyMethodList(cls, &count) else { continue }
+            defer { free(methods) }
+            for index in 0..<Int(count) {
+                let method = methods[index]
+                let name = NSStringFromSelector(method_getName(method))
+                guard name.lowercased().contains("quiescence") else { continue }
+                let rawReturn = method_copyReturnType(method)
+                let returnType = String(cString: rawReturn)
+                free(rawReturn)
+                let arguments = Int(method_getNumberOfArguments(method)) - 2
+                guard let block = noOp(arguments: arguments, returnType: returnType) else {
+                    replaced.append("\(className).\(name) kept (\(returnType), \(arguments) arguments)")
+                    continue
+                }
+                method_setImplementation(method, imp_implementationWithBlock(block))
+                replaced.append("\(className).\(name)")
+            }
         }
-        let two = NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:isPreEvent:")
-        if let method = class_getInstanceMethod(cls, two) {
-            let block: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
-            method_setImplementation(method, imp_implementationWithBlock(block))
-            replaced.append(NSStringFromSelector(two))
+        return replaced.isEmpty ? "quiescence: no method found" : "quiescence skipped: " + replaced.joined(separator: ", ")
+    }
+
+    /// A block that ignores its arguments and returns nothing (or YES).
+    private static func noOp(arguments: Int, returnType: String) -> Any? {
+        switch (arguments, returnType) {
+        case (0, "v"):
+            let block: @convention(block) (AnyObject) -> Void = { _ in }
+            return block
+        case (1, "v"):
+            let block: @convention(block) (AnyObject, Int) -> Void = { _, _ in }
+            return block
+        case (2, "v"):
+            let block: @convention(block) (AnyObject, Int, Int) -> Void = { _, _, _ in }
+            return block
+        case (0, "B"), (0, "c"):
+            let block: @convention(block) (AnyObject) -> Bool = { _ in true }
+            return block
+        case (1, "B"), (1, "c"):
+            let block: @convention(block) (AnyObject, Int) -> Bool = { _, _ in true }
+            return block
+        case (2, "B"), (2, "c"):
+            let block: @convention(block) (AnyObject, Int, Int) -> Bool = { _, _, _ in true }
+            return block
+        default:
+            return nil
         }
-        return replaced.isEmpty ? "quiescence: no method replaced" : "quiescence: skipped \(replaced.joined(separator: ", "))"
     }
 }

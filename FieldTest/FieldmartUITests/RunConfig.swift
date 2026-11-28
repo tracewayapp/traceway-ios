@@ -17,8 +17,8 @@ struct RunConfig {
     /// `paced` (the default): every character whose time has come in one
     /// `typeText` call; `chars`: one call per character; `chunk`: one per step.
     var typeMode: String
-    /// `wait` (XCUITest waits for the app to be idle before each event, the
-    /// default) or `skip`.
+    /// `skip` (the default: XCUITest does not wait for the app to be idle,
+    /// see `Quiescence`) or `wait`.
     var quiescence: String
     /// Real screenshots are scaled to `shotScale` × the logical size.
     var shotScale: CGFloat
@@ -57,7 +57,7 @@ struct RunConfig {
             target: value("FM_TARGET"),
             extraArguments: (value("FM_EXTRA_ARGS") ?? "").split(separator: " ").map(String.init),
             typeMode: value("FM_TYPE_MODE") ?? "paced",
-            quiescence: value("FM_QUIESCENCE") ?? "wait",
+            quiescence: value("FM_QUIESCENCE") ?? "skip",
             shotScale: CGFloat(Double(value("FM_SHOT_SCALE") ?? "") ?? 2),
             gateway: value("FM_GATEWAY") ?? "http://127.0.0.1:18190",
             journeyPath: value("FM_JOURNEY"),

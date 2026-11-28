@@ -22,7 +22,7 @@ final class MarketsViewController: UIViewController, UITableViewDataSource, UITa
     private let chart = ChartView()
     private var timeframeButtons: [UIButton] = []
     private let bookButton = UIButton.fm(FMText.Markets.openBook, id: "fm-markets-book-open")
-    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let tableView = FMTableView(frame: .zero, style: .plain)
 
     private var symbols: [MarketSymbol] = []
     private var model: TickModel?
