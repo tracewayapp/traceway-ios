@@ -83,6 +83,13 @@ final class LaunchSettingsTests: XCTestCase {
         XCTAssertFalse(settings.evidence)
         XCTAssertEqual(settings.toolkit, .uikit)
         XCTAssertNil(settings.fps)
+        XCTAssertNil(settings.sessionInactivityMs)
+    }
+
+    func testSessionInactivity() {
+        XCTAssertEqual(LaunchSettings(arguments: ["-fmSessionInactivityMs", "90000"]).sessionInactivityMs, 90_000)
+        XCTAssertNil(LaunchSettings(arguments: ["-fmSessionInactivityMs", "soon"]).sessionInactivityMs)
+        XCTAssertNil(LaunchSettings(arguments: ["-fmSessionInactivityMs", "0"]).sessionInactivityMs)
     }
 
     func testArguments() {

@@ -1,6 +1,6 @@
 #if FM_SDK
 import UIKit
-import Traceway
+@_spi(Testing) import Traceway
 import FieldmartCore
 
 /// Telemetry through the Traceway SDK, started the way the README shows,
@@ -26,6 +26,8 @@ final class TracewayTelemetry: Telemetry {
             remoteConfig: plan.remoteConfig
         )
         if let fps = plan.fps { options.fps = fps }
+        // Field-test only: lets a CI job see a killed session expire.
+        if let ms = settings.sessionInactivityMs { options.sessionInactivityTimeoutMs = ms }
         let started = CFAbsoluteTimeGetCurrent()
         Traceway.initialize(token: settings.token, baseUrl: settings.baseUrl, options: options)
         return (CFAbsoluteTimeGetCurrent() - started) * 1000

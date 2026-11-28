@@ -6,7 +6,9 @@ import Foundation
 ///
 /// iOS additions, all optional: `fmMarkers` (a host path the app also
 /// appends its marker lines to, for the UI test driver), `fmCampaign` and
-/// `fmTarget` (the `fm.campaign` and `fm.target` attributes).
+/// `fmTarget` (the `fm.campaign` and `fm.target` attributes),
+/// `fmSessionInactivityMs` (a shorter session inactivity timeout, so a CI
+/// job can see a killed session ended by the next launch).
 public struct LaunchSettings: Equatable {
     public var run: String
     public var variant: String
@@ -23,6 +25,7 @@ public struct LaunchSettings: Equatable {
     public var markersPath: String?
     public var campaign: String
     public var target: String?
+    public var sessionInactivityMs: Int?
 
     public static let defaultBaseUrl = "http://127.0.0.1:18190"
     public static let defaultFixtures = "http://127.0.0.1:18190/fx"
@@ -43,7 +46,8 @@ public struct LaunchSettings: Equatable {
         autopilot: Bool = false,
         markersPath: String? = nil,
         campaign: String = "manual",
-        target: String? = nil
+        target: String? = nil,
+        sessionInactivityMs: Int? = nil
     ) {
         self.run = run
         self.variant = variant
@@ -60,6 +64,7 @@ public struct LaunchSettings: Equatable {
         self.markersPath = markersPath
         self.campaign = campaign
         self.target = target
+        self.sessionInactivityMs = sessionInactivityMs
     }
 
     /// Reads every key through `lookup` (nil or blank: the default).
@@ -90,6 +95,7 @@ public struct LaunchSettings: Equatable {
         markersPath = value("fmMarkers")
         if let campaign = value("fmCampaign") { self.campaign = campaign }
         target = value("fmTarget")
+        if let raw = value("fmSessionInactivityMs"), let ms = Int(raw), ms > 0 { sessionInactivityMs = ms }
     }
 
     /// Parses `-key value` pairs as a process's arguments carry them.
