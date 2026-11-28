@@ -217,6 +217,9 @@ public final class TracewayClient: @unchecked Sendable {
     /// Sessions whose start (or resumption) was reported in this run: their
     /// end is reported too, and only theirs.
     private var reportedSessions: Set<String> = []
+    /// What the last event of the current session carried: a flush that
+    /// changed none of it sends no update.
+    private var lastSessionEvent: (id: String, attributes: [String: AttributeValue])?
     /// Captures known only from the cached config keep streaming, but start
     /// nothing new until the server has answered.
     private var capturesConfirmed = false
@@ -506,8 +509,10 @@ public final class TracewayClient: @unchecked Sendable {
         let manager = SessionManager(
             store: store,
             queue: queue,
+            inactivityMs: options.effectiveSessionInactivityMs,
             onStart: { [weak self] session, resumed in self?.onSessionStart(session, resumed: resumed) },
-            onEnd: { [weak self] session, endedAt in self?.onSessionEnd(session, endedAtMs: endedAt) }
+            onEnd: { [weak self] session, endedAt in self?.onSessionEnd(session, endedAtMs: endedAt) },
+            onStoredEnd: { [weak self] session, endedAt in self?.onStoredSessionEnd(session, endedAtMs: endedAt) }
         )
         sessions = manager
         manager.start()
@@ -1252,7 +1257,7 @@ public final class TracewayClient: @unchecked Sendable {
     /// there.
     public func flush(timeout: TimeInterval? = 10) {
         if isOnQueue {
-            flushAll {}
+            flushSession {}
             return
         }
         let limit = Thread.isMainThread
@@ -1261,11 +1266,22 @@ public final class TracewayClient: @unchecked Sendable {
         let started = DispatchTime.now()
         awaitLogReads(timeout: min(0.5, max(0, limit ?? 0.5)))
         let done = DispatchSemaphore(value: 0)
-        queue.async { self.flushAll { done.signal() } }
+        queue.async { self.flushSession { done.signal() } }
         if let limit = limit {
             _ = done.wait(timeout: started + max(0, limit))
         } else {
             done.wait()
+        }
+    }
+
+    /// `flushAll` after the current session's counters went out
+    /// (`sendSessionUpdate`), once the replay clips under way are counted.
+    /// On the client's queue.
+    private func flushSession(_ completion: @escaping () -> Void) {
+        replay.afterEncodes { [weak self] in
+            guard let self = self, !self.isShutdown else { return completion() }
+            self.sendSessionUpdate()
+            self.flushAll(completion)
         }
     }
 
@@ -1371,7 +1387,7 @@ public final class TracewayClient: @unchecked Sendable {
             self.flushAll {
                 self.metrics.stop()
                 self.isShutdown = true
-                self.sessions?.stop()
+                self.sessions?.stop(ended: true)
                 self.opamp?.stop()
                 self.replay.stop()
                 for timer in [self.refreshTimer, self.overrideTimer, self.progressTimer, self.flushTimer,
@@ -1435,6 +1451,9 @@ public final class TracewayClient: @unchecked Sendable {
                 return
             }
             self.replay.onPaused()
+            // The app may be killed here: if it is not opened again in time,
+            // its next start ends the session as it was left now.
+            self.sessions?.paused()
             self.runForeground(false)
             self.settlePendingExit()
             if self.options.captureMetrics, self.started {
@@ -1442,7 +1461,7 @@ public final class TracewayClient: @unchecked Sendable {
                 // Stored before it is sent: the app may not live to see the answer.
                 self.metrics.flush(final: true)
             }
-            self.flushAll(completion)
+            self.flushSession(completion)
         }
     }
 
@@ -1473,13 +1492,16 @@ public final class TracewayClient: @unchecked Sendable {
 
     /// A record of an earlier run (a crash it left on disk), under that
     /// run's resource. On the client's queue.
+    /// `marked`: the record says it is an earlier run's
+    /// (`traceway.previous_run`), which keeps it out of this run's session
+    /// and triggers; a session event of that run names its session itself.
     private func emitEarlierRun(eventName: String, severity: Severity, attributes: [String: AttributeValue],
-                                resource: [String: String], time: Date) {
+                                resource: [String: String], time: Date, marked: Bool = true) {
         guard !isShutdown, let router = router else { return }
         var values: [String: AttributeValue] = [:]
         for (key, value) in resource { values[key] = .string(value) }
         var attributes = attributes
-        attributes[Attr.previousRun] = .bool(true)
+        if marked { attributes[Attr.previousRun] = .bool(true) }
         router.routeLog(ReadableLogRecord(
             resource: Resource().merging(other: Resource(attributes: values)),
             instrumentationScopeInfo: InstrumentationScopeInfo(name: TracewaySDK.name, version: TracewaySDK.version),
@@ -1495,6 +1517,88 @@ public final class TracewayClient: @unchecked Sendable {
         guard reportedSessions.remove(session.id) != nil else { return }
         emit(eventName: Events.sessionEnd, severity: .info, attributes: sessionAttributes(session),
              time: Clock.date(ms: endedAtMs))
+        lastSessionEvent = nil
+        store.set(TracewayClient.sessionEventKey, nil)
+    }
+
+    /// Where the attributes of the current session's last event are kept,
+    /// for a later run that has to end it.
+    static let sessionEventKey = "sessionEvent"
+    /// A session older than this when the app is opened again is not ended
+    /// then: the server closed it long ago, and may have deleted it.
+    static let storedSessionEndMaxAgeMs: Int64 = 24 * 60 * 60 * 1000
+
+    /// A session event of `session` with `attributes` went out: kept, with
+    /// the global attributes the router adds and this run's version, so
+    /// that a later run can end the session as it was.
+    private func noteSessionEvent(_ session: SessionInfo, _ attributes: [String: AttributeValue]) {
+        lastSessionEvent = (session.id, attributes)
+        var saved: [String: JSON] = [:]
+        for (key, value) in globalAttributes { saved[key] = .string(value) }
+        for (key, value) in attributes {
+            switch value {
+            case .string(let v): saved[key] = .string(v)
+            case .int(let v): saved[key] = JSON(v)
+            case .double(let v): saved[key] = JSON(v)
+            case .bool(let v): saved[key] = .bool(v)
+            default: break
+            }
+        }
+        var record: [String: JSON] = ["id": .string(session.id), "attributes": .object(saved)]
+        for key in ["service.version", "os.version", "os.major"] {
+            if let value = resourceAttributes[key] { record[key] = .string(value) }
+        }
+        store.set(TracewayClient.sessionEventKey, .object(record))
+    }
+
+    /// The app may not come back (it went to the background, or flushes):
+    /// the current session's counters reach the server now, unless they
+    /// did already, and stay with the session on disk with its memory peak
+    /// so far.
+    private func sendSessionUpdate() {
+        guard let manager = sessions, let session = manager.current else { return }
+        manager.save()
+        if options.captureMetrics, started { memoryPeaks.remember(session.id) }
+        guard reportedSessions.contains(session.id) else { return }
+        let attributes = sessionAttributes(session)
+        if let last = lastSessionEvent, last.id == session.id, last.attributes == attributes { return }
+        emit(eventName: Events.sessionUpdate, severity: .info, attributes: attributes)
+        noteSessionEvent(session, attributes)
+    }
+
+    /// The session an earlier run was killed in expired before this start:
+    /// it is ended now, at the time the app left it, with the counters kept
+    /// with it and the attributes and version it had. Its memory peak is
+    /// reported when the new session starts (`MemoryPeaks.settle`).
+    private func onStoredSessionEnd(_ session: SessionInfo, endedAtMs: Int64) {
+        let saved = store.get(TracewayClient.sessionEventKey)?.object
+        store.set(TracewayClient.sessionEventKey, nil)
+        guard control.settings.sessionsEnabled,
+              Clock.nowMs() - endedAtMs <= TracewayClient.storedSessionEndMaxAgeMs
+        else { return }
+        var attributes: [String: AttributeValue] = [:]
+        var resource = resourceAttributes
+        if let saved = saved, saved["id"]?.string == session.id {
+            for (key, value) in saved["attributes"]?.object ?? [:] {
+                if let text = value.string {
+                    attributes[key] = .string(text)
+                } else if let flag = value.bool {
+                    attributes[key] = .bool(flag)
+                } else if let number = value.int {
+                    attributes[key] = .int(number)
+                } else if let number = value.number {
+                    attributes[key] = .double(number)
+                }
+            }
+            for key in ["service.version", "os.version", "os.major"] {
+                if let value = saved[key]?.string { resource[key] = value }
+            }
+        }
+        attributes[Attr.sessionId] = .string(session.id)
+        attributes[Attr.sessionStartedAt] = .int(Int(session.startedAtMs))
+        for (key, value) in replay.budget.snapshot(session.id) { attributes[key] = .int(value) }
+        emitEarlierRun(eventName: Events.sessionEnd, severity: .info, attributes: attributes, resource: resource,
+                       time: Clock.date(ms: endedAtMs), marked: false)
     }
 
     /// What every session event carries: the session, how much of its
@@ -1533,7 +1637,9 @@ public final class TracewayClient: @unchecked Sendable {
             for (key, value) in self.replay.budget.snapshot(session?.id) { attrs[key] = .int(value) }
             self.emit(eventName: Events.collectionHealth, severity: .info, attributes: attrs)
             if let session = session, !self.healthReported, self.reportedSessions.contains(session.id) {
-                self.emit(eventName: Events.sessionUpdate, severity: .info, attributes: self.sessionAttributes(session))
+                let attributes = self.sessionAttributes(session)
+                self.emit(eventName: Events.sessionUpdate, severity: .info, attributes: attributes)
+                self.noteSessionEvent(session, attributes)
             }
             self.healthReported = true
             self.nextHealthDelayMs = min(self.nextHealthDelayMs * 2, maxHealthDelayMs)
@@ -1562,12 +1668,14 @@ public final class TracewayClient: @unchecked Sendable {
         }
         if control.settings.sessionsEnabled {
             reportedSessions.insert(session.id)
+            let attributes = sessionAttributes(session)
             emit(
                 eventName: resumed ? Events.sessionUpdate : Events.sessionStart,
                 severity: .info,
-                attributes: sessionAttributes(session),
+                attributes: attributes,
                 time: resumed ? nil : Clock.date(ms: session.startedAtMs)
             )
+            noteSessionEvent(session, attributes)
         }
         updateCrashMetadata(session)
         runSessionChanged(session.id)

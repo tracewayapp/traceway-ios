@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Sessions the app was killed in are ended, with their counts.** Going to
+  the background and `Traceway.flush` send `traceway.session.update` with the
+  collection counters (`traceway.collection.*`, `traceway.replay.image_bytes`),
+  unless nothing changed since the session's last event, and keep them with
+  the session on disk with its memory peak. The next start after such a
+  session expired sends its `session.end` first: at the time the app left
+  the foreground (or its last activity), with the counters, attributes and
+  app version the session had. Sessions ended by `shutdown`, and sessions
+  older than a day, are not ended again. Before, a killed app's session kept
+  the zero counts of its `session.start`.
+
 ## 2.1.0 — unreleased
 
 Rebuilt on the official OpenTelemetry Swift SDK, at parity with the browser,

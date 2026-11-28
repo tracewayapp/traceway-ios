@@ -555,6 +555,48 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(records[next].string("fm.run"), "second")
     }
 
+    func testAShutDownSessionIsNotEndedAgainByTheNextLaunch() throws {
+        let dir = temporaryDirectory().appendingPathComponent("traceway_v2")
+        var client = try start(TracewayOptions(remoteConfig: false), stateDirectory: dir)
+        let session = try XCTUnwrap(client.currentSessionId)
+        client.shutdown()
+        XCTAssertEqual(logs.events("session.end").count, 1)
+        try ageStoredSession(dir, by: 20 * 60_000)
+        logs = MemoryLogExporter()
+        client = try start(TracewayOptions(remoteConfig: false), stateDirectory: dir)
+        client.flush(timeout: 5)
+        XCTAssertNotEqual(client.currentSessionId, session)
+        XCTAssertTrue(logs.events("session.end").isEmpty)
+    }
+
+    func testASessionKilledMoreThanADayAgoIsNotEnded() throws {
+        let dir = temporaryDirectory().appendingPathComponent("traceway_v2")
+        var client = try start(TracewayOptions(remoteConfig: false), stateDirectory: dir)
+        let paused = expectation(description: "paused")
+        client.appPaused { paused.fulfill() }
+        wait(for: [paused], timeout: 5)
+        client.killForTesting()
+        try ageStoredSession(dir, by: 25 * 60 * 60_000)
+        logs = MemoryLogExporter()
+        client = try start(TracewayOptions(remoteConfig: false), stateDirectory: dir)
+        client.flush(timeout: 5)
+        XCTAssertTrue(logs.events("session.end").isEmpty)
+        XCTAssertEqual(logs.events("session.start").count, 1)
+    }
+
+    func testWithoutSessionRecordsNothingIsSentForAKilledSession() throws {
+        let dir = temporaryDirectory().appendingPathComponent("traceway_v2")
+        var client = try start(TracewayOptions(sessions: false, remoteConfig: false), stateDirectory: dir)
+        let paused = expectation(description: "paused")
+        client.appPaused { paused.fulfill() }
+        wait(for: [paused], timeout: 5)
+        client.killForTesting()
+        try ageStoredSession(dir, by: 20 * 60_000)
+        client = try start(TracewayOptions(sessions: false, remoteConfig: false), stateDirectory: dir)
+        client.flush(timeout: 5)
+        XCTAssertTrue(logs.records.filter { ($0.eventName ?? "").contains("session") }.isEmpty)
+    }
+
     func testAHardCrashFromTheLastRunIsReportedOnStart() throws {
         let base = temporaryDirectory()
         let diagnostics = try diagnosticFixtureDirectory(base.appendingPathComponent("traceway_v2"), token: "token", baseUrl: "https://traceway.example.com")

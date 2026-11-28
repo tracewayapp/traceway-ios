@@ -119,6 +119,18 @@ public struct TracewayOptions: @unchecked Sendable {
     /// a pipe; every write still reaches the original destination first.
     public var captureStdout: Bool
 
+    /// Not for apps: a shorter session inactivity timeout than the 15
+    /// minutes every Traceway SDK uses, for tests that must see a session
+    /// expire (held to 1 s–15 min). Visible only through
+    /// `@_spi(Testing) import Traceway`.
+    @_spi(Testing) public var sessionInactivityTimeoutMs: Int?
+
+    /// The inactivity timeout sessions use.
+    var effectiveSessionInactivityMs: Int64 {
+        guard let ms = sessionInactivityTimeoutMs else { return SessionManager.defaultInactivityMs }
+        return min(max(Int64(ms), 1000), SessionManager.defaultInactivityMs)
+    }
+
     /// The most frames the replay buffer holds, whatever `maxBufferFrames`
     /// asks for.
     static let maxBufferFramesLimit = 10_000

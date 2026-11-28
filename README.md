@@ -297,6 +297,15 @@ There is no `setUser`: `user.id` is an attribute like any other. At most 64
 attributes are kept. `Traceway.instanceId` (`service.instance.id`) and
 `Traceway.currentSessionId` (`session.id`) name this installation and session.
 
+A session ends after 15 minutes without activity or an hour in all; a restart
+or a return from the background inside that time goes on with it. Going to
+the background and `Traceway.flush` send `traceway.session.update` with the
+session's counters (the replay budget used, picture bytes) and keep them with
+the session on disk, with its memory peak. The app is usually killed in the
+background: when it is next opened after the session expired, the SDK first
+sends that session's `session.end`, at the time the app left the foreground,
+with the counters and attributes the session had, then starts a new session.
+
 ### Interactions
 
 ```swift

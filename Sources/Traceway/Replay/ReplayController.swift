@@ -231,6 +231,14 @@ final class ReplayController {
     /// session uploads what it has.
     func onPaused() { cutSegment() }
 
+    /// Runs `completion` on the client's queue once the clips asked for so
+    /// far are assembled and counted against the budget, without waiting
+    /// for their upload.
+    func afterEncodes(_ completion: @escaping () -> Void) {
+        let done = Unchecked(completion)
+        encoder.async { [queue] in queue.async { done.value() } }
+    }
+
     /// Waits (off the client's queue) for clips being assembled and for
     /// their upload, then runs `completion` on the client's queue.
     func drain(_ completion: @escaping () -> Void) {
