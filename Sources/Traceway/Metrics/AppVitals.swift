@@ -454,7 +454,15 @@ final class AppVitals {
         let stopWatchdog = !foregroundKnown
         if stopWatchdog { foreground = false }
         lock.unlock()
-        if stopWatchdog { watchdog?.stop() }
+        if stopWatchdog { stopWatchingHangs() }
+    }
+
+    /// The app is not in the foreground: hangs are not watched there. One
+    /// under way is forgotten with its file, or the next start would report
+    /// it as the hang the app died in; its probe never reports back.
+    private func stopWatchingHangs() {
+        watchdog?.stop()
+        appHangs?.cancel()
     }
 
     /// A scene connected: in the background, the return it prepares
@@ -496,7 +504,7 @@ final class AppVitals {
             if isStarted { watchdog?.start() }
             if request { h?.requestDraw() }
         } else {
-            watchdog?.stop()
+            stopWatchingHangs()
             tally.flush()
             h?.cancelDraw()
         }

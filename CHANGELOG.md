@@ -56,9 +56,41 @@ this release.
   Android's order.
 - Route templates are written `/orders/:id` in every doc, as on the other
   SDKs.
+- **An issue leaves before the breadcrumbs it flushes**, as in the browser
+  SDK: it is the first record of the first flushed request, or, written to
+  the outbox first, a request of its own that is sent ahead of them. A server
+  that admits only so many log records per address never spends them on the
+  breadcrumbs alone.
+- **`os.version` is the bare version** (`17.4`, no longer `iOS 17.4`), as on
+  Android, so rules can compare it as a version or a number; `os.name` names
+  the platform.
+- **Issues of an earlier run** (a fatal signal found on disk, a MetricKit
+  crash or watchdog termination, a hang the app died in) carry
+  `traceway.previous_run: true`, as on Android. One without a session of its
+  own is no longer given the session of the run that reports it; none gets
+  that run's capture ids, a trigger of that run or a replay clip of it; the
+  breadcrumbs the earlier run left on disk are still sent with them.
+- **Replay privacy**: a SwiftUI `.tracewayMask()` covers its content where an
+  animation shows it (a push, a pop, a sheet), not only where it ends up;
+  touches on the system keyboard are recorded neither in the replay nor as
+  taps; and when remote settings turn `replay.maskAllInputs` back on or make
+  `replay.images` stricter, the frames recorded before and the clips made of
+  them that have not been sent are dropped, and the screen is captured again
+  at once.
+- `recordNavigation(_:action: "remove")` leaves the current screen as it is,
+  as on the other SDKs: the record has an empty `url.full` and no
+  `navigation.to`.
+- A crash, and an issue of an earlier run, is never dropped by the limit on
+  repeated errors (the same error within a second, 60 a minute).
+- A hang still under way when the app goes to the background is dropped with
+  its file; it was reported as a fatal hang at the next start.
+- What the app logged while the console signal was off is not read from the
+  unified log when the signal comes back on.
+- Stopping the `captureStdout` tee leaves a descriptor the app has redirected
+  itself since as the app set it.
 
 - **Breaking**: requires a server with OTLP/OpAMP support for iOS projects; the
-  1.x `/api/report` protocol is gone. Options `debounceMs`, `retryDelayMs`,
+  0.1.x `/api/report` protocol is gone. Options `debounceMs`, `retryDelayMs`,
   `maxPendingExceptions`, `maxLocalFiles` and `localFileMaxAgeHours` were
   removed. Requires Xcode 26.4 (Swift 6.3) or later.
 - **OpenTelemetry**: records are made with `opentelemetry-swift-core` 2.6
@@ -227,10 +259,13 @@ this release.
 - The swizzled `sendEvent:`, `viewDidLoad`, `viewWillAppear:` and
   `viewDidAppear:` call the implementation they replace with its own selector,
   so other libraries' hooks that rely on `_cmd` keep working.
-- Crash handlers are installed once per process and keep the handlers
-  installed before them: an uncaught `NSException` still reaches the previous
-  handler after a restart of the SDK, a fatal signal reaches it with its own
-  `siginfo` and context, the stack walk cannot fault on a smashed stack, the
+- Crash handlers keep the handlers installed before them. The `NSException`
+  handler is installed once per process: an uncaught `NSException` still
+  reaches the previous handler after a restart of the SDK. Signal handlers
+  belong to the running client (with `persistToDisk`): shutdown stops
+  recording and restores the previous signal actions where Traceway still
+  owns them, and a fatal signal reaches the previous handler with its own
+  `siginfo` and context. The stack walk cannot fault on a smashed stack, the
   main thread gets its own signal stack, and crash metadata updates reuse two
   buffers instead of leaking one each.
 - URLSession spans record for the client started after a `shutdown`.

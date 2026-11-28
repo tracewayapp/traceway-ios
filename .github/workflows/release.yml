@@ -9,6 +9,11 @@ name: Release (version + tag)
 # Run it on the branch to release from (normally main), after the release
 # pull request is merged. "dry_run" runs every check and prints the commit it
 # would make, without pushing a commit, a tag or a release.
+#
+# The commit and the tag are pushed together or not at all. A run that pushed
+# them and then failed is finished by running the workflow again with the
+# same version: it finds the tag, checks that it is this release, and only
+# creates the GitHub release that is missing.
 
 on:
   workflow_dispatch:
@@ -46,6 +51,7 @@ jobs:
 
       - name: Validate the version and the ref
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
@@ -57,9 +63,23 @@ jobs:
             echo "::error::Run this workflow on a branch (normally main), not on a tag"
             exit 1
           fi
-          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null || git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "::error::Tag $VERSION already exists"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists"
             exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            # An earlier run pushed the tag: only a release that is still
+            # missing its GitHub release is finished.
+            git show "$VERSION:Sources/Traceway/Telemetry/HTTPTransport.swift" > "$RUNNER_TEMP/tagged_transport.swift"
+            if ! grep -q "static let version = \"$VERSION\"" "$RUNNER_TEMP/tagged_transport.swift"; then
+              echo "::error::Tag $VERSION already exists and is not the $VERSION release commit"
+              exit 1
+            fi
+            if gh release view "$VERSION" >/dev/null 2>&1; then
+              echo "::error::$VERSION is already released"
+              exit 1
+            fi
+            echo "::notice::Tag $VERSION exists without a GitHub release: this run only creates the release"
           fi
 
       - name: CHANGELOG has a section for the version
@@ -160,6 +180,10 @@ jobs:
           VERSION: ${{ inputs.version }}
           BRANCH: ${{ github.ref_name }}
         run: |
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "Tag $VERSION is on origin already: nothing to push"
+            exit 0
+          fi
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           if ! git diff --quiet; then
@@ -167,7 +191,9 @@ jobs:
             git commit -m "$VERSION"
           fi
           git tag "$VERSION"
-          git push origin "HEAD:$BRANCH" "$VERSION"
+          # Both or neither: a tag without its commit on the branch would be
+          # a version SwiftPM resolves to a commit the branch never had.
+          git push --atomic origin "HEAD:$BRANCH" "$VERSION"
 
       - name: Create the GitHub release
         if: ${{ !inputs.dry_run }}
@@ -177,7 +203,7 @@ jobs:
         run: |
           PRERELEASE=""
           [[ "$VERSION" == *"-"* ]] && PRERELEASE="--prerelease"
-          gh release create "$VERSION" --title "$VERSION" --notes-file "$RUNNER_TEMP/release_notes.md" $PRERELEASE
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --notes-file "$RUNNER_TEMP/release_notes.md" $PRERELEASE
 
       - name: Summary
         env:

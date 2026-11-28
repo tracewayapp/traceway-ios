@@ -19,7 +19,8 @@ enum DeviceInfoCollector {
         var info: [String: String] = [:]
         info["os.name"] = "ios"
         let version = systemVersion()
-        info["os.version"] = "iOS \(version)"
+        // The bare version, as on Android: `os.name` says the platform.
+        info["os.version"] = version
         info["device.systemVersion"] = "iOS \(version)"
         info["device.model"] = hardwareModel()
         info["device.manufacturer"] = "Apple"

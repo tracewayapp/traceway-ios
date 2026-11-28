@@ -18,7 +18,7 @@ Four layers, matching `.github/workflows/tests.yml`:
 ./Scripts/test.sh device   # device-arch build-for-testing compile check
 ```
 
-Release publishes after the Linux and macOS jobs and the same iOS Simulator XCTest workflow used for pull requests. Run `ruby CI/test_release_gate.rb` to check that dependency and `CI/signals/test.sh` to exercise the native signal chain on a Linux or macOS host. `CI/signals/test.sh -fsanitize=thread` also checks concurrent reconfiguration under ThreadSanitizer.
+Release publishes after the Linux and macOS jobs and the same iOS Simulator XCTest workflow used for pull requests. Run `ruby CI/test_release_gate.rb` to check that dependency and `CI/signals/test.sh` to exercise the native signal chain on a Linux or macOS host. `CI/signals/test.sh -fsanitize=thread` also checks concurrent reconfiguration under ThreadSanitizer. The script compiles with `$CC` when it is set, else with `cc`, else with `clang` (the `swift` Docker image of the Linux job has `clang` and no `cc`).
 
 The simulator and device layers use an Xcode project generated from
 [`project.yml`](../project.yml) via [XcodeGen](https://github.com/yonaskolb/XcodeGen)

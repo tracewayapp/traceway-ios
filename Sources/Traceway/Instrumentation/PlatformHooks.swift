@@ -297,6 +297,11 @@ final class TouchTracker {
         hooks.recorder?.handle(event)
         for touch in all {
             guard let window = touch.window else { continue }
+            if ClassInfo.of(window).isKeyboardWindow {
+                // Typing is activity; which key was pressed is not recorded.
+                if touch.phase == .began { client.markActivity() }
+                continue
+            }
             let point = touch.location(in: window)
             let key = ObjectIdentifier(touch)
             switch touch.phase {

@@ -300,6 +300,27 @@ final class UIKitWireframeTests: WireframeViewTestCase {
         XCTAssertFalse(texts.contains("hunter2"), "a secure field is never shown")
     }
 
+    func test11TurningInputMaskingOnDropsTheFramesThatShowWhatWasTyped() throws {
+        let typed = UITextField(frame: CGRect(x: 10, y: 60, width: 300, height: 34))
+        typed.text = "jane doe"
+        show(typed)
+        let recorder = self.recorder()
+        recorder.windows = { [unowned self] in self.window.map { [$0] } ?? [] }
+        recorder.maskAllInputs = false
+        recorder.start()
+        defer { recorder.stop() }
+        var clip = try XCTUnwrap(recorder.captureRecording(clipId: "c", sinceMs: nil, untilMs: clock + 1))
+        XCTAssertTrue(JSON.array(clip.events).encoded().contains("jane doe"), "recorded while inputs were not masked")
+
+        clock += 250
+        recorder.maskAllInputs = true
+        XCTAssertEqual(recorder.bufferedFrameCount, 1, "the screen was taken again at once")
+        clip = try XCTUnwrap(recorder.captureRecording(clipId: "c", sinceMs: nil, untilMs: clock + 1))
+        let recorded = JSON.array(clip.events).encoded()
+        XCTAssertFalse(recorded.contains("jane doe"))
+        XCTAssertTrue(recorded.contains("**** ***"), "the field is on the new frame, masked")
+    }
+
     func test12FieldDecorationsSideViewsAndBorderStyles() throws {
         func field(_ y: CGFloat, _ style: UITextField.BorderStyle, _ placeholder: String) -> UITextField {
             let field = UITextField(frame: CGRect(x: 10, y: y, width: 300, height: 34))

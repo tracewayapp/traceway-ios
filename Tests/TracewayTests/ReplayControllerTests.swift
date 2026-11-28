@@ -343,6 +343,53 @@ final class ReplayControllerTests: XCTestCase {
         XCTAssertTrue(http.requests.isEmpty)
     }
 
+    func testAClipBeingAssembledWhenMaskingGotStricterIsNotUploaded() {
+        let source = ClipSource()
+        let gate = DispatchSemaphore(value: 0)
+        source.gate = gate
+        let c = controller()
+        XCTAssertTrue(onQueue { () -> Bool in
+            c.attach(source)
+            c.apply(.buffer, maxAgeMs: 600_000)
+            return c.flush(lookbackMs: 30_000, exceptionId: "e1")
+        })
+        XCTAssertTrue(eventually { source.captures.count == 1 }, "the clip is being assembled")
+        onQueue { c.discardRecorded() }
+        source.gate = nil
+        gate.signal()
+        XCTAssertTrue(drain(c))
+        XCTAssertTrue(http.requests.isEmpty, "made of frames recorded before the change")
+        // What is recorded from then on goes up as before.
+        XCTAssertTrue(onQueue { c.flush(lookbackMs: 30_000, exceptionId: "e2") })
+        XCTAssertTrue(drain(c))
+        XCTAssertEqual(uploaded().map { $0["exceptionId"] }, ["e2"])
+    }
+
+    func testClipsWaitingToBeSentWhenMaskingGotStricterAreDropped() {
+        let answer = DispatchSemaphore(value: 0)
+        http.handler = { _ in
+            answer.wait()
+            return HTTPResult(statusCode: 200)
+        }
+        session = nil
+        let clock = ManualClock()
+        let c = controller(clock)
+        onQueue {
+            c.attach(ClipSource())
+            c.apply(.buffer, maxAgeMs: 600_000)
+            _ = c.flush(lookbackMs: 30_000, exceptionId: "e1")
+        }
+        XCTAssertTrue(eventually { self.http.requests.count == 1 }, "the first clip is with the network")
+        clock.advance(1000)
+        onQueue { _ = c.flush(lookbackMs: 30_000, exceptionId: "e2") }
+        XCTAssertTrue(eventually { c.transport.pending == 1 }, "the second waits behind it")
+        onQueue { c.discardRecorded() }
+        answer.signal()
+        XCTAssertTrue(drain(c))
+        XCTAssertEqual(uploaded().map { $0["exceptionId"] }, ["e1"])
+        XCTAssertEqual(c.transport.pending, 0)
+    }
+
     func testClipsAreAssembledOffTheClientQueue() {
         let source = ClipSource()
         let gate = DispatchSemaphore(value: 0)

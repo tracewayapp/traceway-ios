@@ -205,9 +205,19 @@ policy: the lower of the remote setting `replay.images` (`off`, `wifi` or
   id in taps.
 - SwiftUI's `.tracewayMask()` puts a marker view over its content;
   text and images inside the marker's rectangle are masked the same way.
+  The rectangle is placed like the content, through the presentation layers,
+  and also where the marker's own frame says: while an animation moves the
+  content (a push, a pop, a sheet), both places are masked.
 - Text typed into fields and editable text views is masked unless the
   setting `replay.maskAllInputs` is `false`; secure fields are always
-  bullets. The keyboard is a neutral box, never its keys.
+  bullets. The keyboard is a neutral box, never its keys, and touches in a
+  keyboard window are not recorded as pointer events.
+- When `replay.maskAllInputs` goes from `false` to `true`, or `replay.images`
+  to a stricter value (`always` to `wifi` or `off`, `wifi` to `off`), the
+  recorder drops the frames and touches it holds and captures the screen
+  again at once; the replay controller drops the clips still being assembled
+  and the ones waiting in the recordings transport. A looser setting drops
+  nothing.
 - Masked text is also left out of recorded taps.
 
 ## Scrolling

@@ -176,6 +176,40 @@ final class SwiftUIWireframeTests: WireframeViewTestCase {
         XCTAssertTrue(self.texts(at: CGPoint(x: box.midX, y: box.midY), in: s).isEmpty)
     }
 
+    func test46MasksCoverContentWhereAnAnimationShowsIt() throws {
+        // What the `tracewayMask` modifier puts in the hierarchy: a marker
+        // view over the content it masks.
+        let page = UIView(frame: CGRect(x: 0, y: 100, width: 390, height: 200))
+        let blurred = label("Card 4242 4242", CGRect(x: 20, y: 0, width: 150, height: 24))
+        let blurMarker = TracewayMaskMarkerView(mode: .blur)
+        blurMarker.frame = blurred.frame
+        let blanked = label("Pin 9911", CGRect(x: 20, y: 60, width: 150, height: 24))
+        let blankMarker = TracewayMaskMarkerView(mode: .blank())
+        blankMarker.frame = blanked.frame
+        let views: [UIView] = [blurred, blurMarker, blanked, blankMarker]
+        for view in views { page.addSubview(view) }
+        show(page)
+        let still = allTexts(try screen())
+        XCTAssertTrue(still.contains("**** **** ****"), "\(still)")
+        XCTAssertFalse(still.contains { $0.contains("4242") || $0.contains("9911") }, "\(still)")
+
+        // As during a push or a pop: the layer's own position is where the
+        // animation ends, and meanwhile it shows 200 points further right.
+        let shownX = page.layer.position.x + 200
+        let slide = CABasicAnimation(keyPath: "position.x")
+        slide.fromValue = shownX
+        slide.toValue = shownX
+        slide.duration = 3600
+        page.layer.add(slide, forKey: "slide")
+        let s = try screen()
+        XCTAssertEqual(Double(page.layer.presentation()?.position.x ?? 0), Double(shownX), accuracy: 0.5,
+                       "the animation is under way")
+        let texts = allTexts(s)
+        XCTAssertFalse(texts.contains { $0.contains("4242") || $0.contains("9911") }, "\(texts)")
+        let masked = try node("**** **** ****", in: s)
+        XCTAssertEqual(Double(try XCTUnwrap(screenBox(s, masked)).minX), 220, accuracy: 0.5, "recorded where it shows")
+    }
+
     func test47AStateChangeReplays() throws {
         final class Model: ObservableObject {
             @Published var on = false

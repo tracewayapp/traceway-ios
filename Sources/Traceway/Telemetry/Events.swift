@@ -27,6 +27,9 @@ enum Attr {
     static let exceptionId = "traceway.exception.id"
     static let replayStatus = "traceway.replay.status"
     static let captureIds = "traceway.capture.ids"
+    /// Marks an issue of an earlier run (a crash found on disk, a MetricKit
+    /// report, a hang the app died in), as the Android SDK does.
+    static let previousRun = "traceway.previous_run"
 }
 
 /// `control` records describe the SDK itself (sessions, triggers, config)

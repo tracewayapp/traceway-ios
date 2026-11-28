@@ -138,6 +138,12 @@ final class Outbox {
         }
     }
 
+    /// Starts sending what is queued and returns once the first request has
+    /// been handed to the network; never called on the outbox's queue.
+    func drainNow() {
+        queue.sync { self.drainLocked() }
+    }
+
     func dispose() {
         queue.sync {
             disposed = true

@@ -856,18 +856,48 @@ final class WireframeCapture {
             if view.isHidden { continue }
             if view is TracewayMaskMarkerView, let mode = view.maskInEffect {
                 let r = screen.convert(view.bounds, from: view)
-                let rect = WireframeRect(
+                var rects = [WireframeRect(
                     x: Double(r.minX), y: Double(r.minY), width: Double(r.width), height: Double(r.height)
-                )
+                )]
+                // While an animation moves the content, it is recorded
+                // where it shows: the mask covers that place too.
+                if let shown = shownRect(of: view, under: root, screen: screen), !shown.isClose(to: rects[0]) {
+                    rects.append(shown)
+                }
                 switch mode {
-                case .blank: blankRects.append(rect)
-                case .blur: blurRects.append(rect)
+                case .blank: blankRects.append(contentsOf: rects)
+                case .blur: blurRects.append(contentsOf: rects)
                 }
                 continue
             }
             if case .blank? = view.maskInEffect { continue }
             stack.append(contentsOf: view.subviews)
         }
+    }
+
+    /// Where `view` shows on screen, placed as the walk places content:
+    /// through the presentation layers from `root`'s (a window) down to
+    /// its own. Nil when it cannot be placed that way.
+    private func shownRect(of view: UIView, under root: UIView, screen: UIWindow) -> WireframeRect? {
+        var chain: [CALayer] = []
+        var current: CALayer? = view.layer
+        while let layer = current, layer !== root.layer {
+            if chain.count >= 512 { return nil }
+            chain.append(layer)
+            current = layer.superlayer
+        }
+        guard current === root.layer else { return nil }
+        chain.append(root.layer)
+        var t = WireframeAffine.translation(-Double(screen.frame.minX), -Double(screen.frame.minY))
+        for model in chain.reversed() {
+            guard let local = WireframeCapture.localTransform(model.presentation() ?? model) else { return nil }
+            t = t.then(local)
+        }
+        if t.isDegenerate { return nil }
+        let b = (view.layer.presentation() ?? view.layer).bounds
+        let w = Double(b.width), h = Double(b.height)
+        guard w.isFinite, h.isFinite, w >= 0, h >= 0 else { return nil }
+        return t.translated(Double(b.minX), Double(b.minY)).boundingBox(width: w, height: h)
     }
 
     // MARK: - Text

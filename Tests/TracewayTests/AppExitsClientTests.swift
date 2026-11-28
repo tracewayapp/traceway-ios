@@ -67,7 +67,7 @@ final class AppExitsClientTests: XCTestCase {
                 spanExporter: spans,
                 transport: server,
                 stateDirectory: stateDirectory,
-                deviceAttributes: ["os.name": "ios", "os.version": "iOS 17.2", "device.model": "iPhone15,2"],
+                deviceAttributes: ["os.name": "ios", "os.version": "17.2", "device.model": "iPhone15,2"],
                 metricsSink: { body in
                     bodies.append(body)
                     return 200
@@ -113,9 +113,23 @@ final class AppExitsClientTests: XCTestCase {
         XCTAssertNotNil(crash.string("traceway.exception.id"))
         // Under the run that crashed.
         XCTAssertEqual(crash.resource.attributes["service.version"], .string("1.4.0"))
-        XCTAssertEqual(crash.resource.attributes["os.version"], .string("iOS 17.2"))
+        XCTAssertEqual(crash.resource.attributes["os.version"], .string("17.2"))
         XCTAssertLessThanOrEqual(abs(Clock.ms(crash.timestamp) - Clock.ms(at)), 1)
         XCTAssertEqual(sums["app.crash"], 1)
+    }
+
+    func testAMetricKitCrashOfAnEarlierRunIsNotPutInThisRunsSession() throws {
+        let client = try start(stateDirectory: stateDirectory())
+        Traceway.log("logged in this run")
+        let at = Date(timeIntervalSinceNow: -86_400)
+        client.receiveDiagnosticPayload(try metricKitFixture("crash-signal"), begin: at, end: at)
+        client.flush(timeout: 5)
+        let crash = try XCTUnwrap(exceptions("NativeCrash").first)
+        XCTAssertEqual(crash.attributes["traceway.previous_run"], .bool(true))
+        XCTAssertNil(crash.attributes["session.id"], "the run that crashed is not this session")
+        XCTAssertEqual(crash.string("traceway.replay.status"), "buffer_unavailable")
+        XCTAssertTrue(logs.events("traceway.trigger.fired").isEmpty, "no trigger of this run fires for it")
+        XCTAssertTrue(logs.consoleLines.isEmpty, "this run's breadcrumbs are not its context")
     }
 
     func testACrashTheSignalHandlerRecordedIsNotReportedAgainByMetricKit() throws {
@@ -463,6 +477,19 @@ final class AppExitsClientTests: XCTestCase {
         Traceway.captureException(Boom())
         client.flush(timeout: 5)
         XCTAssertTrue(lines("oslog").isEmpty)
+    }
+
+    func testWhatWasLoggedWhileTheConsoleWasOffIsNotReadWhenItComesBack() throws {
+        let source = FakeOSLogSource()
+        let client = try start(osLog: source)
+        client.onQueueSync { client.control.applyRemote(["signals": ["console": ["mode": "off"]]]) }
+        source.add("logged while off", at: Date())
+        client.onQueueSync { client.control.applyRemote(nil) }
+        source.add("logged after", at: Date())
+        struct Boom: Error {}
+        Traceway.captureException(Boom())
+        client.flush(timeout: 5)
+        XCTAssertEqual(lines("oslog").map { $0.body }, [.string("logged after")])
     }
 
     /// IOS2-7: an error storm is one read of the unified log, not one per

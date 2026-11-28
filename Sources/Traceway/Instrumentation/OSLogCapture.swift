@@ -80,6 +80,16 @@ final class OSLogReader {
         return kept.lines
     }
 
+    /// Leaves out what was logged before `date`: the next read starts
+    /// there. For the time the console signal was off.
+    func skip(to date: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard date > cursor else { return }
+        cursor = date
+        seenAtCursor = []
+    }
+
     private static func identity(_ entry: CapturedLogLine, message: String) -> Int {
         var hasher = Hasher()
         hasher.combine(entry.subsystem)

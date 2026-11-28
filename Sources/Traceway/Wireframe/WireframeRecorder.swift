@@ -84,33 +84,60 @@ final class WireframeRecorder: ReplaySource {
 
     /// Masks what is typed into text fields, as rrweb's `maskAllInputs`
     /// does. On by default; remote settings can switch it off
-    /// (`replay.maskAllInputs`).
+    /// (`replay.maskAllInputs`). Switching it on drops the frames held,
+    /// which show what was typed, and takes the screen again at once.
     var maskAllInputs: Bool {
         get {
             lock.lock(); defer { lock.unlock() }
             return maskInputs
         }
         set {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            let stricter = newValue && !maskInputs
             if maskInputs != newValue {
                 maskInputs = newValue
                 resetRequested = true
             }
+            if stricter { dropRecorded() }
+            lock.unlock()
+            if stricter { captureAgain() }
         }
     }
 
     /// When the pictures of image views are inlined (`replay.images` held at
     /// `TracewayOptions.replayImages`). Off by default: the client sets it
-    /// from the settings. Decided at each capture.
+    /// from the settings. Decided at each capture. A stricter policy
+    /// (`always` to `wifi` or `off`, `wifi` to `off`) drops the frames
+    /// held, which may show pictures, and takes the screen again at once.
     var imagePolicy: TracewayImagePolicy {
         get {
             lock.lock(); defer { lock.unlock() }
             return images
         }
         set {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            let stricter = newValue < images
             images = newValue
+            if stricter { dropRecorded() }
+            lock.unlock()
+            if stricter { captureAgain() }
         }
+    }
+
+    /// Forgets the frames and touches held. Called with the lock held.
+    private func dropRecorded() {
+        frames.removeAll()
+        pointers.removeAll()
+        lastMoveMs.removeAll()
+        resetRequested = true
+    }
+
+    /// Takes the screen now instead of at the next tick, after the frames
+    /// held were dropped.
+    private func captureAgain() {
+        #if canImport(UIKit)
+        onMain { self.tick() }
+        #endif
     }
 
     /// Number of distinct screens held; never more than the ring's capacity.
@@ -154,10 +181,7 @@ final class WireframeRecorder: ReplaySource {
 
     func clearBuffer() {
         lock.lock(); defer { lock.unlock() }
-        frames.removeAll()
-        pointers.removeAll()
-        lastMoveMs.removeAll()
-        resetRequested = true
+        dropRecorded()
     }
 
     // MARK: - Frames
@@ -531,6 +555,9 @@ final class WireframeRecorder: ReplaySource {
     func handle(_ event: UIEvent) {
         guard event.type == .touches, let touches = event.allTouches, isRunning else { return }
         for touch in touches {
+            // The keyboard is a neutral box: where its keys are pressed is
+            // not recorded either.
+            if let window = touch.window, ClassInfo.of(window).isKeyboardWindow { continue }
             let point = position(of: touch)
             let x = Double(point.x), y = Double(point.y)
             let pointer = ObjectIdentifier(touch).hashValue

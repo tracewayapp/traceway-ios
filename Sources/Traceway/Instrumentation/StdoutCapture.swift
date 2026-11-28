@@ -32,6 +32,9 @@ final class StreamTee {
     private var pending: [String] = []
     private var scheduled = false
     private var handler: (([String]) -> Void)?
+    /// The reader ended and closed `original`: its number may be another
+    /// descriptor's by now.
+    private var ended = false
 
     /// Starts teeing `fd`; nil when the descriptors could not be set up
     /// (then `fd` is left as it was).
@@ -76,18 +79,31 @@ final class StreamTee {
 
     /// Points `fd` back at the original destination and ends the reader
     /// after the last buffered bytes have reached the original destination.
+    /// When the reader ended already (the app pointed `fd` somewhere else
+    /// itself, so the pipe lost its writer), `fd` is left as the app set it.
     func stop(waitForDrain: Bool = true) {
         if fd == STDOUT_FILENO { fflush(stdout) }
-        dup2(original, fd)
+        lock.lock()
+        if !ended { dup2(original, fd) }
+        lock.unlock()
         if waitForDrain { _ = finished.wait(timeout: .now() + 2) }
+    }
+
+    /// Whether the reader ended and gave its descriptors back.
+    var readerEnded: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return ended
     }
 
     private func run() {
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: StreamTee.bufferSize)
         defer {
             buffer.deallocate()
+            lock.lock()
+            ended = true
             close(readEnd)
             close(original)
+            lock.unlock()
             finished.signal()
         }
         while true {

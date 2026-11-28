@@ -169,7 +169,9 @@ public enum Traceway {
 
     /// Records that the app shows `path`, for SwiftUI navigation and routers
     /// no view controller reports. Navigation triggers match it. `action`
-    /// is `push` or `pop`; `from` is the screen left, when known; `route` is
+    /// is `push`, `pop` or `replace`; `remove` records that a screen was
+    /// taken away without arriving anywhere (the current screen stays);
+    /// `from` is the screen left, when known; `route` is
     /// the screen's route template (`/orders/:id`) when the router knows it,
     /// the same as calling `setRoute(_:)` right after.
     public static func recordNavigation(_ path: String, action: String = "push", from: String? = nil,

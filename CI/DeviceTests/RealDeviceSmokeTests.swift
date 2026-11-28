@@ -8,7 +8,7 @@ final class RealDeviceSmokeTests: XCTestCase {
         XCTAssertEqual(info["os.name"], "ios")
         XCTAssertEqual(info["device.manufacturer"], "Apple")
         XCTAssertEqual(info["device.brand"], "Apple")
-        XCTAssertTrue(info["os.version"]?.hasPrefix("iOS") == true)
+        XCTAssertTrue(info["os.version"]?.first?.isNumber == true)
         XCTAssertFalse((info["device.model"] ?? "").isEmpty)
 
         XCTAssertNotNil(info["screen.resolution"])

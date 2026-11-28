@@ -32,6 +32,9 @@ final class ReplayController {
     private var segmentTimer: DispatchSourceTimer?
     /// The end of the last frames uploaded as part of the current session.
     private var sessionCursor: Int64?
+    /// Counts `discardRecorded` calls: a clip asked for before the last one
+    /// is dropped when it has been assembled.
+    private var discards = 0
     /// Called on the client's queue when the budget turns a segment away.
     var onBudgetDrop: (() -> Void)?
 
@@ -107,6 +110,14 @@ final class ReplayController {
         segmentTimer = nil
     }
 
+    /// Masking or the image policy became stricter, and the recorder dropped
+    /// its frames: the clips made of them that have not been handed to the
+    /// network yet, still being assembled or waiting to be sent, go too.
+    func discardRecorded() {
+        discards += 1
+        transport.discard()
+    }
+
     /// Uploads the frames of the last `lookbackMs`. With `exceptionId` the
     /// clip is that exception's; without, it is part of the session (a
     /// capture's lookback). Returns false when no clip can be made.
@@ -179,13 +190,14 @@ final class ReplayController {
         // An exception's clip outside the session still counts against the
         // budget of the session it happened in.
         let budgetSession = session ?? sessionId()
+        let discards = self.discards
         encodings += 1
         encoder.async { [weak self] in
             let clip = source.captureRecording(clipId: clipId, sinceMs: sinceMs, untilMs: untilMs)
             guard let self = self else { return }
             self.queue.async {
                 self.encodings -= 1
-                guard let clip = clip, !clip.events.isEmpty, self.mode != .off else { return }
+                guard let clip = clip, !clip.events.isEmpty, self.mode != .off, discards == self.discards else { return }
                 let segment = RecordingSegment(
                     exceptionId: exceptionId,
                     sessionId: session,

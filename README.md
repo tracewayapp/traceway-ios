@@ -130,7 +130,6 @@ struct MyApp: App {
         Traceway.initialize(
             token: info?["TracewayToken"] as? String ?? "",
             options: TracewayOptions(
-                version: "1.0.0",
                 screenCapture: true
             )
         )
@@ -256,12 +255,15 @@ first and then records each line (`log.source: stdout`, severity `info`;
 queue of their own, at most 1,000 at a time, and past that they are dropped
 (never the bytes). Off by default, as it redirects the process's
 descriptors; standard output becomes line buffered. Shutdown restores both
-descriptors. A later client must opt in again to collect new lines.
+descriptors, except one the app has pointed somewhere else itself since
+(`freopen`, `dup2`): that one is left as the app set it. A later client must
+opt in again to collect new lines.
 
 All of it is the `console` signal: the remote `signals.console` settings
 (mode, `minSeverity`, `sampleRate`) apply exactly as to `Traceway.log`, and
 `captureLogs: false` turns all of it off. While the console is off the
-unified log is not read at all.
+unified log is not read at all, and what the app logged meanwhile is not read
+when the console comes back on either.
 
 ### Actions and events
 
@@ -358,13 +360,16 @@ Every record belongs to a *signal*, and each signal has a mode:
 
 The built-in trigger fires on every exception: it uploads the buffered
 breadcrumbs of the last 10 minutes and the replay of the last 30 seconds, at
-most the frames the replay ring holds (`maxBufferFrames`). An app that never
+most the frames the replay ring holds (`maxBufferFrames`). The exception is
+handed to the exporter before those breadcrumbs, so a server that limits log
+records per address admits it first. An app that never
 throws sends only its session and control records (`session.start`,
 `session.end`, `traceway.session.update`, `traceway.config.applied`) and its
 metrics. Clips are rationed to one per 5
 seconds and 20 per session; breadcrumbs are still sent for the exceptions in
 between. Identical errors within a second collapse into one, and at most 60
 errors a minute are sent; the next one carries `traceway.error.suppressed_count`.
+A crash, and an issue of an earlier run, is never held to these two limits.
 
 `recordAllSessions: true` streams every breadcrumb signal and the replay
 instead. The signal names, modes, triggers and limits are the browser and
@@ -572,10 +577,14 @@ the path was made from (`/orders/:id`, as the other Traceway SDKs write it):
 passing it is the same as calling `setRoute(_:)` right after the navigation.
 
 A navigation is a `browser.navigation` record with `url.full`,
-`navigation.action` (`push` or `pop`), `browser.navigation.type`,
+`navigation.action` (`push`, `pop` or `replace`), `browser.navigation.type`,
 `navigation.to`, `navigation.from`, `app.screen.name` and, while a route
 template is set, `app.screen.route`. Issues carry the route too, and metrics
 group the screen's display times, frames and hangs by it.
+`recordNavigation(path, action: "remove")` records that a screen was taken
+away without the user arriving anywhere, as on the other Traceway SDKs: the
+record has an empty `url.full` and no `navigation.to`, and the current screen,
+its route and the screen metrics stay as they are.
 
 ## Session replay
 
@@ -614,7 +623,12 @@ taps and drags included. A frame is kept only when the screen changed.
   are, the way masked text would be.
 - **Privacy.** Text typed into fields is replaced with `*` unless remote
   settings set `replay.maskAllInputs: false`; secure fields always show
-  bullets. The keyboard is a plain box, never its keys.
+  bullets. The keyboard is a plain box, never its keys, and touches on it
+  are recorded neither in the replay nor as taps. When remote settings turn
+  `replay.maskAllInputs` back on or make `replay.images` stricter (`always`
+  to `wifi` or `off`, `wifi` to `off`), the frames recorded before are
+  dropped with the clips made of them that have not been sent yet, and the
+  screen is captured again at once.
 
 How well each kind of view converts is checked on every CI run by the
 wireframe gallery (see [Testing](#testing)). [Docs/Wireframe.md](Docs/Wireframe.md)
@@ -653,7 +667,8 @@ Set it in a rule's Signals tab on the dashboard, or in `collection`
 (`"replay": ["images": "always"]`). `TracewayOptions.replayImages` (`.always`
 by default) is the ceiling: `.off` keeps every image a placeholder whatever
 the rules say. The connection is checked for each frame. Images under a
-traceway mask are never included. Session events carry `traceway.replay.images`
+traceway mask are never included, also while an animation (a push, a pop, a
+sheet) moves the masked content. Session events carry `traceway.replay.images`
 (the policy at session start) and `traceway.replay.image_bytes`.
 
 ### Privacy masks
@@ -875,6 +890,15 @@ After `initialize`, the SDK records:
   the **next launch**, with the session they happened in, under the app
   version that crashed.
 
+An issue a later run reports for an earlier one (a fatal signal, a MetricKit
+crash or watchdog termination, a hang the app died in) carries
+`traceway.previous_run: true`, as on Android. It keeps the session it
+happened in when that is known; otherwise it has none, rather than the
+session of the run that reports it. It gets neither that run's capture ids
+nor a replay clip of it, and no trigger of that run fires for it. The
+breadcrumbs the earlier run left on disk are sent with it; the reporting
+run's own are not.
+
 With disk persistence enabled, the client installs signal handlers for its
 project and receivers. Shutdown stops recording and restores the previous
 signal actions where Traceway still owns them. A previous crash reporter
@@ -926,7 +950,8 @@ main thread is blocked the hang is kept on disk: if the app is killed during
 it (by the user or the system's watchdog), the next start reports it with
 `app.hang.fatal: true` and `Main thread blocked for at least 12.3 s`. Hangs
 in the background or while a debugger is attached are not reported (unless
-`reportHangsInDebug`). `ignoreErrors` and `beforeCapture` see `AppHang`
+`reportHangsInDebug`); a hang still under way when the app goes to the
+background is dropped with its file, so it does not come back as a fatal one. `ignoreErrors` and `beforeCapture` see `AppHang`
 issues like other exceptions.
 
 The SDK itself never takes the app down: its sources keep no traps
@@ -1078,7 +1103,11 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
 - **SwiftUI text** shows as its words in replays only while an assistive technology runs (iOS fills in the accessibility elements then); otherwise each text is a neutral bar where it is drawn.
 - **Replay**: wireframes only (no video), as on Android.
 
-## Upgrading from 2.0
+## Upgrading from a 2.0 pre-release
+
+No 2.0 was released: 2.1.0 follows 0.1.0. This section is for apps that built
+against the `v2` branch before 2.1.0, and it holds the connection-string rules
+[Migrating from 0.1.x](#migrating-from-01x) refers to.
 
 - **Start with a token**: `Traceway.initialize(token: "YOUR_TOKEN", options: …)`,
   with `baseUrl: "https://traceway.mycompany.com"` only for a self-hosted server
@@ -1113,7 +1142,7 @@ The API has the names of the browser, Android and Flutter SDKs. Where iOS differ
   `Traceway.initialize(token:baseUrl:options:)`: the part of the connection
   string before the `@` is the token, and the server is `baseUrl` when it is
   not Traceway Cloud. The old call still works (see
-  [Upgrading from 2.0](#upgrading-from-20)). Without a token the SDK runs
+  [Upgrading from a 2.0 pre-release](#upgrading-from-a-20-pre-release)). Without a token the SDK runs
   [standalone](#standalone-without-traceway).
 - Older crash, fatal hang and unsent report files lack a destination identity.
   The SDK discards these files on the next start with disk persistence enabled.

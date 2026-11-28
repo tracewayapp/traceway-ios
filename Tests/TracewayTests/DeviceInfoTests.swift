@@ -3,12 +3,16 @@ import XCTest
 
 final class DeviceInfoTests: XCTestCase {
 
-    func testCoreKeysPresent() {
+    func testCoreKeysPresent() throws {
         let info = DeviceInfoCollector.collectSync()
         XCTAssertEqual(info["os.name"], "ios")
         XCTAssertEqual(info["device.manufacturer"], "Apple")
         XCTAssertEqual(info["device.brand"], "Apple")
-        XCTAssertNotNil(info["os.version"])
+        // The bare version (`17.4`), as on Android: rules compare it as a number.
+        let version = try XCTUnwrap(info["os.version"])
+        XCTAssertTrue(version.first?.isNumber == true, version)
+        XCTAssertFalse(version.contains(" "), version)
+        XCTAssertEqual(info["os.major"], version.split(separator: ".").first.map(String.init))
         XCTAssertNotNil(info["device.systemVersion"])
         XCTAssertNotNil(info["runtime.version"])
     }

@@ -143,6 +143,18 @@ final class AppHangTests: XCTestCase {
         XCTAssertTrue(reports.value.isEmpty)
         XCTAssertNil(AppHangMonitor.takeFatal(directory: directory))
 
+        // Cancelled while its stack was being taken.
+        var late: AppHangMonitor?
+        late = monitor(directory: directory, now: Locked(1_800_000_000_000), reports: reports, stack: {
+            late?.cancel()
+            return [0x1000]
+        })
+        late?.stalled(id: 1, waitedMs: 2500)
+        late?.recovered(id: 1, blockedMs: 3000)
+        late?.settle()
+        XCTAssertTrue(reports.value.isEmpty)
+        XCTAssertNil(AppHangMonitor.takeFatal(directory: directory))
+
         for stack in [nil, []] as [[UInt]?] {
             let none = monitor(directory: directory, now: Locked(1_800_000_000_000), reports: reports, stack: { stack })
             none.stalled(id: 1, waitedMs: 2500)
@@ -151,6 +163,39 @@ final class AppHangTests: XCTestCase {
         }
         XCTAssertTrue(reports.value.isEmpty)
         XCTAssertNil(AppHangMonitor.takeFatal(directory: directory))
+    }
+
+    /// The watchdog stops when the app leaves the foreground; the probe of
+    /// a hang under way then never reports back.
+    func testAHangUnderWayWhenTheAppLeavesTheForegroundIsNotLeftForTheNextStart() {
+        for leaving in ["background", "background launch"] {
+            let directory = temporaryDirectory()
+            let file = directory.appendingPathComponent(AppHangMonitor.fileName)
+            let r = makeRecorder()
+            let scheduler = r.scheduler
+            let reports = Locked<[AppHangReport]>([])
+            let hangs = monitor(directory: directory, now: Locked(1_800_000_000_000), reports: reports)
+            let vitals = AppVitals(
+                recorder: r.recorder, currentScreen: { "/cart" }, scheduler: scheduler,
+                elapsedMs: { scheduler.nowMs }, uptimeMs: { scheduler.nowMs }, epochMs: { scheduler.nowMs },
+                hangThresholdMs: 2000, watchdogIntervalMs: 500, appHangs: hangs
+            )
+            let host = FakeVitalsHost()
+            vitals.start(host: host)
+            scheduler.advance(2500)
+            hangs.settle()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the hang under way is on disk")
+            if leaving == "background" {
+                vitals.lifecycleChanged(foreground: false)
+            } else {
+                vitals.launched(LaunchInfo(foreground: false))
+            }
+            host.runMain()
+            hangs.settle()
+            XCTAssertNil(AppHangMonitor.takeFatal(directory: directory), "\(leaving): nothing for the next start")
+            XCTAssertTrue(reports.value.isEmpty, "\(leaving): a hang in the background is not reported")
+            vitals.stop()
+        }
     }
 
     func testTheMessageReadsAsTheDashboardParsesIt() {

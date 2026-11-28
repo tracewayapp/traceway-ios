@@ -63,8 +63,9 @@ private let baselineSignals: Set<String> = ["network", "console", "navigation", 
 
 /// Decides for every log record and span whether it is sent now, kept in the
 /// ring buffer or dropped, according to the `ControlState`. Triggers observe
-/// records after routing, so a triggered flush includes the record that
-/// caused it. Used only on the client's queue.
+/// records after routing, so a triggered flush includes a buffered record
+/// that caused it; a streamed one is sent ahead of the flush. Used only on
+/// the client's queue.
 final class TelemetryRouter {
     let control: ControlState
     let buffer: RingBuffer<TelemetryItem>
@@ -78,9 +79,16 @@ final class TelemetryRouter {
     /// when there is a disk: the app may not live to see the answer. True
     /// when it was written; the outbox then sends it.
     var persistIssue: ((ReadableLogRecord) -> Bool)?
+    /// Hands the issues written to disk to the network now; returns once
+    /// their first request has left. Called on the flush queue.
+    var sendPersistedIssues: (() -> Void)?
     private let random: () -> Double
     /// Where flushed batches are exported; serial, so `settle` can wait.
     let exportQueue = DispatchQueue(label: "app.traceway.flush", qos: .utility)
+    /// While triggers see a streamed record, the flushes they ask for wait
+    /// here: the record leaves first.
+    private var holdingFlushes = false
+    private var heldFlushes: [(logs: [ReadableLogRecord], spans: [SpanData])] = []
 
     init(
         control: ControlState,
@@ -113,10 +121,13 @@ final class TelemetryRouter {
     func routeLog(_ input: ReadableLogRecord) {
         var record = input
         let signal = classifyLog(record.eventName)
-        if let session = hooks?.sessionId, record.attributes[Attr.sessionId] == nil {
+        // An issue of an earlier run is not part of this run's session or
+        // of the captures running now.
+        let previousRun = record.attributes[Attr.previousRun] == .bool(true)
+        if !previousRun, let session = hooks?.sessionId, record.attributes[Attr.sessionId] == nil {
             record.setAttribute(key: Attr.sessionId, value: .string(session))
         }
-        if signal != signalControl {
+        if !previousRun, signal != signalControl {
             let captures = activeCaptureIds()
             if !captures.isEmpty {
                 record.setAttribute(key: Attr.captureIds, value: .string(JSON(captures).encoded()))
@@ -167,12 +178,42 @@ final class TelemetryRouter {
         ))
     }
 
-    /// Triggers see a record before it is handed to the exporter. A buffered
-    /// record is already in the buffer then, so a flush it triggers includes
-    /// it; a streamed one follows the flushed breadcrumbs.
+    /// Triggers see a record before it is handed to the exporter, so what
+    /// they add to it is sent. A buffered record is already in the buffer
+    /// then, so a flush it triggers includes it. A streamed one (an issue)
+    /// goes to the exporter before the breadcrumbs its triggers flush: the
+    /// first record of their first request, or, written to disk, a request
+    /// of its own that leaves first. A server that admits only so many
+    /// records then never spends its allowance on the breadcrumbs alone.
     private func observeAndSend(_ observed: ObservedRecord) {
+        // A record the triggers emit meanwhile is sent as it comes.
+        guard observed.routed == .stream, !holdingFlushes else {
+            hooks?.observe(observed)
+            if observed.routed == .stream { send(observed.item) }
+            return
+        }
+        holdingFlushes = true
         hooks?.observe(observed)
-        if observed.routed == .stream { send(observed.item) }
+        holdingFlushes = false
+        var logs: [ReadableLogRecord] = []
+        var spans: [SpanData] = []
+        for flush in heldFlushes {
+            logs += flush.logs
+            spans += flush.spans
+        }
+        heldFlushes = []
+        guard !logs.isEmpty, case .log(let record) = observed.item.record else {
+            send(observed.item)
+            export(logs: logs, spans: spans)
+            return
+        }
+        if persisted(record) {
+            let sendPersistedIssues = self.sendPersistedIssues
+            exportQueue.async { sendPersistedIssues?() }
+        } else {
+            logs.insert(record, at: 0)
+        }
+        export(logs: logs, spans: spans)
     }
 
     /// Sends a record that was dropped when it arrived but whose signal
@@ -205,6 +246,10 @@ final class TelemetryRouter {
     /// Exports records on the flush queue in batches.
     func export(logs: [ReadableLogRecord], spans: [SpanData]) {
         guard !logs.isEmpty || !spans.isEmpty else { return }
+        if holdingFlushes {
+            heldFlushes.append((logs, spans))
+            return
+        }
         let logExporter = self.logExporter
         let spanExporter = self.spanExporter
         exportQueue.async {

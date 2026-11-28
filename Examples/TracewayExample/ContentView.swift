@@ -105,7 +105,7 @@ struct CheckoutView: View {
             .background(Color.blue)
             .foregroundColor(.white)
             .cornerRadius(10)
-            .accessibilityIdentifier("pay")
+            .tracewayIdentifier("pay")
         }
         .tracewayScreen("/checkout")
     }

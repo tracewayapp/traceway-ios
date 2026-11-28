@@ -84,6 +84,7 @@ final class AppHangMonitor {
     private var file: URL?
     private var current: (id: Int, hang: AppHangReport)?
     private var lastWriteMs: Int64 = 0
+    private var cancels = 0
 
     init(
         thresholdMs: Int64,
@@ -115,6 +116,7 @@ final class AppHangMonitor {
     func stalled(id: Int, waitedMs: Int64) {
         lock.lock()
         let known = current?.id == id
+        let cancels = self.cancels
         lock.unlock()
         if known {
             lock.lock()
@@ -138,6 +140,8 @@ final class AppHangMonitor {
         )
         lock.lock()
         defer { lock.unlock() }
+        // Cancelled while its stack was taken: nothing is kept of it.
+        guard cancels == self.cancels else { return }
         current = (id, hang)
         lastWriteMs = nowMs()
         persistLocked(hang)
@@ -160,11 +164,12 @@ final class AppHangMonitor {
         }
     }
 
-    /// Forgets a hang under way (the SDK stopped): it is not reported, now
-    /// or at the next start.
+    /// Forgets a hang under way (the SDK stopped, or the app left the
+    /// foreground): it is not reported, now or at the next start.
     func cancel() {
         lock.lock()
         defer { lock.unlock() }
+        cancels += 1
         current = nil
         let target = file
         queue.async {

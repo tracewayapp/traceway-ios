@@ -119,6 +119,90 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(logs.events("traceway.trigger.fired").first?.string("traceway.trigger.id"), "default-exception")
     }
 
+    func testAnIssueReachesTheExporterBeforeTheBreadcrumbsItFlushes() throws {
+        let client = try start()
+        for i in 0..<5 { Traceway.log("breadcrumb \(i)") }
+        client.flush(timeout: 5)
+        XCTAssertTrue(logs.records.filter { $0.eventName == "exception" || $0.eventName == nil }.isEmpty)
+
+        struct PaymentFailed: Error {}
+        Traceway.captureException(PaymentFailed())
+        client.flush(timeout: 5)
+        let order = logs.records.filter { $0.eventName == "exception" || $0.eventName == nil }
+            .map { $0.eventName ?? "breadcrumb" }
+        XCTAssertEqual(order, ["exception"] + Array(repeating: "breadcrumb", count: 5))
+        XCTAssertNotNil(logs.events("exception").first?.string("traceway.replay.status"),
+                        "what the triggers add to the issue is sent with it")
+    }
+
+    /// With a disk the issue is written to the outbox before it is sent;
+    /// its request still leaves before the breadcrumbs', once.
+    func testAnIssueOnDiskIsSentBeforeTheBreadcrumbsItFlushesAndOnce() throws {
+        let dir = temporaryDirectory().appendingPathComponent("traceway_v2")
+        var options = TracewayOptions(remoteConfig: false)
+        options.exportDelayMs = 50
+        let client = try TracewayClient.start(
+            token: "token", baseUrl: "https://traceway.example.com", options: options,
+            overrides: TracewayTestOverrides(transport: server, stateDirectory: dir,
+                                             deviceAttributes: ["os.name": "ios"])
+        )
+        for i in 0..<5 { Traceway.log("breadcrumb \(i)") }
+        client.flush(timeout: 5)
+        struct PaymentFailed: Error {}
+        Traceway.captureException(PaymentFailed())
+        client.flush(timeout: 5)
+        func sent() -> [String] {
+            server.requests(to: "/api/otel/v1/logs").flatMap { request -> [String] in
+                var body = request.body
+                if request.headers["Content-Encoding"] == "gzip", let plain = Gzip.decompress(body) { body = plain }
+                return Otlp.logs(body).filter { $0.eventName == "exception" || $0.eventName.isEmpty }
+                    .map { $0.eventName.isEmpty ? "breadcrumb" : $0.eventName }
+            }
+        }
+        XCTAssertTrue(eventually { sent().count >= 6 }, "\(sent())")
+        XCTAssertEqual(sent(), ["exception"] + Array(repeating: "breadcrumb", count: 5))
+    }
+
+    func testACrashIsNeverDroppedByTheErrorRateLimit() throws {
+        let client = try start()
+        struct Loop: Error { let i: Int }
+        for i in 0..<70 { Traceway.captureException(Loop(i: i)) }
+        client.flush(timeout: 5)
+        XCTAssertEqual(logs.events("exception").count, 60, "the limit holds for errors the app handled")
+        // What an uncaught NSException emits (`captureFatalException`).
+        client.onQueueSync {
+            client.emit(eventName: Events.exception, severity: .fatal, attributes: [
+                "exception.type": .string("NSInvalidArgumentException"),
+                "exception.message": .string("unrecognized selector"),
+                "exception.escaped": .bool(true),
+                "traceway.crash": .bool(true),
+                Attr.exceptionId: .string(Ids.uuidv4()),
+            ])
+        }
+        client.flush(timeout: 5)
+        XCTAssertEqual(logs.events("exception").filter { $0.attributes["traceway.crash"] == .bool(true) }.count, 1)
+    }
+
+    func testARemovedScreenLeavesTheCurrentScreenAsItIs() throws {
+        let client = try start(TracewayOptions(recordAllSessions: true))
+        Traceway.recordNavigation("/cart", route: "cart")
+        Traceway.recordNavigation("/checkout/step2", action: "remove", from: "/checkout/step2", route: "checkout/:step")
+        struct Declined: Error {}
+        Traceway.captureException(Declined())
+        client.flush(timeout: 5)
+        let removed = try XCTUnwrap(logs.events("browser.navigation").last)
+        XCTAssertEqual(removed.string("navigation.action"), "remove")
+        XCTAssertEqual(removed.string("browser.navigation.type"), "remove")
+        XCTAssertEqual(removed.string("url.full"), "")
+        XCTAssertNil(removed.attributes["navigation.to"])
+        XCTAssertEqual(removed.string("navigation.from"), "/checkout/step2")
+        XCTAssertEqual(removed.string("app.screen.name"), "/cart")
+        XCTAssertEqual(removed.string("app.screen.route"), "/cart")
+        let issue = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(issue.string("app.screen.name"), "/cart", "the user arrived nowhere")
+        XCTAssertEqual(issue.string("app.screen.route"), "/cart")
+    }
+
     func testMessagesStreamAsIssues() throws {
         let client = try start()
         Traceway.captureMessage("checkout reached", attributes: ["step": "3"])
@@ -424,6 +508,70 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertEqual(Clock.ms(crash.timestamp), 1_700_000_000_000)
         XCTAssertTrue(crash.string("exception.stacktrace")?.contains("0123456789abcdef0123456789abcdef 0x123 MyApp") == true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: crashDir.appendingPathComponent("crash-1.tw").path))
+    }
+
+    /// A crash found on disk is the run before's: without a session of its
+    /// own it is not put in this run's, and no trigger of this run fires.
+    func testACrashOfAnEarlierRunIsNotPutInThisRunsSession() throws {
+        let base = temporaryDirectory()
+        let state = base.appendingPathComponent("traceway_v2")
+        let diagnostics = try diagnosticFixtureDirectory(state, token: "token", baseUrl: "https://traceway.example.com")
+        let crashDir = CrashRecordStore.directory(base: diagnostics)
+        try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
+        try """
+        TRACEWAY_SIGNAL_V1
+        signal=11
+        time=1700000000
+        appVersion=1.0
+        ---FRAMES---
+        0x100123
+        """.write(to: crashDir.appendingPathComponent("crash-1.tw"), atomically: true, encoding: .utf8)
+
+        let client = try start(stateDirectory: state)
+        client.flush(timeout: 5)
+        let crash = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(crash.attributes["traceway.previous_run"], .bool(true))
+        XCTAssertNil(crash.attributes["session.id"], "not this run's session")
+        XCTAssertNotNil(client.currentSessionId)
+        XCTAssertEqual(crash.string("traceway.replay.status"), "buffer_unavailable")
+        XCTAssertTrue(logs.events("traceway.trigger.fired").isEmpty, "no trigger of this run fires for it")
+    }
+
+    /// The breadcrumbs the crashed run left on disk are its context: they
+    /// still go up with it. What this run recorded does not.
+    func testACrashOfAnEarlierRunBringsTheBreadcrumbsThatRunLeft() throws {
+        let base = temporaryDirectory()
+        let state = base.appendingPathComponent("traceway_v2")
+        var client = try start(TracewayOptions(remoteConfig: false), stateDirectory: state)
+        let session = try XCTUnwrap(client.currentSessionId)
+        Traceway.log("before the crash")
+        let paused = expectation(description: "paused")
+        client.appPaused { paused.fulfill() }
+        wait(for: [paused], timeout: 5)
+        client.killForTesting()
+        logs = MemoryLogExporter()
+
+        let diagnostics = try diagnosticFixtureDirectory(state, token: "token", baseUrl: "https://traceway.example.com")
+        let crashDir = CrashRecordStore.directory(base: diagnostics)
+        try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
+        try """
+        TRACEWAY_SIGNAL_V1
+        signal=11
+        time=\(Int(Date().timeIntervalSince1970))
+        appVersion=1.0
+        attr.session.id=\(session)
+        ---FRAMES---
+        0x100123
+        """.write(to: crashDir.appendingPathComponent("crash-1.tw"), atomically: true, encoding: .utf8)
+
+        client = try start(TracewayOptions(remoteConfig: false), stateDirectory: state)
+        Traceway.log("after the restart")
+        client.flush(timeout: 5)
+        let crash = try XCTUnwrap(logs.events("exception").first)
+        XCTAssertEqual(crash.string("session.id"), session)
+        XCTAssertEqual(crash.attributes["traceway.previous_run"], .bool(true))
+        XCTAssertEqual(logs.consoleLines.map { $0.body }, [.string("before the crash")])
+        XCTAssertTrue(logs.events("traceway.trigger.fired").isEmpty)
     }
 
     func testUnattributedReportsOfEarlierSDKVersionsAreDiscarded() throws {
@@ -951,7 +1099,7 @@ final class TracewayClientTests: XCTestCase {
         time=1700000000
         appVersion=1.0
         attr.service.version=1.0
-        attr.os.version=iOS 17.0
+        attr.os.version=17.0
         attr.user.id=u1
         attr.session.id=11111111-2222-4333-8444-555555555555
         attr.traceway.session.started_at=1
@@ -966,7 +1114,7 @@ final class TracewayClientTests: XCTestCase {
         XCTAssertNil(crash.attributes["service.version"])
         XCTAssertNil(crash.attributes["os.version"])
         XCTAssertEqual(crash.resource.attributes["service.version"], .string("1.0"))
-        XCTAssertEqual(crash.resource.attributes["os.version"], .string("iOS 17.0"))
+        XCTAssertEqual(crash.resource.attributes["os.version"], .string("17.0"))
         XCTAssertEqual(crash.resource.attributes["device.model"], .string("iPhone15,2"))
         XCTAssertEqual(crash.string("user.id"), "u1")
         XCTAssertEqual(crash.string("session.id"), "11111111-2222-4333-8444-555555555555")
@@ -1129,5 +1277,33 @@ final class WireframeReplayIntegrationTests: XCTestCase {
         XCTAssertTrue(events.contains { $0["type"] == 3 && $0["data"]?["source"] == 2 }, "the tap is an interaction")
         XCTAssertTrue(JSON.array(events).encoded().contains("Paying…"))
         XCTAssertNotNil(segment["startedAt"]?.string)
+    }
+
+    func testTighteningInputMaskingDropsWhatWasRecordedBefore() throws {
+        let server = FakeServer()
+        server.remoteConfig = #"{"replay":{"maskAllInputs":false}}"#
+        let recorder = WireframeRecorder(maxFrames: 50, fps: 4)
+        let client = try TracewayClient.start(
+            token: "token", baseUrl: "https://traceway.example.com",
+            options: TracewayOptions(screenCapture: true, exportDelayMs: 50),
+            overrides: TracewayTestOverrides(
+                logExporter: MemoryLogExporter(), spanExporter: MemorySpanExporter(), transport: server,
+                replaySource: recorder
+            )
+        )
+        XCTAssertTrue(eventually { recorder.isRunning && !recorder.maskAllInputs })
+        recorder.push(WireframeFrame(screen: screen("4242 4242"), width: 390, height: 844,
+                                     timestampMs: Clock.nowMs() - 2000, href: "/pay"))
+        client.onQueueSync {
+            client.control.applyRemote(["replay": ["maskAllInputs": true]])
+            client.applyReplay()
+        }
+        XCTAssertTrue(recorder.maskAllInputs)
+        XCTAssertEqual(recorder.bufferedFrameCount, 0)
+
+        struct PaymentFailed: Error {}
+        Traceway.captureException(PaymentFailed())
+        client.flush(timeout: 5)
+        XCTAssertTrue(server.segments.isEmpty, "nothing recorded before the change goes up")
     }
 }

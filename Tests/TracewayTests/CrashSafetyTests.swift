@@ -1197,11 +1197,7 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
         XCTAssertLessThanOrEqual(images.pendingEncodes, WireframeImages.maxPendingEncodes)
         XCTAssertLessThanOrEqual(shown, WireframeImages.maxPendingEncodes)
         XCTAssertLessThanOrEqual(held.filter { $0.image != nil }.count, WireframeImages.maxPendingEncodes)
-        let deadline = Date().addingTimeInterval(5)
-        while images.pendingEncodes > 0 && Date() < deadline {
-            // Encode completions publish on the main queue.
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await encodesPublished(images)
         XCTAssertEqual(images.pendingEncodes, 0)
         let later = renderer.image { context in
             UIColor.red.setFill()
@@ -1224,10 +1220,7 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
                 context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
             }
             shown.append(image)
-            let deadline = Date().addingTimeInterval(5)
-            while images.pendingEncodes >= WireframeImages.maxPendingEncodes && Date() < deadline {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
+            if images.pendingEncodes >= WireframeImages.maxPendingEncodes { await encodesPublished(images) }
             let picture = images.picture(image, displayed: CGSize(width: 8, height: 8), nowMs: Int64(i))
             XCTAssertNotNil(picture, "picture \(i)")
             if i == 0 { first = picture }
@@ -1236,6 +1229,15 @@ final class CrashSafetyWireframeTests: WireframeViewTestCase {
         XCTAssertFalse(images.all.contains { $0 === first }, "the oldest went")
         XCTAssertTrue(images.all.contains { $0.cls == "p\(WireframeImages.maxPictures + 1)" }, "the newest is in")
         XCTAssertEqual(shown.count, WireframeImages.maxPictures + 2)
+    }
+
+    /// Returns once every encode asked for so far has published its result:
+    /// an event of the encoder, not a clock.
+    @MainActor
+    private func encodesPublished(_ images: WireframeImages) async {
+        await withCheckedContinuation { (published: CheckedContinuation<Void, Never>) in
+            images.afterEncodes { published.resume() }
+        }
     }
 }
 #endif

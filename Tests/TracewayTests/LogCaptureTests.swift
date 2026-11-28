@@ -76,6 +76,20 @@ final class LogCaptureTests: XCTestCase {
         XCTAssertEqual(next.last?.level, .error)
     }
 
+    func testASkipLeavesOutWhatWasLoggedBeforeIt() {
+        let source = FakeOSLogSource()
+        source.add("one", at: t0.addingTimeInterval(1))
+        let reader = OSLogReader(source: source, since: t0)
+        XCTAssertEqual(reader.read().map { $0.message }, ["one"])
+        source.add("while the console was off", at: t0.addingTimeInterval(5))
+        reader.skip(to: t0.addingTimeInterval(10))
+        source.add("after", at: t0.addingTimeInterval(10))
+        XCTAssertEqual(reader.read().map { $0.message }, ["after"])
+        // Never backwards.
+        reader.skip(to: t0)
+        XCTAssertEqual(reader.read(), [])
+    }
+
     /// IOS2-7: the cap and the clip hold while the entries are read, so a
     /// burst never sits in memory whole.
     func testAHugeReadKeepsOnlyTheNewestLines() {
@@ -153,6 +167,28 @@ final class LogCaptureTests: XCTestCase {
         tee.stop()
         close(fd)
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), text + "\n", "every byte, unchanged")
+    }
+
+    func testStopLeavesAStreamTheAppRedirectedSinceAlone() throws {
+        let (_, fd) = try openFile()
+        let tee = try XCTUnwrap(StreamTee(fd: fd, name: "stderr", onLines: { _ in }))
+        // The app points the stream at a file of its own: the pipe has no
+        // writer left, so the reader ends and closes what it held.
+        let (appPath, appFd) = try openFile()
+        XCTAssertEqual(dup2(appFd, fd), fd)
+        XCTAssertTrue(eventually { tee.readerEnded }, "the pipe lost its writer")
+        // Files opened since take the numbers the reader gave back.
+        var others: [(path: String, fd: Int32)] = []
+        for _ in 0..<8 { others.append(try openFile()) }
+        tee.stop()
+        writeAll(fd, "still the app's\n")
+        close(fd)
+        close(appFd)
+        for other in others { close(other.fd) }
+        XCTAssertEqual(try String(contentsOfFile: appPath, encoding: .utf8), "still the app's\n")
+        for other in others {
+            XCTAssertEqual(try String(contentsOfFile: other.path, encoding: .utf8), "", "nothing went to a file of the app's")
+        }
     }
 
     func testASlowSinkNeverHoldsTheWriterUp() throws {

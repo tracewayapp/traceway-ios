@@ -1,5 +1,8 @@
 import XCTest
 @testable import Traceway
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The recorder's frame ring, pointers and clips, fed frames by hand. The
 /// capture timer and UIKit's touches are covered on the Simulator.
@@ -367,6 +370,30 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertEqual(events.last?["timestamp"]?.int.map(Int64.init), until)
     }
 
+    #if canImport(UIKit)
+    func testTouchesOnTheKeyboardAreNotRecorded() {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        let start = clock
+        r.push(frame(screen(["a"])))
+        let bounds = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let onApp = FakeTouch(window: UIWindow(frame: bounds), at: CGPoint(x: 30, y: 40))
+        let onKey = FakeTouch(window: FakeUIKeyboardWindow(frame: bounds), at: CGPoint(x: 200, y: 700))
+        for phase in [UITouch.Phase.began, .ended] {
+            onApp.fakePhase = phase
+            onKey.fakePhase = phase
+            r.handle(FakeEvent([onApp, onKey]))
+            clock += 10
+        }
+        let events = r.captureRecording(clipId: "c", sinceMs: start, untilMs: clock + 1)!.events
+        let touches = events.filter { $0["data"]?["source"]?.int == 2 }.map { $0["data"]! }
+        // The tap on the app: down, up and its click. Nothing of the key.
+        XCTAssertEqual(touches.map { $0["type"]!.int! }, [7, 9, 2])
+        XCTAssertTrue(touches.allSatisfy { $0["x"]?.int == 30 && $0["y"]?.int == 40 }, "\(touches)")
+    }
+    #endif
+
     func testMaskAllInputsIsOnByDefault() {
         let r = recorder()
         XCTAssertTrue(r.maskAllInputs)
@@ -379,6 +406,50 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertEqual(r.imagePolicy, .off)
         r.imagePolicy = .wifi
         XCTAssertEqual(r.imagePolicy, .wifi)
+    }
+
+    func testTurningInputMaskingOnDropsWhatWasRecordedWithoutIt() {
+        let r = recorder()
+        r.maskAllInputs = false
+        r.start()
+        defer { r.stop() }
+        let start = clock
+        r.push(frame(screen(["4242 4242"])))
+        r.pointerDown(pointer: 1, x: 1, y: 1, touch: true)
+        clock += 100
+        r.maskAllInputs = false
+        XCTAssertEqual(r.bufferedFrameCount, 1, "nothing changed")
+        r.maskAllInputs = true
+        XCTAssertEqual(r.bufferedFrameCount, 0, "the frames held show what was typed")
+        XCTAssertNil(r.captureRecording(clipId: "c", sinceMs: start, untilMs: clock + 1))
+        // Loosening drops nothing.
+        r.push(frame(screen(["**** ****"])))
+        r.maskAllInputs = false
+        XCTAssertEqual(r.bufferedFrameCount, 1)
+    }
+
+    func testAStricterImagePolicyDropsWhatWasRecordedUnderTheLooserOne() {
+        let r = recorder()
+        r.start()
+        defer { r.stop() }
+        r.imagePolicy = .wifi
+        r.push(frame(screen(["a"])))
+        clock += 100
+        r.imagePolicy = .always
+        r.imagePolicy = .always
+        XCTAssertEqual(r.bufferedFrameCount, 1, "a looser policy drops nothing")
+        r.imagePolicy = .wifi
+        XCTAssertEqual(r.bufferedFrameCount, 0, "always to wifi")
+        r.push(frame(screen(["b"])))
+        clock += 100
+        r.imagePolicy = .off
+        XCTAssertEqual(r.bufferedFrameCount, 0, "wifi to off")
+        r.imagePolicy = .always
+        r.push(frame(screen(["c"])))
+        clock += 100
+        r.imagePolicy = .off
+        XCTAssertEqual(r.bufferedFrameCount, 0, "always to off")
+        XCTAssertNil(r.captureRecording(clipId: "c", sinceMs: nil, untilMs: clock + 1))
     }
 
     func testTheFrameRateAndTheRingAreClamped() {
@@ -417,3 +488,38 @@ final class WireframeRecorderTests: XCTestCase {
         XCTAssertEqual(allTexts(away), ["App in the background"])
     }
 }
+
+#if canImport(UIKit)
+/// A window of a keyboard class by its name, as `ClassInfo` tells them.
+final class FakeUIKeyboardWindow: UIWindow {}
+
+/// A touch in `window` at `at`, in the phase a test gives it.
+final class FakeTouch: UITouch {
+    private let touched: UIWindow
+    private let at: CGPoint
+    var fakePhase: UITouch.Phase = .began
+
+    init(window: UIWindow, at: CGPoint) {
+        self.touched = window
+        self.at = at
+        super.init()
+    }
+
+    override var window: UIWindow? { touched }
+    override var phase: UITouch.Phase { fakePhase }
+    override var type: UITouch.TouchType { .direct }
+    override func location(in view: UIView?) -> CGPoint { at }
+}
+
+final class FakeEvent: UIEvent {
+    private let fakeTouches: Set<UITouch>
+
+    init(_ touches: Set<UITouch>) {
+        self.fakeTouches = touches
+        super.init()
+    }
+
+    override var type: UIEvent.EventType { .touches }
+    override var allTouches: Set<UITouch>? { fakeTouches }
+}
+#endif

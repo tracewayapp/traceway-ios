@@ -35,11 +35,12 @@ final class WireframeGalleryTests: XCTestCase {
         }
         driver.wait(0.5)
         let clip = try XCTUnwrap(
-            driver.recorder.captureRecording(clipId: "gallery", sinceMs: nil, untilMs: nil),
+            driver.recorder.captureRecording(clipId: "gallery", sinceMs: driver.keptUntil, untilMs: nil),
             "the gallery recorded its screens"
         )
-        try driver.write(events: clip.events)
-        check(clip.events, driver)
+        let events = driver.kept + clip.events
+        try driver.write(events: events)
+        check(events, driver)
     }
 
     private func check(_ events: [JSON], _ driver: GalleryDriver) {
@@ -140,6 +141,10 @@ final class GalleryDriver {
     private(set) var secrets: [String] = []
     private(set) var failures: [String] = []
     private(set) var starts: [(id: String, at: Int64)] = []
+    /// The events of the clips taken before a stricter replay setting made
+    /// the recorder drop its frames, and when the last of them ends.
+    private(set) var kept: [JSON] = []
+    private(set) var keptUntil: Int64?
     /// The keyboard's frame in the window while it is up, as the recorder
     /// is told it.
     private(set) var keyboardFrame: CGRect?
@@ -228,11 +233,26 @@ final class GalleryDriver {
             let data = try JSONSerialization.data(withJSONObject: collection)
             let defaults = applyOverlay(defaultSettings(), try parseSettingsDocument(data))
             let control = ControlState(defaults: defaults, ceilings: ceilingsFrom(screenCapture: true))
-            recorder.imagePolicy = control.settings.replayImages
-            recorder.maskAllInputs = control.settings.replayMaskAllInputs
+            let settings = control.settings
+            // A stricter setting makes the recorder drop the frames it
+            // holds: what it recorded so far is kept first, as the clip an
+            // app would have uploaded by then.
+            if settings.replayImages < recorder.imagePolicy || (settings.replayMaskAllInputs && !recorder.maskAllInputs) {
+                keepRecording()
+            }
+            recorder.imagePolicy = settings.replayImages
+            recorder.maskAllInputs = settings.replayMaskAllInputs
         } catch {
             fail("cannot apply the collection settings \(collection): \(error)")
         }
+    }
+
+    private func keepRecording() {
+        let until = Clock.nowMs()
+        if let clip = recorder.captureRecording(clipId: "gallery", sinceMs: keptUntil, untilMs: until) {
+            kept += clip.events
+        }
+        keptUntil = until
     }
 
     // MARK: - Time

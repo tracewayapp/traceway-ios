@@ -177,7 +177,7 @@ final class ExitReasonsTests: XCTestCase {
 
     private func run(_ change: (inout RunRecord) -> Void = { _ in }) -> RunRecord {
         var record = RunRecord(startedAtMs: 1_800_000_000_000, appVersion: "1.4.0", appBuild: "42",
-                               osVersion: "iOS 17.2", bootTimeSec: 1_799_000_000, foreground: true,
+                               osVersion: "17.2", bootTimeSec: 1_799_000_000, foreground: true,
                                debugger: false, sessionId: "s1")
         change(&record)
         return record
@@ -198,7 +198,7 @@ final class ExitReasonsTests: XCTestCase {
         XCTAssertFalse(oom(run { $0.debugger = true }), "a debugger was attached")
         XCTAssertFalse(oom(run { $0.appVersion = "1.3.9" }), "the app was updated")
         XCTAssertFalse(oom(run { $0.appBuild = "41" }), "the build changed")
-        XCTAssertFalse(oom(run { $0.osVersion = "iOS 17.1" }), "the OS was updated")
+        XCTAssertFalse(oom(run { $0.osVersion = "17.1" }), "the OS was updated")
         XCTAssertFalse(oom(run { $0.bootTimeSec = 1_798_000_000 }), "the device restarted")
         XCTAssertTrue(oom(run { $0.bootTimeSec = nil }), "an unknown boot does not decide")
     }

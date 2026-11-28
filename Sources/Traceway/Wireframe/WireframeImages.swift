@@ -271,6 +271,12 @@ final class WireframeImages {
         }
     }
 
+    /// Runs `done` on the main queue once every encode asked for so far has
+    /// published its result.
+    func afterEncodes(_ done: @escaping () -> Void) {
+        encoder.async { DispatchQueue.main.async(execute: done) }
+    }
+
     private static func format(opaque: Bool) -> UIGraphicsImageRendererFormat {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1

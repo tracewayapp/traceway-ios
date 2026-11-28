@@ -123,9 +123,15 @@ public final class TracewayClient: @unchecked Sendable {
     /// Whether console lines are recorded now (`captureLogs` and the
     /// console's mode), read off the client's queue.
     private let consoleCaptured = Locked(false)
+    /// When the console signal last came back on, until the unified log's
+    /// reader has skipped what was logged while it was off.
+    private let consoleResumedAt = Locked<Date?>(nil)
     /// This run, as the next run will read it; and the last run.
     private var runRecord: RunRecord?
     private var previousRun: RunRecord?
+    /// When this run's client was made (Unix ms): what the buffer holds from
+    /// before is an earlier run's.
+    private let startedAtMs = Clock.nowMs()
     /// The `app.oom` count of a likely out-of-memory exit, waiting for
     /// MetricKit to say it was a crash.
     private var pendingOOM: DispatchWorkItem?
@@ -730,6 +736,7 @@ public final class TracewayClient: @unchecked Sendable {
         if stateDir != nil, overrides?.logExporter == nil {
             let issues = self.tracewayOutbox ?? live
             router.persistIssue = { record in issues.persist(logs: [record]) }
+            router.sendPersistedIssues = { issues.drainNow() }
         }
         self.router = router
 
@@ -1091,20 +1098,26 @@ public final class TracewayClient: @unchecked Sendable {
     /// when that was before the navigation is reported.
     func recordNavigation(to path: String, action: String, from: String?, route: String? = nil, time: Date,
                           displayStartMs: Int64? = nil) {
+        // A removal takes a screen away without the user arriving anywhere,
+        // as on the other SDKs: it is on the timeline, and the screen stays.
+        let arrived = action != "remove"
         // The screen changes now, on the caller's thread: an issue captured
         // right after names the screen it happened on.
-        let shown = screen.navigated(to: path, atMs: Clock.ms(time), route: route)
-        vitals?.navigated(path.isEmpty ? nil : ScreenState.template(route) ?? normalizePath(path), action: action,
-                          timeMs: displayStartMs ?? Clock.ms(time))
+        // (An empty path changes nothing and reads the screen as it is.)
+        let shown = screen.navigated(to: arrived ? path : "", atMs: Clock.ms(time), route: arrived ? route : nil)
+        if arrived {
+            vitals?.navigated(path.isEmpty ? nil : ScreenState.template(route) ?? normalizePath(path), action: action,
+                              timeMs: displayStartMs ?? Clock.ms(time))
+        }
         onQueue {
             self.sessions?.markActivity()
             var attrs: [String: AttributeValue] = [
-                "url.full": .string(path),
+                "url.full": .string(arrived ? path : ""),
                 "navigation.action": .string(action),
                 // The session timeline labels a navigation by this.
                 "browser.navigation.type": .string(action),
-                "navigation.to": .string(path),
             ]
+            if arrived { attrs["navigation.to"] = .string(path) }
             if let from = from { attrs["navigation.from"] = .string(from) }
             if let name = shown.name { attrs["app.screen.name"] = .string(name) }
             if let route = shown.route { attrs["app.screen.route"] = .string(route) }
@@ -1465,6 +1478,8 @@ public final class TracewayClient: @unchecked Sendable {
         guard !isShutdown, let router = router else { return }
         var values: [String: AttributeValue] = [:]
         for (key, value) in resource { values[key] = .string(value) }
+        var attributes = attributes
+        attributes[Attr.previousRun] = .bool(true)
         router.routeLog(ReadableLogRecord(
             resource: Resource().merging(other: Resource(attributes: values)),
             instrumentationScopeInfo: InstrumentationScopeInfo(name: TracewaySDK.name, version: TracewaySDK.version),
@@ -1761,6 +1776,24 @@ public final class TracewayClient: @unchecked Sendable {
         }
     }
 
+    /// Sends the breadcrumbs recorded before this run began (restored from
+    /// disk), as far back as the default exception trigger looks.
+    private func flushEarlierRunBreadcrumbs() {
+        guard let trigger = control.settings.triggers.first(where: { $0.id == defaultExceptionTriggerId }),
+              trigger.enabled != false
+        else { return }
+        let now = Clock.nowMs()
+        var flushed = 0
+        for action in trigger.actions where action.type == "flush" && !action.replay {
+            let lookbackMs = Int64((action.lookbackSeconds ?? 0) * 1000)
+            flushed += router?.flushBuffered(
+                sinceMs: now - lookbackMs, signals: TracewayClient.selectorSet(action.signals), untilMs: startedAtMs - 1
+            ) ?? 0
+        }
+        // The file must not hold records that just left.
+        if flushed > 0, persisted != nil { persistBuffer() }
+    }
+
     private func persistBuffer(_ completion: (() -> Void)? = nil) {
         guard let persisted = persisted, control.settings.persist, !isShutdown else {
             completion?()
@@ -1803,8 +1836,13 @@ public final class TracewayClient: @unchecked Sendable {
         let session = sessions?.currentId
         let settings = control.settings
         if let recorder = screenRecorder as? WireframeRecorder {
+            let stricter = (settings.replayMaskAllInputs && !recorder.maskAllInputs)
+                || settings.replayImages < recorder.imagePolicy
             recorder.maskAllInputs = settings.replayMaskAllInputs
             recorder.imagePolicy = settings.replayImages
+            // The recorder dropped the frames it held; clips already made of
+            // them are not uploaded either.
+            if stricter { replay.discardRecorded() }
         }
         replay.apply(
             control.replayMode,
@@ -1939,7 +1977,10 @@ public final class TracewayClient: @unchecked Sendable {
     }
 
     private func onSettingsChanged(_ settings: Settings) {
-        consoleCaptured.value = options.captureLogs && control.modeFor("console") != .off
+        let console = options.captureLogs && control.modeFor("console") != .off
+        // Set before the signal reads as on: the first read after skips.
+        if console, !consoleCaptured.value, readsOSLog.value { consoleResumedAt.value = Date() }
+        consoleCaptured.value = console
         runCaptures(settings)
         buffer.retain { control.canExport($0.signal) }
         if !settings.persist { persisted?.clear() }
@@ -2211,7 +2252,7 @@ extension TracewayClient {
         var resource = resourceAttributes
         if let version = crash.appVersion { resource["service.version"] = version }
         if let os = crash.osVersion.flatMap(MetricKitDiagnostics.osVersionNumber) {
-            resource["os.version"] = "iOS \(os)"
+            resource["os.version"] = os
             if let major = os.split(separator: ".").first { resource["os.major"] = String(major) }
         }
         if let device = crash.deviceType { resource["device.model"] = device }
@@ -2320,9 +2361,20 @@ extension TracewayClient {
     /// `logQueue`.
     private func pollLogs() {
         guard let reader = osLog, !isShutdown, consoleCaptured.value else { return }
-        let lines = reader.read()
+        let lines = readLogs(reader)
         guard !lines.isEmpty else { return }
         onQueue { self.emitLogLines(lines) }
+    }
+
+    /// The lines logged since the last read, without those logged while the
+    /// console signal was off. On `logQueue`.
+    private func readLogs(_ reader: OSLogReader) -> [CapturedLogLine] {
+        let resumedAt: Date? = consoleResumedAt.withValue { at in
+            defer { at = nil }
+            return at
+        }
+        if let resumedAt = resumedAt { reader.skip(to: resumedAt) }
+        return reader.read()
     }
 
     /// On the client's queue.
@@ -2391,7 +2443,7 @@ extension TracewayClient {
         let box = Locked<[CapturedLogLine]>([])
         let done = DispatchSemaphore(value: 0)
         logQueue.async { [weak self] in
-            box.value = self?.osLog?.read() ?? []
+            if let self = self, let reader = self.osLog { box.value = self.readLogs(reader) }
             done.signal()
         }
         guard done.wait(timeout: .now() + timeout) == .success else { return [] }
@@ -2458,7 +2510,10 @@ extension TracewayClient: RouterHooks {
         for (key, value) in globalAttributes where existing[key] == nil {
             record.setAttribute(key: key, value: .string(value))
         }
-        if signal == "errors" {
+        // A crash, or an issue an earlier run left, is never collapsed into
+        // other errors or held to their rate: it is the one that matters.
+        let always = existing["traceway.crash"] == .bool(true) || existing[Attr.previousRun] == .bool(true)
+        if signal == "errors", !always {
             let key = "\(existing["exception.type"]?.description ?? ""):\(existing["exception.message"]?.description ?? "")"
             guard admitError(key) else {
                 suppressedErrorsTotal += 1
@@ -2499,6 +2554,15 @@ extension TracewayClient: RouterHooks {
         // An error or message left out by its sample rate is as if it never
         // happened: it must not upload breadcrumbs or a clip of its own.
         if observed.routed == .filtered, observed.signal == "errors" || observed.signal == "messages" { return }
+        if observed.item.attributes[Attr.previousRun] == .bool(true) {
+            // An issue of an earlier run: no trigger of this run fires for
+            // it, and neither this run's breadcrumbs nor its screen are its
+            // context. The breadcrumbs earlier runs left in the buffer are.
+            observed.item.setAttribute(Attr.replayStatus, .string("buffer_unavailable"))
+            flushEarlierRunBreadcrumbs()
+            flushSoon()
+            return
+        }
         if observed.signal == "navigation", sequenceKinds.contains("navigation") {
             screenObservedForSequences = true
         }
