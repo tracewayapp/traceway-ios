@@ -4,7 +4,7 @@ import FieldmartCore
 
 /// The field-test driver: one test that plays the scenario `FM_SCENARIO`
 /// on the app `FM_APP` (see `RunConfig`). Run it with
-/// `xcodebuild test-without-building -only-testing:FieldmartUITests/JourneyTests/testRun`
+/// `xcodebuild test-without-building -only-testing:FieldmartUITests/JourneyTests/testJourney`
 /// and `TEST_RUNNER_FM_*` variables.
 class JourneyTests: XCTestCase {
     private var log: DriverLog?
@@ -18,14 +18,14 @@ class JourneyTests: XCTestCase {
 
     /// Not `throws`: an error is written to `driver-error.txt` and recorded
     /// as an XCTest failure.
-    func testRun() {
+    func testJourney() {
         let config = RunConfig.fromEnvironment()
         XCTContext.runActivity(named: "FM driver start: out \(config.out.path), run \(config.run), "
             + "scenario \(config.scenario), app \(config.app)") { _ in }
         // What the test runner was given, before anything can go wrong.
         let environment = ProcessInfo.processInfo.environment.filter { $0.key.hasPrefix("FM_") }
             .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
-        let start = "testRun started \(Date())\nout \(config.out.path)\nbundle \(Bundle(for: JourneyTests.self).bundlePath)\n"
+        let start = "testJourney started \(Date())\nout \(config.out.path)\nbundle \(Bundle(for: JourneyTests.self).bundlePath)\n"
             + environment + "\n"
         try? FileManager.default.createDirectory(at: config.out, withIntermediateDirectories: true)
         let wrote = FileManager.default.createFile(atPath: config.out.appendingPathComponent("driver-start.txt").path,
@@ -44,7 +44,7 @@ class JourneyTests: XCTestCase {
             XCTFail(text)
         }
         XCTContext.runActivity(named: "FM driver finished") { _ in }
-        print("FMDRIVER testRun finished")
+        print("FMDRIVER testJourney finished")
     }
 
     override func record(_ issue: XCTIssue) {

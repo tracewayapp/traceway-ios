@@ -6,7 +6,7 @@
 #      installed fresh (FieldmartOff for off/off2, Fieldmart otherwise);
 #   2. a new ledger slice in the gateway (POST /ctl/run);
 #   3. the host sampler, and in evidence runs the screen recording;
-#   4. the XCUITest driver (JourneyTests/testRun) plays the scenario and the
+#   4. the XCUITest driver (JourneyTests/testJourney) plays the scenario and the
 #      standard ending (Home, 5 s, terminate);
 #   5. the probe file and markers from the app's container, the unified log,
 #      and a wait until the gateway has been quiet for 5 s.
@@ -66,7 +66,7 @@ xcodebuild test-without-building \
   -xctestrun "$XCTESTRUN" \
   -destination "id=$UDID" \
   -parallel-testing-enabled NO \
-  -only-testing:FieldmartUITests/JourneyTests/testRun \
+  -only-testing:FieldmartUITests/JourneyTests/testJourney \
   -resultBundlePath "$RUN_DIR/result.xcresult" \
   > "$RUN_DIR/xcodebuild.log" 2>&1
 STATUS=$?
